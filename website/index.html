@@ -1,0 +1,297 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Portreaper · 收割端口上的僵尸进程</title>
+  <meta name="description" data-i18n="meta.description" content="Portreaper —— 一个 macOS / Windows 桌面托盘工具，找出占用 TCP 端口的进程，精准识别并清扫孤儿 dev-server 僵尸进程。" />
+  <meta name="color-scheme" content="dark" />
+  <link rel="icon" href="./assets/icon.svg" type="image/svg+xml" />
+  <link rel="stylesheet" href="./styles.css" />
+</head>
+<body>
+  <a class="skip-link" href="#main" data-i18n="a11y.skip">跳到主要内容</a>
+
+  <!-- ───── Top bar ───── -->
+  <header class="site-header">
+    <div class="container site-header__inner">
+      <a class="brand" href="#top" aria-label="Portreaper">
+        <svg class="brand-mark" viewBox="0 0 24 24" width="26" height="26" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+          <path d="M3 7l9 5 9-5" />
+          <path d="M3 7v10l9 5 9-5V7" />
+          <path d="M12 12v10" />
+        </svg>
+        <span class="brand-name">Portreaper</span>
+      </a>
+      <nav class="site-nav" aria-label="primary">
+        <a href="#features" data-i18n="nav.features">功能</a>
+        <a href="#install" data-i18n="nav.install">安装</a>
+        <a href="https://github.com/fanhefeng/portreaper" rel="noopener" data-i18n="nav.github">GitHub</a>
+        <button id="lang-toggle" class="lang-toggle" type="button" aria-label="Switch language">EN</button>
+      </nav>
+    </div>
+  </header>
+
+  <main id="main">
+    <!-- ───── Hero ───── -->
+    <section class="hero" id="top">
+      <div class="container hero__inner">
+        <div class="hero__copy">
+          <div class="hero__badges" aria-label="supported platforms">
+            <span class="os-badge">macOS</span>
+            <span class="os-badge">Windows</span>
+            <span class="os-badge os-badge--soft" data-i18n="hero.langBadge">中 / EN</span>
+          </div>
+          <h1 class="hero__title">Portreaper</h1>
+          <p class="hero__tagline" data-i18n="hero.tagline">收割端口上的僵尸进程。</p>
+          <p class="hero__sub" data-i18n="hero.sub">找出谁在占用端口，看清是谁拉起的，然后一键终结那些父进程已死、却还赖在端口上的孤儿 dev-server。</p>
+
+          <div class="downloads" id="downloads">
+            <a class="dl-btn" data-dl="mac-arm" href="https://github.com/fanhefeng/portreaper/releases/latest/download/Portreaper-macos-arm64.dmg">
+              <span class="dl-btn__os">macOS</span>
+              <span class="dl-btn__detail" data-i18n="dl.macArm">Apple Silicon · .dmg</span>
+            </a>
+            <a class="dl-btn" data-dl="mac-x64" href="https://github.com/fanhefeng/portreaper/releases/latest/download/Portreaper-macos-x64.dmg">
+              <span class="dl-btn__os">macOS</span>
+              <span class="dl-btn__detail" data-i18n="dl.macIntel">Intel · .dmg</span>
+            </a>
+            <a class="dl-btn dl-btn--exp" data-dl="win" href="https://github.com/fanhefeng/portreaper/releases/latest/download/Portreaper-windows-x64-setup.exe">
+              <span class="dl-btn__os">Windows x64
+                <span class="exp-tag" data-i18n="dl.experimental">实验性</span>
+              </span>
+              <span class="dl-btn__detail" data-i18n="dl.winDetail">安装包 · .exe</span>
+            </a>
+          </div>
+
+          <p class="version-line" id="version-line" hidden></p>
+
+          <p class="hero__links">
+            <a href="https://github.com/fanhefeng/portreaper/releases" rel="noopener" data-i18n="hero.allReleases">查看全部版本 →</a>
+          </p>
+        </div>
+
+        <div class="hero__visual" aria-hidden="true">
+          <div class="hero__glow"></div>
+          <svg class="hero__mark" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.2" stroke-linecap="round" stroke-linejoin="round">
+            <path d="M3 7l9 5 9-5" />
+            <path d="M3 7v10l9 5 9-5V7" />
+            <path d="M12 12v10" />
+          </svg>
+        </div>
+      </div>
+    </section>
+
+    <!-- ───── App mockup / screenshot ───── -->
+    <section class="showcase" aria-labelledby="showcase-title">
+      <div class="container">
+        <h2 id="showcase-title" class="visually-hidden" data-i18n="showcase.title">应用界面</h2>
+        <figure class="screenshot-frame">
+          <div class="window-chrome">
+            <span class="traffic"><i></i><i></i><i></i></span>
+            <span class="window-chrome__title mono">portreaper</span>
+          </div>
+          <!-- Real screenshot if present, else falls back to CSS mockup -->
+          <img src="./assets/screenshot-main.png" alt="Portreaper 主界面截图" class="screenshot-img" onerror="this.style.display='none';document.getElementById('app-mock').hidden=false;" />
+
+          <div class="app-mock" id="app-mock" hidden>
+            <div class="mock-header">
+              <div class="mock-brand">
+                <svg viewBox="0 0 24 24" width="18" height="18" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+                  <path d="M3 7l9 5 9-5" />
+                  <path d="M3 7v10l9 5 9-5V7" />
+                  <path d="M12 12v10" />
+                </svg>
+                <span>Portreaper</span>
+              </div>
+              <div class="mock-pills">
+                <span class="mock-pill"><b>34</b><span data-i18n="mock.proc">进程</span></span>
+                <span class="mock-pill"><b>11</b><span data-i18n="mock.ports">端口</span></span>
+                <span class="mock-pill mock-pill--danger"><b>3</b><span data-i18n="mock.suspect">疑似僵尸</span></span>
+                <span class="mock-pill mock-pill--mute"><b>2</b><span data-i18n="mock.fav">已收藏</span></span>
+              </div>
+            </div>
+            <table class="mock-table">
+              <thead>
+                <tr>
+                  <th data-i18n="mock.col.port">端口</th>
+                  <th data-i18n="mock.col.type">类型</th>
+                  <th data-i18n="mock.col.app">App</th>
+                  <th data-i18n="mock.col.launcher">启动者</th>
+                  <th data-i18n="mock.col.pid">PID</th>
+                  <th data-i18n="mock.col.action">操作</th>
+                </tr>
+              </thead>
+              <tbody>
+                <tr class="mock-suspect">
+                  <td><span class="mock-port">:5173</span></td>
+                  <td><span class="mock-cat mock-cat--script" data-i18n="mock.cat.script">脚本</span></td>
+                  <td>
+                    <div class="mock-app">vite</div>
+                    <div class="mock-sub">my-app · node</div>
+                    <div class="mock-tags"><span class="mock-chip-sus" data-i18n="mock.reason.orphan">孤儿 · PPID=1</span></div>
+                  </td>
+                  <td class="mock-dim">launchd</td>
+                  <td class="mono mock-dim">8821 · 1</td>
+                  <td><span class="mock-kill" data-i18n="mock.kill">Kill</span></td>
+                </tr>
+                <tr>
+                  <td><span class="mock-port">:3000</span></td>
+                  <td><span class="mock-cat mock-cat--script" data-i18n="mock.cat.script">脚本</span></td>
+                  <td>
+                    <div class="mock-app">next dev</div>
+                    <div class="mock-sub">web · node</div>
+                  </td>
+                  <td class="mock-dim">iTerm → zsh → npm</td>
+                  <td class="mono mock-dim">7740 · 7702</td>
+                  <td><span class="mock-kill" data-i18n="mock.kill">Kill</span></td>
+                </tr>
+                <tr>
+                  <td><span class="mock-port">:5432</span></td>
+                  <td><span class="mock-cat mock-cat--app">APP</span></td>
+                  <td>
+                    <div class="mock-app">Postgres.app <span class="mock-chip-wl">★</span></div>
+                    <div class="mock-sub">postgres</div>
+                  </td>
+                  <td class="mock-dim">launchd</td>
+                  <td class="mono mock-dim">612 · 1</td>
+                  <td><span class="mock-kill" data-i18n="mock.kill">Kill</span></td>
+                </tr>
+                <tr>
+                  <td><span class="mock-port">:8080</span></td>
+                  <td><span class="mock-cat mock-cat--cli">CLI</span></td>
+                  <td>
+                    <div class="mock-app">cargo run</div>
+                    <div class="mock-sub">api-server · target/debug</div>
+                  </td>
+                  <td class="mock-dim">Cursor → zsh</td>
+                  <td class="mono mock-dim">9013 · 8990</td>
+                  <td><span class="mock-kill" data-i18n="mock.kill">Kill</span></td>
+                </tr>
+              </tbody>
+            </table>
+          </div>
+        </figure>
+      </div>
+    </section>
+
+    <!-- ───── Features ───── -->
+    <section class="features" id="features" aria-labelledby="features-title">
+      <div class="container">
+        <h2 id="features-title" class="section-title" data-i18n="features.title">不是又一个端口查看器</h2>
+        <p class="section-lead" data-i18n="features.lead">核心价值是僵尸识别和启动链 —— 帮你分清「正在干活的进程」和「该被收割的孤魂」。</p>
+
+        <div class="feature-grid">
+          <article class="feature-card">
+            <div class="feature-icon" aria-hidden="true">
+              <svg viewBox="0 0 24 24" width="22" height="22" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round">
+                <path d="M12 2a9 9 0 0 0-9 9c0 4 3 7 4 8h10c1-1 4-4 4-8a9 9 0 0 0-9-9Z" />
+                <circle cx="9" cy="11" r="1.4" fill="currentColor" stroke="none" />
+                <circle cx="15" cy="11" r="1.4" fill="currentColor" stroke="none" />
+                <path d="M9 17v2M12 17v3M15 17v2" />
+              </svg>
+            </div>
+            <h3 class="feature-card__title" data-i18n="feat.detect.title">僵尸识别</h3>
+            <p class="feature-card__body" data-i18n="feat.detect.body">置信度分层（confirmed / likely / possible）综合孤儿、孤儿链、会话失效等信号判定。launchd / Homebrew 后台服务自动豁免 —— 不误报正在服务的进程。</p>
+          </article>
+
+          <article class="feature-card">
+            <div class="feature-icon" aria-hidden="true">
+              <svg viewBox="0 0 24 24" width="22" height="22" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round">
+                <circle cx="6" cy="5" r="2" />
+                <circle cx="6" cy="19" r="2" />
+                <circle cx="18" cy="12" r="2" />
+                <path d="M6 7v4a2 2 0 0 0 2 2h8M6 17v-4" />
+              </svg>
+            </div>
+            <h3 class="feature-card__title" data-i18n="feat.chain.title">启动链</h3>
+            <p class="feature-card__body" data-i18n="feat.chain.body">沿父进程链一路上溯，看清这个进程到底是谁拉起的：Terminal → zsh → npm → vite。一眼分辨「我自己开的」还是「不知哪来的孤儿」。</p>
+          </article>
+
+          <article class="feature-card">
+            <div class="feature-icon" aria-hidden="true">
+              <svg viewBox="0 0 24 24" width="22" height="22" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round">
+                <path d="M3 6h18M8 6V4h8v2M6 6l1 14a2 2 0 0 0 2 2h6a2 2 0 0 0 2-2l1-14" />
+                <path d="M10 11v6M14 11v6" />
+              </svg>
+            </div>
+            <h3 class="feature-card__title" data-i18n="feat.sweep.title">一键清扫</h3>
+            <p class="feature-card__body" data-i18n="feat.sweep.body">批量终止所有 Confirmed + Likely 的僵尸进程，一次释放占用的端口。白名单收藏的进程永远豁免，绝不被误杀。</p>
+          </article>
+
+          <article class="feature-card">
+            <div class="feature-icon" aria-hidden="true">
+              <svg viewBox="0 0 24 24" width="22" height="22" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round">
+                <rect x="2" y="4" width="20" height="14" rx="2" />
+                <path d="M8 21h8M12 18v3" />
+              </svg>
+            </div>
+            <h3 class="feature-card__title" data-i18n="feat.cross.title">跨平台</h3>
+            <p class="feature-card__body" data-i18n="feat.cross.body">常驻 macOS 菜单栏与 Windows 系统托盘，关窗即隐藏、不打断工作流。界面中英双语，托盘标题实时显示可疑进程数。</p>
+          </article>
+        </div>
+      </div>
+    </section>
+
+    <!-- ───── Install ───── -->
+    <section class="install" id="install" aria-labelledby="install-title">
+      <div class="container">
+        <h2 id="install-title" class="section-title" data-i18n="install.title">安装与首次启动</h2>
+        <p class="section-lead" data-i18n="install.lead">应用未经签名公证。下面是绕过系统拦截的标准步骤。</p>
+
+        <div class="tabs" role="tablist" aria-label="install platforms">
+          <button class="tab is-active" id="tab-mac" role="tab" aria-selected="true" aria-controls="panel-mac" data-i18n="install.tab.mac">macOS</button>
+          <button class="tab" id="tab-win" role="tab" aria-selected="false" aria-controls="panel-win" tabindex="-1" data-i18n="install.tab.win">Windows</button>
+        </div>
+
+        <div class="tab-panel is-active" id="panel-mac" role="tabpanel" aria-labelledby="tab-mac">
+          <ol class="steps">
+            <li data-i18n="install.mac.s1">打开下载的 <code>.dmg</code>，把 Portreaper 拖入「应用程序」。</li>
+            <li data-i18n="install.mac.s2">首次打开若提示「无法验证开发者」：前往「系统设置 → 隐私与安全性」，点最下方的「仍要打开」。</li>
+            <li data-i18n="install.mac.s3">或者在「应用程序」里 <strong>右键 → 打开</strong>，在弹窗里再次确认「打开」。</li>
+            <li data-i18n="install.mac.s4">仍被拦截时，可在终端执行下面这行移除隔离属性：</li>
+          </ol>
+          <div class="code-block">
+            <code class="mono" id="xattr-cmd">xattr -dr com.apple.quarantine /Applications/Portreaper.app</code>
+            <button class="copy-btn" type="button" data-copy-target="xattr-cmd" data-i18n="install.copy" aria-label="复制命令">复制</button>
+          </div>
+        </div>
+
+        <div class="tab-panel" id="panel-win" role="tabpanel" aria-labelledby="tab-win" hidden>
+          <ol class="steps">
+            <li data-i18n="install.win.s1">运行 <code>.exe</code> 安装包。若出现 SmartScreen 蓝屏，点击「更多信息 → 仍要运行」。</li>
+            <li data-i18n="install.win.s2">杀毒软件可能误报 —— 本应用需要枚举并终止进程，这类行为容易被启发式引擎标记。可将其加入信任列表。</li>
+          </ol>
+          <div class="callout callout--warn">
+            <strong data-i18n="install.win.expTitle">实验性</strong>
+            <span data-i18n="install.win.expBody">Windows 版本目前仅经过 CI 编译与单元测试，尚未在多机型上充分验证。欢迎在 issue 区反馈问题。</span>
+          </div>
+        </div>
+      </div>
+    </section>
+  </main>
+
+  <!-- ───── Footer ───── -->
+  <footer class="site-footer">
+    <div class="container site-footer__inner">
+      <a class="brand brand--sm" href="#top" aria-label="Portreaper">
+        <svg viewBox="0 0 24 24" width="20" height="20" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+          <path d="M3 7l9 5 9-5" />
+          <path d="M3 7v10l9 5 9-5V7" />
+          <path d="M12 12v10" />
+        </svg>
+        <span class="brand-name">Portreaper</span>
+      </a>
+      <div class="site-footer__links">
+        <a href="https://github.com/fanhefeng/portreaper" rel="noopener" data-i18n="footer.repo">GitHub 仓库</a>
+        <span class="dot" aria-hidden="true">·</span>
+        <span data-i18n="footer.license">MIT License © 2026 fhf</span>
+        <span class="dot" aria-hidden="true">·</span>
+        <span class="built" data-i18n="footer.built">Built with Tauri</span>
+      </div>
+    </div>
+  </footer>
+
+  <script src="./i18n.js"></script>
+  <script src="./main.js"></script>
+</body>
+</html>
