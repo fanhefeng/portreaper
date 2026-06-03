@@ -875,3 +875,24 @@ tbody tr.suspect:hover .actions {
 ::-webkit-scrollbar-thumb:hover {
   background: var(--border-strong);
 }
+
+/* ───── i18n / v2 additions ───── */
+
+.meta {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.lang-toggle {
+  font-size: 11px;
+  font-weight: 600;
+  padding: 3px 9px;
+  letter-spacing: 0.04em;
+}
+
+.chip-exempt {
+  background: rgba(107, 114, 128, 0.12);
+  color: var(--text-dim);
+  border-color: rgba(107, 114, 128, 0.28);
+}
