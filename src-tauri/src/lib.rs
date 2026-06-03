@@ -1,12 +1,42 @@
 mod commands;
+mod platform;
 mod scanner;
 mod whitelist;
 
+use std::sync::Mutex;
+
 use tauri::{
-    menu::{MenuBuilder, MenuItemBuilder},
+    menu::{MenuBuilder, MenuItem, MenuItemBuilder},
     tray::{MouseButton, MouseButtonState, TrayIconBuilder, TrayIconEvent},
-    Manager, WindowEvent,
+    Manager, WindowEvent, Wry,
 };
+
+/// 当前界面语言（"zh" / "en"），托盘 tooltip 与菜单共用；
+/// 由系统 locale 初始化，前端切换语言时通过 set_tray_language 同步。
+pub struct TrayLang(pub Mutex<&'static str>);
+
+/// 托盘菜单项句柄 —— 语言切换时直接 set_text，无需重建菜单。
+pub struct TrayMenuItems {
+    pub show: MenuItem<Wry>,
+    pub quit: MenuItem<Wry>,
+}
+
+pub(crate) fn tray_texts(lang: &str) -> (&'static str, &'static str) {
+    if lang == "zh" {
+        ("显示窗口", "退出 Portreaper")
+    } else {
+        ("Show Window", "Quit Portreaper")
+    }
+}
+
+fn detect_lang() -> &'static str {
+    let locale = sys_locale::get_locale().unwrap_or_default();
+    if locale.to_lowercase().starts_with("zh") {
+        "zh"
+    } else {
+        "en"
+    }
+}
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
@@ -15,10 +45,12 @@ pub fn run() {
         .invoke_handler(tauri::generate_handler![
             commands::scan_ports,
             commands::kill_process,
+            commands::get_platform,
             commands::get_whitelist,
             commands::add_whitelist,
             commands::remove_whitelist,
             commands::update_tray_title,
+            commands::set_tray_language,
             commands::show_main_window,
         ])
         .setup(|app| {
@@ -26,23 +58,34 @@ pub fn run() {
                 whitelist::init(dir.join("whitelist.json"));
             }
 
-            let show_item = MenuItemBuilder::with_id("show", "显示窗口").build(app)?;
-            let quit_item = MenuItemBuilder::with_id("quit", "退出 Portreaper").build(app)?;
+            let lang = detect_lang();
+            let (show_text, quit_text) = tray_texts(lang);
+            let show_item = MenuItemBuilder::with_id("show", show_text).build(app)?;
+            let quit_item = MenuItemBuilder::with_id("quit", quit_text).build(app)?;
             let menu = MenuBuilder::new(app)
                 .items(&[&show_item, &quit_item])
                 .build()?;
+            app.manage(TrayLang(Mutex::new(lang)));
+            app.manage(TrayMenuItems {
+                show: show_item,
+                quit: quit_item,
+            });
 
             let icon = app
                 .default_window_icon()
                 .cloned()
                 .ok_or("missing default window icon")?;
 
-            let _tray = TrayIconBuilder::with_id("main-tray")
+            let tray_builder = TrayIconBuilder::with_id("main-tray")
                 .icon(icon)
-                .icon_as_template(true)
-                .title("…")
                 .menu(&menu)
-                .show_menu_on_left_click(false)
+                .show_menu_on_left_click(false);
+
+            // 模板图标 + 菜单栏标题是 macOS 概念；Windows 用彩色图标 + tooltip（见 update_tray_title）
+            #[cfg(target_os = "macos")]
+            let tray_builder = tray_builder.icon_as_template(true).title("…");
+
+            let _tray = tray_builder
                 .on_menu_event(|app, event| match event.id.as_ref() {
                     "show" => {
                         if let Some(w) = app.get_webview_window("main") {
@@ -83,13 +126,21 @@ pub fn run() {
         .expect("error while building tauri application")
         .run(|app, event| {
             #[cfg(target_os = "macos")]
-            if let tauri::RunEvent::Reopen { has_visible_windows, .. } = event {
+            if let tauri::RunEvent::Reopen {
+                has_visible_windows,
+                ..
+            } = event
+            {
                 if !has_visible_windows {
                     if let Some(w) = app.get_webview_window("main") {
                         let _ = w.show();
                         let _ = w.set_focus();
                     }
                 }
+            }
+            #[cfg(not(target_os = "macos"))]
+            {
+                let _ = (app, event);
             }
         });
 }

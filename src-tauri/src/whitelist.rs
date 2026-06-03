@@ -9,8 +9,7 @@ pub struct WhitelistStore {
     pub entries: Vec<String>,
 }
 
-static WHITELIST: Lazy<Mutex<WhitelistStore>> =
-    Lazy::new(|| Mutex::new(WhitelistStore::default()));
+static WHITELIST: Lazy<Mutex<WhitelistStore>> = Lazy::new(|| Mutex::new(WhitelistStore::default()));
 static WHITELIST_PATH: Lazy<Mutex<Option<PathBuf>>> = Lazy::new(|| Mutex::new(None));
 
 pub fn init(path: PathBuf) {
