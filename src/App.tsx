@@ -129,6 +129,7 @@ function localizeKillError(
 ): string {
   if (err.includes("ERR_PID_REUSED")) return t("error.pidReused");
   if (err.includes("ERR_PROCESS_GONE")) return t("error.processGone");
+  if (err.includes("ERR_IDENTITY_UNKNOWN")) return t("error.identityUnknown");
   return err;
 }
 

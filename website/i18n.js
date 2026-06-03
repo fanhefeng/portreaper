@@ -49,7 +49,7 @@ window.I18N = {
       "批量终止所有 Confirmed + Likely 的僵尸进程，一次释放占用的端口。白名单收藏的进程永远豁免，绝不被误杀。",
     "feat.cross.title": "跨平台",
     "feat.cross.body":
-      "常驻 macOS 菜单栏与 Windows 系统托盘，关窗即隐藏、不打断工作流。界面中英双语，托盘标题实时显示可疑进程数。",
+      "常驻 macOS 菜单栏与 Windows 系统托盘，关窗即隐藏、不打断工作流。界面中英双语，可疑进程数实时显示在托盘（macOS 菜单栏标题 / Windows 悬停提示）。",
 
     "install.title": "安装与首次启动",
     "install.lead": "应用未经签名公证。下面是绕过系统拦截的标准步骤。",
@@ -127,7 +127,7 @@ window.I18N = {
       "Batch-terminate every Confirmed + Likely zombie and free their ports in one go. Starred whitelist entries are always exempt and never killed by mistake.",
     "feat.cross.title": "Cross-platform",
     "feat.cross.body":
-      "Lives in the macOS menu bar and the Windows system tray; closing the window just hides it, never interrupting your flow. Bilingual UI, with the suspect count live in the tray title.",
+      "Lives in the macOS menu bar and the Windows system tray; closing the window just hides it, never interrupting your flow. Bilingual UI, with the suspect count live in the tray (menu-bar title on macOS, tooltip on Windows).",
 
     "install.title": "Install & first launch",
     "install.lead": "The app is unsigned. Here are the standard steps to get past the OS gatekeeper.",

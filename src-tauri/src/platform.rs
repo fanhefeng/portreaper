@@ -13,16 +13,21 @@ const START_TOLERANCE_SECS: u64 = 5;
 pub fn kill(pid: u32, force: bool, expected_start: Option<u64>) -> Result<(), String> {
     use std::process::Command;
 
-    if let Some(expected) = expected_start {
-        let current = current_start_unix(pid)
-            .ok_or_else(|| "ERR_PROCESS_GONE: process no longer exists".to_string())?;
-        if current.abs_diff(expected) > START_TOLERANCE_SECS {
-            return Err(
-                "ERR_PID_REUSED: process identity changed (PID was reused), rescan and retry"
-                    .to_string(),
-            );
-        }
+    // fail-closed：没有身份令牌就拒绝（scan() 保证每行都带 start_unix，
+    // 走到这里说明前端数据异常 —— 宁可让用户重扫，绝不盲杀）
+    let expected = expected_start
+        .ok_or_else(|| "ERR_IDENTITY_UNKNOWN: missing identity token, rescan first".to_string())?;
+    let current = current_start_unix(pid)
+        .ok_or_else(|| "ERR_PROCESS_GONE: process no longer exists".to_string())?;
+    if current.abs_diff(expected) > START_TOLERANCE_SECS {
+        return Err(
+            "ERR_PID_REUSED: process identity changed (PID was reused), rescan and retry"
+                .to_string(),
+        );
     }
+    // 已知残余竞态：ps 校验与 kill 是两个独立子进程，二者之间存在亚毫秒级
+    // 窗口（macOS 无法像 Windows 那样用同一句柄钉住身份）。PID 在该窗口内
+    // 被复用且新进程创建时间恰落在 ±5s 容差内的概率可忽略 —— 接受并记录。
 
     let signal = if force { "-9" } else { "-15" };
     let output = Command::new("kill")
@@ -83,31 +88,41 @@ pub fn kill(pid: u32, _force: bool, expected_start: Option<u64>) -> Result<(), S
         (ticks / 10_000_000).saturating_sub(11_644_473_600)
     }
 
+    // fail-closed：没有身份令牌就拒绝（与 macOS 分支一致）
+    let expected = expected_start
+        .ok_or_else(|| "ERR_IDENTITY_UNKNOWN: missing identity token, rescan first".to_string())?;
+
     unsafe {
         let handle = OpenProcess(
             PROCESS_TERMINATE | PROCESS_QUERY_LIMITED_INFORMATION,
             false,
             pid,
         )
-        // 精确透传 Win32 错误码：让用户能区分「进程已不在」(87/  invalid param)
-        // 与「被策略/EDR 拒绝」(5/access denied)
-        .map_err(|e| format!("OpenProcess({pid}) failed: {e}"))?;
+        .map_err(|e| {
+            // ERROR_INVALID_PARAMETER (87) = PID 已不存在 → 映射为语义错误供前端 i18n；
+            // 其余（如 5 access denied = 被策略/EDR 拒绝）透传 Win32 原文
+            if e.code() == windows::Win32::Foundation::ERROR_INVALID_PARAMETER.to_hresult() {
+                "ERR_PROCESS_GONE: process no longer exists".to_string()
+            } else {
+                format!("OpenProcess({pid}) failed: {e}")
+            }
+        })?;
         let _guard = Guard(handle);
 
-        if let Some(expected) = expected_start {
-            let mut creation = FILETIME::default();
-            let mut exit = FILETIME::default();
-            let mut kernel = FILETIME::default();
-            let mut user = FILETIME::default();
-            GetProcessTimes(handle, &mut creation, &mut exit, &mut kernel, &mut user)
-                .map_err(|e| format!("GetProcessTimes({pid}) failed: {e}"))?;
-            let current = filetime_to_unix(creation);
-            if current.abs_diff(expected) > START_TOLERANCE_SECS {
-                return Err(
-                    "ERR_PID_REUSED: process identity changed (PID was reused), rescan and retry"
-                        .to_string(),
-                );
-            }
+        // 同一句柄上先校验创建时间、再 TerminateProcess —— 句柄钉住进程身份，
+        // 即使 PID 在此期间被复用，句柄仍指向原进程，无 TOCTOU 窗口
+        let mut creation = FILETIME::default();
+        let mut exit = FILETIME::default();
+        let mut kernel = FILETIME::default();
+        let mut user = FILETIME::default();
+        GetProcessTimes(handle, &mut creation, &mut exit, &mut kernel, &mut user)
+            .map_err(|e| format!("GetProcessTimes({pid}) failed: {e}"))?;
+        let current = filetime_to_unix(creation);
+        if current.abs_diff(expected) > START_TOLERANCE_SECS {
+            return Err(
+                "ERR_PID_REUSED: process identity changed (PID was reused), rescan and retry"
+                    .to_string(),
+            );
         }
 
         TerminateProcess(handle, 1).map_err(|e| format!("TerminateProcess({pid}) failed: {e}"))?;

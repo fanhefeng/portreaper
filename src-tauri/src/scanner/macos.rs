@@ -1,5 +1,6 @@
 //! macOS 数据采集与路径规则。
-//! 三个数据源：lsof（监听套接字）、ps（全进程元数据，含会话列）、launchctl（托管 PID 集合）。
+//! 三个数据源：lsof（监听套接字）、ps（全进程元数据；会话首进程靠 state 的
+//! 's' 标志识别）、launchctl（托管 PID 集合）。
 //! 全部子进程强制 en_US.UTF-8，避免本地化输出破坏列解析。
 
 use std::collections::{HashMap, HashSet};
@@ -161,9 +162,11 @@ pub(crate) fn identify_app(
         return (project_binary_label(exe), "dev-script".to_string());
     }
 
-    // 6. /Users/... → 用户目录下的自定义二进制
+    // 6. /Users/... → 用户目录下的自定义二进制。
+    //    注意类别是 user-binary 而非 dev-script：「位于用户目录」只说明位置，
+    //    不构成 dev 证据 —— dev-script 会把裸孤儿二进制直升 Confirmed 入清扫。
     if exe.starts_with("/Users/") {
-        return (project_binary_label(exe), "dev-script".to_string());
+        return (project_binary_label(exe), "user-binary".to_string());
     }
 
     // 7. fallback
@@ -206,7 +209,7 @@ pub(crate) fn collect() -> Collected {
             &[
                 "-A",
                 "-o",
-                "pid=,ppid=,state=,tty=,etime=,pcpu=,rss=,sess=,command=",
+                "pid=,ppid=,state=,tty=,etime=,pcpu=,rss=,command=",
             ],
         )
         .unwrap_or_default(),
@@ -308,12 +311,15 @@ pub(crate) fn parse_etime(s: &str) -> u64 {
 }
 
 /// 解析 ps 输出。数值列在 command 之前；command 是最后一列收尾全行。
+///
+/// 会话首进程的判定用 state 的 `s` 标志（BSD ps：「s = session leader」）——
+/// **不要**用 `ps -o sess=`：macOS 上它对所有进程恒输出 0（内核会话指针对
+/// 非特权调用方不可见），曾导致 leader 集合恒空、所有终端进程被误判
+/// tty_orphaned（评审捕获的真机级 bug）。
 fn parse_ps(text: &str, comm_map: &HashMap<u32, String>, now: u64) -> HashMap<u32, ProcMeta> {
-    // 先按 pid 收集 sess，便于第二遍标记 tty_orphaned
     struct Row {
         pid: u32,
         meta: ProcMeta,
-        sess: i64,
     }
     let mut rows: Vec<Row> = Vec::new();
 
@@ -331,7 +337,6 @@ fn parse_ps(text: &str, comm_map: &HashMap<u32, String>, now: u64) -> HashMap<u3
         let elapsed_secs = parse_etime(iter.next().unwrap_or("0"));
         let cpu_percent: f32 = iter.next().and_then(|s| s.parse().ok()).unwrap_or(0.0);
         let rss_kb: u64 = iter.next().and_then(|s| s.parse().ok()).unwrap_or(0);
-        let sess: i64 = iter.next().and_then(|s| s.parse().ok()).unwrap_or(-1);
         let full_command: String = iter.collect::<Vec<_>>().join(" ");
 
         // exe 权威来源：comm（含空格完整）；退回命令行首 token
@@ -345,7 +350,6 @@ fn parse_ps(text: &str, comm_map: &HashMap<u32, String>, now: u64) -> HashMap<u3
 
         rows.push(Row {
             pid,
-            sess,
             meta: ProcMeta {
                 ppid,
                 exe_path,
@@ -362,14 +366,15 @@ fn parse_ps(text: &str, comm_map: &HashMap<u32, String>, now: u64) -> HashMap<u3
         });
     }
 
-    // 会话首进程（sess == 自身 pid）持有的 tty 集合
-    let leader_ttys: HashSet<&str> = rows
+    // 仍有会话首进程（state 含 's'）的 tty 集合 —— 真机验证：每个活跃 ttys
+    // 恰有一个带 's' 标志的进程（登录 shell 的 "Ss"/"Ss+"）
+    let leader_ttys: HashSet<String> = rows
         .iter()
-        .filter(|r| r.sess == r.pid as i64)
+        .filter(|r| r.meta.state.as_deref().is_some_and(|st| st.contains('s')))
         .filter_map(|r| r.meta.tty.as_deref())
         .filter(|t| t.starts_with("ttys"))
+        .map(String::from)
         .collect();
-    let leader_ttys: HashSet<String> = leader_ttys.into_iter().map(String::from).collect();
 
     let mut map = HashMap::new();
     for mut row in rows {
@@ -430,46 +435,56 @@ mod tests {
         assert_eq!(ls[1].ports, vec![5432]);
     }
 
+    /// 生产真实形态的 ps 行（无 sess 列；state 的 's' 标志 = 会话首进程，
+    /// 与真机 `ps -ax -o stat=,tty=` 输出一致）。
     #[test]
-    fn ps_parse_with_session_and_spaced_exe() {
+    fn ps_parse_realistic_rows_spaced_exe_and_dead_session() {
         let mut comm = HashMap::new();
         comm.insert(
             200u32,
             "/Applications/Visual Studio Code.app/Contents/MacOS/Electron".to_string(),
         );
-        // pid ppid state tty etime pcpu rss sess command...
+        // pid ppid state tty etime pcpu rss command...
         let text = "\
-  100     1 Ss   ??       01:00:00  0.0   1024   100 /opt/homebrew/opt/postgresql@16/bin/postgres -D /opt/homebrew/var
-  200   150 S    ttys003  00:10:00  1.5  20480   150 /Applications/Visual Studio Code.app/Contents/MacOS/Electron --type=utility
-  300   200 S+   ttys007  00:05:00  0.2   5120   140 node /Users/x/proj/node_modules/.bin/vite
+  100     1 Ss   ??       01:00:00  0.0   1024 /opt/homebrew/opt/postgresql@16/bin/postgres -D /opt/homebrew/var
+  200   150 S    ttys003  00:10:00  1.5  20480 /Applications/Visual Studio Code.app/Contents/MacOS/Electron --type=utility
+  300   200 S+   ttys007  00:05:00  0.2   5120 node /Users/x/proj/node_modules/.bin/vite
 ";
         let procs = parse_ps(text, &comm, 1_000_000);
         let pg = procs.get(&100).unwrap();
         assert_eq!(pg.ppid, 1);
         assert_eq!(pg.elapsed_secs, 3600);
         assert_eq!(pg.start_unix, Some(1_000_000 - 3600));
+        // postgres 在 ?? 上：tty 信号永远中性
+        assert!(!pg.tty_orphaned);
         // comm 修复空格路径
         let code = procs.get(&200).unwrap();
         assert_eq!(
             code.exe_path,
             "/Applications/Visual Studio Code.app/Contents/MacOS/Electron"
         );
-        // ttys003 的会话首进程是 150（不在表中）→ 无 leader → tty_orphaned
+        // ttys003 / ttys007 上没有任何 state 含 's' 的进程 ⇒ 会话已死
         assert!(code.tty_orphaned);
-        // ttys007 同样无 leader（sess=140 不在且非自身）
         assert!(procs.get(&300).unwrap().tty_orphaned);
     }
 
+    /// 回归（评审捕获的真机 bug）：健康终端 —— 登录 zsh 是 "Ss" 会话首进程，
+    /// 同 tty 的 dev server 绝不能被标 tty_orphaned。
     #[test]
-    fn ps_tty_with_live_leader_not_orphaned() {
+    fn ps_healthy_terminal_never_tty_orphaned() {
         let comm = HashMap::new();
         let text = "\
-  500     1 Ss   ttys003  01:00:00  0.0   1024   500 -zsh
-  501   500 S+   ttys003  00:30:00  0.1   2048   500 node server.js
+  500     1 Ss   ttys003  01:00:00  0.0   1024 -zsh
+  501   500 S+   ttys003  00:30:00  0.1   2048 node server.js
+  600     1 Ss+  ttys000  02:00:00  0.0   1024 -zsh
 ";
         let procs = parse_ps(text, &comm, 1_000_000);
         assert!(!procs.get(&500).unwrap().tty_orphaned);
-        assert!(!procs.get(&501).unwrap().tty_orphaned);
+        assert!(
+            !procs.get(&501).unwrap().tty_orphaned,
+            "活终端里的 dev server 不能误报会话死"
+        );
+        assert!(!procs.get(&600).unwrap().tty_orphaned);
     }
 
     #[test]

@@ -48,14 +48,15 @@ The tag **must** match the version from step 1 (`v` prefix on the tag, none in t
 
 ### 4. Watch the release workflow
 
-Pushing the tag triggers `release.yml`, which runs three stages:
+Pushing the tag triggers `release.yml`, which runs four stages:
 
 1. **`verify-version`** — fails the run if the pushed tag does not match the version baked into `package.json` / `tauri.conf.json` / `Cargo.toml`. This is the guard against a forgotten `bump-version` step.
-2. **Build matrix** — builds in parallel:
+2. **`create-release`** — creates the **draft** GitHub Release exactly once, before any build leg. (The build legs upload by release id; letting three parallel legs get-or-create the same release is a documented tauri-action race that can leave duplicate/stuck drafts.)
+3. **Build matrix** — builds in parallel:
    - macOS **arm64** `.dmg`
    - macOS **x64** `.dmg`
    - Windows **x64** NSIS installer `.exe`
-3. **`publish`** — uploads the artifacts under their **stable asset names** and flips the GitHub Release from **draft → published**:
+4. **`publish`** — uploads the artifacts under their **stable asset names** and flips the GitHub Release from **draft → published**:
    - `Portreaper-macos-arm64.dmg`
    - `Portreaper-macos-x64.dmg`
    - `Portreaper-windows-x64-setup.exe`

@@ -18,7 +18,7 @@ use windows::Win32::Networking::WinSock::{AF_INET, AF_INET6};
 use windows::Win32::System::Com::CoTaskMemFree;
 use windows::Win32::UI::Shell::{
     FOLDERID_LocalAppData, FOLDERID_ProgramData, FOLDERID_ProgramFiles, FOLDERID_ProgramFilesX86,
-    FOLDERID_Windows, SHGetKnownFolderPath, KF_FLAG_DEFAULT,
+    FOLDERID_RoamingAppData, FOLDERID_Windows, SHGetKnownFolderPath, KF_FLAG_DEFAULT,
 };
 
 use super::classify::ReasonCode;
@@ -37,6 +37,7 @@ pub(crate) struct KnownPaths {
     pub program_files: String,     // c:\program files\
     pub program_files_x86: String, // c:\program files (x86)\
     pub local_appdata: String,     // c:\users\<u>\appdata\local\
+    pub roaming_appdata: String,   // c:\users\<u>\appdata\roaming\
     pub program_data: String,      // c:\programdata\
 }
 
@@ -59,6 +60,7 @@ impl KnownPaths {
             program_files: known(&FOLDERID_ProgramFiles),
             program_files_x86: known(&FOLDERID_ProgramFilesX86),
             local_appdata: known(&FOLDERID_LocalAppData),
+            roaming_appdata: known(&FOLDERID_RoamingAppData),
             program_data: known(&FOLDERID_ProgramData),
         }
     }
@@ -236,7 +238,7 @@ fn identify_app_with(
         &kp.appdata_programs(),
     ] {
         if !root.is_empty() && p.starts_with(root) {
-            let label = first_segment_after(exe_path, root.len())
+            let label = first_segment_after(exe_path, &p, root.len())
                 .unwrap_or_else(|| strip_exe(basename(exe_path)).to_string());
             return (label, "installed-app".to_string());
         }
@@ -269,14 +271,29 @@ fn identify_app_with(
         );
     }
 
+    // 5b. AppData 根目录下的应用（Squirrel/Electron 布局：Discord、Spotify、
+    //     GitHub Desktop……装在 %LOCALAPPDATA%\<App>\ 或 %APPDATA%\<App>\，
+    //     由会退出的 Update.exe 引导启动）→ installed-app。
+    //     评审确认的误杀风险：这些应用监听 localhost 端口、父进程必然退出，
+    //     不豁免就会进清扫名单。排除 Temp（临时解包的可执行不算安装）。
+    for root in [kp.local_appdata.as_str(), kp.roaming_appdata.as_str()] {
+        if !root.is_empty() && p.starts_with(root) && !p.starts_with(&format!("{root}temp\\")) {
+            let label = first_segment_after(exe_path, &p, root.len())
+                .unwrap_or_else(|| strip_exe(basename(exe_path)).to_string());
+            return (label, "installed-app".to_string());
+        }
+    }
+
     // 6. Cargo 产物
     if p.contains("\\target\\debug\\") || p.contains("\\target\\release\\") {
         return (project_binary_label(exe_path), "dev-script".to_string());
     }
 
-    // 7. 用户目录下的自定义二进制
+    // 7. 用户目录下的自定义二进制。类别 user-binary 而非 dev-script ——
+    //    「位于用户目录」只说明位置，不构成 dev 证据（dev-script 会把
+    //    裸孤儿二进制直升 Confirmed 入清扫）。
     if p.contains("\\users\\") {
-        return (project_binary_label(exe_path), "dev-script".to_string());
+        return (project_binary_label(exe_path), "user-binary".to_string());
     }
 
     // 8. fallback
@@ -302,9 +319,16 @@ fn msix_friendly_name(exe_path: &str) -> Option<String> {
     }
 }
 
-/// 取 root 前缀之后的第一个路径段（用原始大小写的 exe_path 截取，保持显示友好）。
-fn first_segment_after(exe_path: &str, prefix_len: usize) -> Option<String> {
-    let rest = exe_path.get(prefix_len..)?;
+/// 取 root 前缀之后的第一个路径段。优先用原始大小写的 exe_path 截取（显示友好），
+/// 但 to_lowercase 对个别非 ASCII 字符不保长 —— 字节长度对不上时退回归一化串，
+/// 避免按错误偏移切出乱段（评审发现的非 ASCII 路径脆弱点）。
+fn first_segment_after(exe_path: &str, normalized: &str, prefix_len: usize) -> Option<String> {
+    let source = if exe_path.len() == normalized.len() {
+        exe_path
+    } else {
+        normalized
+    };
+    let rest = source.get(prefix_len..)?;
     let seg = rest.split(['\\', '/']).next()?;
     if seg.is_empty() || seg.to_lowercase().ends_with(".exe") {
         None // exe 直接位于根目录下，让调用方退回 basename
@@ -410,9 +434,11 @@ fn tcp_listeners() -> HashMap<u32, Vec<u16>> {
             let mut size: u32 = 0;
             let _ =
                 GetExtendedTcpTable(None, &mut size, false, af, TCP_TABLE_OWNER_PID_LISTENER, 0);
-            // 表可能在两次调用间增长，最多重试几次
+            // 表可能在两次调用间增长，最多重试几次。
+            // 缓冲用 Vec<u32> 而非 Vec<u8>：表结构全员 u32，需要 4 字节对齐 ——
+            // Vec<u8> 的对齐由分配器碰巧保证，按语言规则属对齐 UB（评审发现）。
             for _ in 0..4 {
-                let mut buf = vec![0u8; size.max(16) as usize];
+                let mut buf = vec![0u32; (size.max(16) as usize).div_ceil(4)];
                 let ret = GetExtendedTcpTable(
                     Some(buf.as_mut_ptr() as *mut c_void),
                     &mut size,
@@ -468,6 +494,7 @@ mod tests {
             program_files: "c:\\program files\\".into(),
             program_files_x86: "c:\\program files (x86)\\".into(),
             local_appdata: "c:\\users\\fhf\\appdata\\local\\".into(),
+            roaming_appdata: "c:\\users\\fhf\\appdata\\roaming\\".into(),
             program_data: "c:\\programdata\\".into(),
         }
     }
@@ -557,6 +584,56 @@ mod tests {
         let (label, cat) = identify_app_with(&kp, "", "System", "");
         assert_eq!(label, "System");
         assert_eq!(cat, "unknown");
+    }
+
+    /// 回归（评审捕获的误杀风险）：Squirrel/Electron 布局的 AppData 应用 ——
+    /// 父进程（Update.exe 引导器）必然退出，若不归 installed-app 会进清扫名单。
+    #[test]
+    fn appdata_apps_are_installed_apps() {
+        let kp = fake_paths();
+
+        // Discord：%LOCALAPPDATA%\Discord\app-1.0.x\Discord.exe（监听 RPC 端口）
+        let (label, cat) = identify_app_with(
+            &kp,
+            "C:\\Users\\fhf\\AppData\\Local\\Discord\\app-1.0.9151\\Discord.exe",
+            "Discord.exe",
+            "C:\\Users\\fhf\\AppData\\Local\\Discord\\app-1.0.9151\\Discord.exe",
+        );
+        assert_eq!(cat, "installed-app");
+        assert_eq!(label, "Discord");
+
+        // Spotify：%APPDATA%\Spotify\Spotify.exe（监听 4380/4381）
+        let (label, cat) = identify_app_with(
+            &kp,
+            "C:\\Users\\fhf\\AppData\\Roaming\\Spotify\\Spotify.exe",
+            "Spotify.exe",
+            "C:\\Users\\fhf\\AppData\\Roaming\\Spotify\\Spotify.exe",
+        );
+        assert_eq!(cat, "installed-app");
+        assert_eq!(label, "Spotify");
+
+        // Temp 下解包的可执行不算安装
+        let (_, cat) = identify_app_with(
+            &kp,
+            "C:\\Users\\fhf\\AppData\\Local\\Temp\\unpacked\\server.exe",
+            "server.exe",
+            "C:\\Users\\fhf\\AppData\\Local\\Temp\\unpacked\\server.exe",
+        );
+        assert_ne!(cat, "installed-app");
+    }
+
+    /// 用户目录裸二进制 = user-binary（位置不构成 dev 证据，
+    /// 单独的弱孤儿信号只到 Possible，不入清扫）。
+    #[test]
+    fn bare_user_binary_not_dev_script() {
+        let kp = fake_paths();
+        let (_, cat) = identify_app_with(
+            &kp,
+            "C:\\Users\\fhf\\tools\\myserver.exe --port 8080",
+            "myserver.exe",
+            "C:\\Users\\fhf\\tools\\myserver.exe",
+        );
+        assert_eq!(cat, "user-binary");
     }
 
     #[test]

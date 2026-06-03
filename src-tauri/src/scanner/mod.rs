@@ -44,13 +44,19 @@ pub fn scan(whitelist: &[String]) -> Vec<ProcessEntry> {
 
     let mut entries = Vec::new();
     for l in &collected.listeners {
-        let meta = procs.get(&l.pid);
-        let ppid = meta.map(|m| m.ppid).unwrap_or(0);
-        let exe_path = meta.map(|m| m.exe_path.clone()).unwrap_or_default();
-        let full_command = meta
-            .map(|m| m.full_command.clone())
-            .filter(|c| !c.is_empty())
-            .unwrap_or_else(|| l.command.clone());
+        // lsof/端口表 与 进程表 是两次独立快照：拿不到元数据说明进程正在
+        // 消失或刚出现 —— 丢弃该行（下个 2s 周期会补上）。这同时保证
+        // start_unix 恒有值，kill 的身份校验永远不会因 null 失防（评审发现）。
+        let Some(meta) = procs.get(&l.pid) else {
+            continue;
+        };
+        let ppid = meta.ppid;
+        let exe_path = meta.exe_path.clone();
+        let full_command = if meta.full_command.is_empty() {
+            l.command.clone()
+        } else {
+            meta.full_command.clone()
+        };
 
         let (app_label, app_category) =
             platform_impl::identify_app(&full_command, &l.command, &exe_path);
@@ -69,15 +75,15 @@ pub fn scan(whitelist: &[String]) -> Vec<ProcessEntry> {
             || (platform_impl::is_standard_install_path(&exe_path) && app_category != "dev-script");
 
         let snapshot = ProcessSnapshot {
-            state: meta.and_then(|m| m.state.clone()),
-            elapsed_secs: meta.map(|m| m.elapsed_secs).unwrap_or(0),
-            direct_orphan: meta.and_then(|m| platform_impl::direct_orphan(ppid, m, procs)),
+            state: meta.state.clone(),
+            elapsed_secs: meta.elapsed_secs,
+            direct_orphan: platform_impl::direct_orphan(ppid, meta, procs),
             chain_terminates_at_init: chain_flags.terminates_at_init,
             chain_has_orphan_shell: chain_flags.has_orphan_shell,
             launchd_managed: collected.launchd_pids.contains(&l.pid),
             brew_service_path: platform_impl::is_brew_service_path(&exe_path),
             pm2_managed: chain_flags.pm2 || full_command.contains("ProcessContainer"),
-            tty_orphaned: meta.map(|m| m.tty_orphaned).unwrap_or(false),
+            tty_orphaned: meta.tty_orphaned,
             exe_is_standard_install,
             dev_keyword: is_dev_server(&full_command) || is_dev_server(&l.command),
             dev_category: app_category == "dev-script",
@@ -98,7 +104,7 @@ pub fn scan(whitelist: &[String]) -> Vec<ProcessEntry> {
         let user = if !l.user.is_empty() {
             l.user.clone()
         } else {
-            meta.map(|m| m.user.clone()).unwrap_or_default()
+            meta.user.clone()
         };
 
         entries.push(ProcessEntry {
@@ -113,12 +119,12 @@ pub fn scan(whitelist: &[String]) -> Vec<ProcessEntry> {
             parent_chain,
             launcher_label,
             user,
-            tty: meta.and_then(|m| m.tty.clone()).unwrap_or_default(),
-            elapsed_secs: meta.map(|m| m.elapsed_secs).unwrap_or(0),
-            start_unix: meta.and_then(|m| m.start_unix),
-            cpu_percent: meta.map(|m| m.cpu_percent).unwrap_or(0.0),
-            mem_mb: meta.map(|m| m.rss_kb as f32 / 1024.0).unwrap_or(0.0),
-            state: meta.and_then(|m| m.state.clone()).unwrap_or_default(),
+            tty: meta.tty.clone().unwrap_or_default(),
+            elapsed_secs: meta.elapsed_secs,
+            start_unix: meta.start_unix,
+            cpu_percent: meta.cpu_percent,
+            mem_mb: meta.rss_kb as f32 / 1024.0,
+            state: meta.state.clone().unwrap_or_default(),
             is_zombie_suspect: verdict.is_suspect && !is_whitelisted,
             confidence: verdict.confidence,
             zombie_reasons: verdict.reasons,

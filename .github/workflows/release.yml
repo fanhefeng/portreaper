@@ -29,13 +29,84 @@ jobs:
         run: node scripts/bump-version.mjs --check "${GITHUB_REF_NAME#v}"
 
   # --------------------------------------------------------------------------
-  # 2. Build per-target bundles and upload them to a DRAFT GitHub release.
-  #    The release is kept as a draft until the publish job verifies/renames
-  #    the assets, so users never see a half-uploaded release.
+  # 2. Create the draft release ONCE, before the build matrix.
+  #    Without this, the three parallel tauri-action legs race to create the
+  #    same release (get-or-create with no locking) and can 422 or produce
+  #    duplicate drafts with assets scattered across them — leaving the
+  #    release permanently stuck as a draft. The legs upload via releaseId.
+  # --------------------------------------------------------------------------
+  create-release:
+    name: Create draft release
+    needs: verify-version
+    runs-on: ubuntu-latest
+    outputs:
+      release_id: ${{ steps.create.outputs.id }}
+    env:
+      GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+      GH_REPO: ${{ github.repository }}
+      TAG: ${{ github.ref_name }}
+    steps:
+      - name: Create (or reuse) draft release
+        id: create
+        run: |
+          set -euo pipefail
+
+          cat > body.md <<'BODY'
+          ## Downloads
+
+          - macOS (Apple Silicon): `Portreaper-macos-arm64.dmg`
+          - macOS (Intel): `Portreaper-macos-x64.dmg`
+          - Windows (x64): `Portreaper-windows-x64-setup.exe`
+
+          ---
+
+          ### macOS — app is unsigned / 应用未签名
+
+          The macOS build is **not code-signed or notarized**, so Gatekeeper
+          will warn on first launch. To open it:
+
+          - Right-click (or Control-click) the app → **Open** → **Open**, or
+          - **System Settings → Privacy & Security → Open Anyway**, or
+          - Remove the quarantine flag in Terminal:
+            `xattr -dr com.apple.quarantine /Applications/Portreaper.app`
+
+          macOS 版本**未签名、未公证**，首次打开会被 Gatekeeper 拦截。可以：
+
+          - 右键（或按住 Control 点击）应用 → **打开** → **打开**，或
+          - 打开 **系统设置 → 隐私与安全性 → 仍要打开**，或
+          - 在终端中移除隔离属性：
+            `xattr -dr com.apple.quarantine /Applications/Portreaper.app`
+
+          ### Windows — experimental build / 实验性版本
+
+          The Windows build is **experimental (CI-tested only, no manual QA
+          yet)**. Please report any issues.
+
+          Windows 版本为**实验性（仅经 CI 测试，尚未人工 QA）**，欢迎反馈问题。
+          BODY
+
+          # Idempotent for workflow re-runs: reuse an existing draft if present.
+          existing="$(gh release view "$TAG" --json databaseId --jq .databaseId 2>/dev/null || true)"
+          if [ -n "$existing" ]; then
+            echo "Reusing existing release id $existing for $TAG"
+            echo "id=$existing" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+
+          gh release create "$TAG" --draft --title "Portreaper $TAG" --notes-file body.md
+          id="$(gh release view "$TAG" --json databaseId --jq .databaseId)"
+          echo "Created draft release id $id for $TAG"
+          echo "id=$id" >> "$GITHUB_OUTPUT"
+
+  # --------------------------------------------------------------------------
+  # 3. Build per-target bundles and upload them to the pre-created DRAFT
+  #    release (by id — no per-leg create race). The release stays a draft
+  #    until the publish job verifies/renames the assets, so users never see
+  #    a half-uploaded release.
   # --------------------------------------------------------------------------
   build:
     name: Build (${{ matrix.target || matrix.os }})
-    needs: verify-version
+    needs: [verify-version, create-release]
     runs-on: ${{ matrix.os }}
     strategy:
       fail-fast: false
@@ -113,47 +184,13 @@ jobs:
           # command via tauri.conf.json `bundle.windows.signCommand` (Tauri 2)
           # and provide the cert through a secret consumed by that command.
         with:
-          tagName: ${{ github.ref_name }}
-          releaseName: 'Portreaper ${{ github.ref_name }}'
-          releaseDraft: true
-          prerelease: false
+          # Upload into the pre-created draft — never create from a matrix leg.
+          releaseId: ${{ needs.create-release.outputs.release_id }}
           # `args` is empty for Windows (no --target), so omit --target there.
           args: ${{ matrix.target && format('--target {0} --bundles {1}', matrix.target, matrix.bundles) || format('--bundles {0}', matrix.bundles) }}
-          releaseBody: |
-            ## Downloads
-
-            - macOS (Apple Silicon): `Portreaper-macos-arm64.dmg`
-            - macOS (Intel): `Portreaper-macos-x64.dmg`
-            - Windows (x64): `Portreaper-windows-x64-setup.exe`
-
-            ---
-
-            ### macOS — app is unsigned / 应用未签名
-
-            The macOS build is **not code-signed or notarized**, so Gatekeeper
-            will warn on first launch. To open it:
-
-            - Right-click (or Control-click) the app → **Open** → **Open**, or
-            - **System Settings → Privacy & Security → Open Anyway**, or
-            - Remove the quarantine flag in Terminal:
-              `xattr -dr com.apple.quarantine /Applications/Portreaper.app`
-
-            macOS 版本**未签名、未公证**，首次打开会被 Gatekeeper 拦截。可以：
-
-            - 右键（或按住 Control 点击）应用 → **打开** → **打开**，或
-            - 打开 **系统设置 → 隐私与安全性 → 仍要打开**，或
-            - 在终端中移除隔离属性：
-              `xattr -dr com.apple.quarantine /Applications/Portreaper.app`
-
-            ### Windows — experimental build / 实验性版本
-
-            The Windows build is **experimental (CI-tested only, no manual QA
-            yet)**. Please report any issues.
-
-            Windows 版本为**实验性（仅经 CI 测试，尚未人工 QA）**，欢迎反馈问题。
 
   # --------------------------------------------------------------------------
-  # 3. Verify the 3 expected assets exist on the draft release, re-upload them
+  # 4. Verify the 3 expected assets exist on the draft release, re-upload them
   #    under STABLE names, then (and only then) flip the release out of draft.
   #    If any expected asset is missing the job fails and the release stays a
   #    draft so nothing broken is ever published.

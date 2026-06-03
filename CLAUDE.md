@@ -4,59 +4,89 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 ## What this app is
 
-Portreaper is a macOS-only menubar/tray desktop app that finds processes listening on TCP ports and helps the user kill orphaned dev-server "zombies" (e.g. a `vite`/`node`/`cargo run` process whose parent shell died, leaving `PPID=1`). It is **not** a generic port viewer — the core value is the zombie-suspect classification and the launcher-chain UI.
+Portreaper is a macOS + Windows menubar/tray desktop app that finds processes listening on TCP ports and helps the user kill orphaned dev-server "zombies" (e.g. a `vite`/`node`/`cargo run` process whose launching shell died). It is **not** a generic port viewer — the core value is the zombie-suspect classification (with confidence tiers) and the launcher-chain UI.
 
-Stack: Tauri 2 + React 19 + TypeScript + Vite, package manager is **pnpm**. UI strings are in Chinese.
+Stack: Tauri 2 + React 19 + TypeScript + Vite, package manager is **pnpm**. UI is bilingual (zh/en) via `src/i18n.ts`.
 
 ## Commands
 
 ```bash
 pnpm install           # first-time setup
 pnpm tauri dev         # run the desktop app (launches vite on :1420, then tauri webview)
-pnpm tauri build       # produce a signed .app / .dmg bundle (targets: all)
-pnpm dev               # frontend-only vite (rarely useful — no Rust IPC)
+pnpm tauri build       # produce a .app/.dmg (macOS) or NSIS .exe (Windows)
 pnpm build             # tsc --noEmit + vite build (used by tauri build)
+
+cd src-tauri && cargo test                 # 19+ unit tests incl. classify fixtures
+cd src-tauri && cargo clippy --all-targets -- -D warnings
+cargo test live_scan -- --ignored --nocapture   # real-machine smoke: scan this Mac
+
+# Windows cross-compile check from macOS (needs `brew install llvm` for llvm-rc):
+PATH="/opt/homebrew/opt/llvm/bin:$PATH" cargo check --target x86_64-pc-windows-msvc
+
+node scripts/check-reason-parity.mjs       # Rust ReasonCode <-> i18n dict guard
+node scripts/bump-version.mjs --check 0.1.0
 ```
 
-There are no tests, no linter, and no CI. `tsc` runs via `pnpm build`.
-
-For Rust-only iteration: `cd src-tauri && cargo check` (or `cargo build`). Note that the Rust crate is `portreaper_lib` (see `Cargo.toml [lib]`); `main.rs` is just a thin entry point that calls `portreaper_lib::run()`.
+CI (`.github/workflows/ci.yml`) runs the full gate on macOS + Windows. Release is tag-triggered (`v*`, see `docs/RELEASING.md`). The Rust crate is `portreaper_lib` (see `Cargo.toml [lib]`); `main.rs` is a thin entry point calling `portreaper_lib::run()`.
 
 ## Architecture
 
 ### Two-process structure
 
-- **Frontend** (`src/App.tsx`, single-file React app): polls `scan_ports` every 2 seconds, renders the table, owns the kill-confirm modal and the search/filter UI, and pushes a count into the tray title via `update_tray_title`.
-- **Rust backend** (`src-tauri/src/`): owns process scanning, the whitelist file, the tray icon, and window lifecycle.
+- **Frontend** (`src/App.tsx` + `src/i18n.ts`): polls `scan_ports` every 2 seconds, renders the table, owns the kill-confirm modals and search/filter, pushes counts into the tray via `update_tray_title`. All strings go through the typed i18n dict — a missing English key is a tsc error.
+- **Rust backend** (`src-tauri/src/`): owns scanning, classification, the whitelist file, the tray, and window lifecycle.
 
-All frontend↔backend communication is Tauri `invoke()` calls listed in `src-tauri/src/lib.rs` (`invoke_handler![...]`). When adding a command, you must register it there **and** add any new permissions to `src-tauri/capabilities/default.json`.
+All frontend↔backend communication is Tauri `invoke()` calls registered in `src-tauri/src/lib.rs` (`invoke_handler![...]`). When adding a command, register it there and add any new permissions to `src-tauri/capabilities/default.json` if it touches gated APIs.
 
-### Tray-first window lifecycle
+### Scanner module layout (`src-tauri/src/scanner/`)
 
-The window close button is intercepted (`lib.rs` `on_window_event` → `window.hide()` + `prevent_close()`) — the app keeps running in the tray and is re-shown from the tray menu or `show_main_window` command. Quitting only happens via the tray "退出" menu item. Keep this in mind when reasoning about app shutdown or state cleanup.
+Platform variance is isolated in two leaf files with **identical cfg-gated function signatures** (compile-time polymorphism, no traits):
 
-### Scanner pipeline (`src-tauri/src/scanner.rs`)
+```
+scanner/mod.rs       orchestration: collect → snapshot → classify → chain walk → sort
+scanner/model.rs     ProcessEntry (serde contract with App.tsx), ProcMeta, ProcessSnapshot
+scanner/classify.rs  PURE classifier + ReasonCode/Confidence enums + fixture tests
+scanner/identify.rs  shared, separator-agnostic path/project/script helpers
+scanner/macos.rs     lsof + ps + launchctl list; macOS path ladder
+scanner/windows.rs   GetExtendedTcpTable + sysinfo; SHGetKnownFolderPath path ladder
+platform.rs          kill with start-time identity check (PID-reuse guard)
+```
 
-`scan()` shells out to two macOS commands and joins them by PID:
+Data sources: macOS = `lsof -iTCP -sTCP:LISTEN -P -n -FpcLn` + `ps -A -o pid=,ppid=,state=,tty=,etime=,pcpu=,rss=,command=` + a second `ps -A -o pid=,comm=` (comm is the authoritative exe path — it survives spaces in paths, unlike splitting the command line) + `launchctl list` (managed-PID set). Session leaders are identified by the `s` flag in the ps *state* column — **never** use `ps -o sess=`: on macOS it prints 0 for every process (review-caught bug that made every terminal process look session-orphaned). Windows = `GetExtendedTcpTable` (IPv4+IPv6 listeners, no subprocess) + a long-lived `sysinfo::System` (the 2s poll provides the CPU sampling interval; first scan shows 0% CPU by design). `LANG=en_US.UTF-8` is forced on all macOS subprocesses.
 
-1. `lsof -iTCP -sTCP:LISTEN -P -n -FpcLn` — listening sockets, parsed in field-prefix mode (`p`/`c`/`L`/`n` tags). One PID may listen on multiple ports; they are merged into `ports: Vec<u16>`.
-2. `ps -A -o pid=,ppid=,state=,tty=,etime=,pcpu=,rss=,command=` — process metadata for **all** PIDs, used both for the lsof rows and for walking parent chains.
+### Classification v2 (the product's core logic)
 
-`LANG=en_US.UTF-8` is forced on both subprocesses so column parsing isn't broken by localized output. The whole pipeline is macOS-specific (lsof flags, ps `etime`/`rss` columns, `/Applications/` heuristics, `launchd` as PID 1). Porting to Linux/Windows would require a separate scanner module.
+`classify(&ProcessSnapshot) -> Verdict` in `classify.rs` is a **pure function** — every OS probe is precomputed into the snapshot by `mod.rs`/the platform collectors, so the decision tree is table-testable on both platforms. Decision order:
 
-### Classification (the product's core logic)
+1. `state` contains `Z` (defunct) → always suspect, `Confirmed`.
+2. **Hard exemptions** (in order): `launchd_managed` (launchctl claims the PID — covers brew services, LaunchAgents) → `exe_is_standard_install` → `brew_service_path` (fallback for system-domain brew services launchctl can't see) → `pm2_managed`.
+3. Orphan signals: `direct_orphan` (macOS: PPID=1; Windows: parent missing or parent created *after* child = PID slot reused), `chain_orphan` (parent chain ends at init/dead root without passing a live user-visible app, and the leaf is dev-like or an ancestor shell is itself orphaned), `tty_orphaned` (real ttys with no session leader — dead terminal session).
+4. No signal → not a suspect.
+5. `elapsed_secs < 10` → `Possible` + `just_reparented` (grace period; never swept).
+6. Tiers: orphan×dev or orphan×dead-session → `Confirmed`; bare orphan/chain → `Likely`; session-only → `Possible`.
 
-Two intertwined heuristics in `scanner.rs`:
+**Invariants — do not break:**
+- Standard install path / launchd-managed ⇒ never auto-flagged.
+- **Exception to the path rule:** `dev-script` category is *not* exempted by the interpreter's exe path — a script runtime's identity is its *script*. `/usr/bin/python3 app.py` and `C:\Program Files\nodejs\node.exe vite.js` must remain detectable (`identify_app` classifies by script location first).
+- The chain walk stops at any live user-visible app: `installed-app` category, any `.app/` bundle on macOS (stock Terminal.app lives in `/System/Applications/`!), and live session roots on Windows (`explorer.exe`, `services.exe`, ... — without this every cmd-launched dev server would be a false positive, since Windows chains all end at the exited `userinit.exe`).
+- The flagged process is always the **port-holding leaf**, never an intermediate shell.
+- Sweep ("一键清扫") and the tray count cover `Confirmed`+`Likely` only; `Possible` is never swept.
+- Whitelist (`is_whitelisted`) still lists the row, forces `is_zombie_suspect=false`, excluded from sweep/tray. Key = `exe_path` falling back to lsof `command`; keep frontend (`App.tsx handleToggleWhitelist`) and `scan()` using the same precedence.
 
-- `identify_app(full_command, short_command) -> (label, category)` — figures out a human-readable name and one of: `installed-app` / `system` / `dev-script` / `user-binary` / `unknown`. Order matters: `.app/` bundle → `/Applications/` bare binary → system path prefixes → script runtime (node/python/...) extracting the script name and project → `/usr/local/`, Homebrew → `/target/{debug,release}/` → `/Users/...` fallback.
-- `classify(...) -> (is_suspect, reasons)` — a process is a zombie suspect **only if** `PPID=1` AND the exe path is not in a standard install location (`SYSTEM_PATH_PREFIXES`) AND its category isn't `installed-app`/`system`. Real defunct (`state` contains `Z`) is always a suspect. Dev-server keyword match (`DEV_SERVER_PATTERNS`) is added as an extra reason but is **not** required to trigger suspicion.
+`ReasonCode`/`Confidence` serialize as snake_case/lowercase and are translated in the frontend (`reason.*`, `confidence.*` keys). **Adding a variant requires adding zh+en keys in `src/i18n.ts`** — `scripts/check-reason-parity.mjs` (run in CI) fails otherwise.
 
-`build_parent_chain` walks PPIDs up to 12 levels, stopping at PID 1 (synthesizes a "launchd" node) or at the first `installed-app` parent (so we surface "this Node process was launched by iTerm/Cursor" rather than the whole shell chain).
+### Kill path (`platform.rs`)
 
-When adjusting these heuristics: extending `DEV_SERVER_PATTERNS` is cheap and additive, but changing the `classify` predicate or the `identify_app` ordering can reclassify huge swaths of the user's process list — preserve the "standard install path ⇒ never a zombie" invariant.
+`kill_process(pid, force, start_unix)`: the frontend passes the scan-time `start_unix`; the backend re-reads the process creation time (macOS: `ps -o etime=`; Windows: `GetProcessTimes` on the same handle later used by `TerminateProcess`) and refuses with `ERR_PID_REUSED` if it moved by >5s — killing a recycled PID is a data-loss bug. macOS: SIGTERM/SIGKILL two-button UI. Windows: single "Terminate" button (`TerminateProcess`; there is no reliable graceful kill for detached console processes — deliberate product decision, do not add CTRL_BREAK heuristics). `ERR_*:`-prefixed errors are app-semantic and localized in the frontend; everything else surfaces as OS text.
 
-### Whitelist (`src-tauri/src/whitelist.rs`)
+### Tray / window lifecycle
 
-Persisted as JSON at `{app_config_dir}/whitelist.json` (path injected at startup in `lib.rs` via `whitelist::init`). The key is `exe_path` (preferred, stable across restarts) falling back to the lsof `command` string — see `scan()` where `wl_key` is built. Frontend toggles via `add_whitelist` / `remove_whitelist` with whatever key the row exposes; keep both sides using the same precedence.
+The window close button is intercepted (`lib.rs` `on_window_event` → hide + `prevent_close()`) — the app lives in the tray; quitting only happens via the tray menu. macOS shows counts in the tray *title* (`icon_as_template` gated to macOS); Windows has no tray title — counts go to the *tooltip*. Tray menu labels are bilingual: handles are stored in `TrayMenuItems` state and re-texted by `set_tray_language` (called by the frontend on toggle; initial language from `sys-locale`).
 
-Whitelisted entries still appear in the list but with `is_zombie_suspect: false` and a star chip — they're filtered out of the tray suspect count and the "一键清扫" batch kill.
+### Windows caveats (no dev machine — CI is the safety net)
+
+`scanner/windows.rs` and the Windows half of `platform.rs` are compile-checked locally via the cross-target command above and compiled+unit-tested in CI, but have **no manual QA**. The Windows release asset is labeled experimental; the acceptance checklist is `docs/TESTING-WINDOWS.md`. When exe paths are unreadable (MSIX/elevated processes), the scanner errs toward *not* flagging (empty exe ⇒ treated as standard install).
+
+## Release / website
+
+Tag push `v*` → `.github/workflows/release.yml`: version-consistency gate → tauri-action matrix (macOS arm64/x64 dmg, Windows NSIS) → publish job verifies all 3 assets, re-uploads **stable-named** copies (`Portreaper-macos-arm64.dmg`, `Portreaper-macos-x64.dmg`, `Portreaper-windows-x64-setup.exe`) and flips the draft to published. The website (`/website`, GitHub Pages via `pages.yml`) hardcodes `releases/latest/download/<stable-name>` URLs, so downloads auto-update on every release with no site changes. Bump versions only via `node scripts/bump-version.mjs X.Y.Z` (syncs package.json, tauri.conf.json, Cargo.toml, Cargo.lock). Runbook: `docs/RELEASING.md`.

@@ -31,6 +31,7 @@ const zh = {
   "error.batchFailed": "{failed}/{total} 个进程 kill 失败：",
   "error.pidReused": "进程身份已变化（PID 被复用），已取消终止，请重新扫描",
   "error.processGone": "进程已不存在（可能刚刚退出）",
+  "error.identityUnknown": "缺少进程身份信息，已取消终止，请刷新后重试",
 
   // ---- table headers ----
   "th.ports": "端口",
@@ -192,6 +193,8 @@ const en: Record<I18nKey, string> = {
   "error.pidReused":
     "Process identity changed (PID was reused) — kill aborted, please rescan",
   "error.processGone": "Process no longer exists (it may have just exited)",
+  "error.identityUnknown":
+    "Missing process identity token — kill aborted, refresh and retry",
 
   "th.ports": "Ports",
   "th.ports.tip":
@@ -374,7 +377,10 @@ export function translate(
   key: I18nKey,
   params?: Record<string, string | number>,
 ): string {
-  let s: string = dict[lang][key];
+  // 兜底：动态 key（reason.* 经 as 断言传入）在 Rust 新增码而字典未更新的
+  // 陈旧构建里可能缺失 —— 退回英文，再退回 key 本身，绝不渲染空 chip。
+  // （CI 的 check-reason-parity.mjs 保证正常构建不会走到兜底。）
+  let s: string = dict[lang][key] ?? dict.en[key] ?? key;
   if (params) {
     for (const [k, v] of Object.entries(params)) {
       s = s.split(`{${k}}`).join(String(v));

@@ -13,7 +13,9 @@
 [![License: MIT](https://img.shields.io/badge/license-MIT-blue.svg)](LICENSE)
 ![Platform](https://img.shields.io/badge/platform-macOS%20%7C%20Windows-lightgrey)
 
+<!-- TODO: add real screenshot once captured (requires Screen Recording permission)
 ![Portreaper](website/assets/screenshot-main.png)
+-->
 
 ### What it does
 
@@ -66,7 +68,9 @@ A process is judged by **signals** (reasons it looks orphaned), **exemptions** (
 | Orphaned launcher chain — dead shell → live dev server | Homebrew service paths |
 | Orphaned TTY session | Standard install paths (`/Applications`, `Program Files`, ...) |
 | Defunct (`Z` / zombie state) | Managed by `pm2` |
-| Dev-server keyword (`vite`, `node`, `cargo run`, ...) — extra reason, not required | Younger than the 10s startup grace period |
+| Dev-server keyword (`vite`, `node`, `cargo run`, ...) — extra reason, not required | |
+
+Processes started (or reparented) less than 10 seconds ago are **downgraded to Possible** — still flagged with a reason chip, but never swept.
 
 | Confidence | Meaning | In batch sweep? |
 | --- | --- | --- |
@@ -75,6 +79,8 @@ A process is judged by **signals** (reasons it looks orphaned), **exemptions** (
 | **Possible** | One weaker signal; shown but treated cautiously | ❌ |
 
 The **one-click sweep** only kills `confirmed` + `likely`. Anything in the whitelist is exempt from suspicion, the tray count, and the sweep — it still appears in the list with a ★ chip.
+
+> **Known limitation:** a dev server you *intentionally* detached (`nohup ... &` then closing the shell) is behaviorally identical to an accidental zombie and will be flagged. If you run such daemons on purpose, ★ star them once — the whitelist permanently exempts them. Daemons managed by `launchd`, `brew services` or `pm2` are already exempted automatically.
 
 The app is **bilingual** (中文 / English) and follows your system language by default, with a manual toggle.
 
@@ -105,7 +111,9 @@ src/                  React 19 + TS single-file UI (App.tsx) — polls scan, ren
 src-tauri/src/
   lib.rs              tray, window lifecycle, invoke handlers
   commands.rs         Tauri command surface
-  scanner.rs          process scan + zombie classification (the core logic)
+  scanner/            process scan + v2 zombie classification (the core logic)
+                      mod / model / classify / identify / macos / windows
+  platform.rs         cross-platform kill with PID-reuse identity check
   whitelist.rs        JSON-persisted whitelist (收藏)
 scripts/              release tooling (bump-version)
 .github/workflows/    CI + release pipelines
@@ -130,7 +138,9 @@ MIT © fhf. See [LICENSE](LICENSE).
 [![License: MIT](https://img.shields.io/badge/license-MIT-blue.svg)](LICENSE)
 ![Platform](https://img.shields.io/badge/platform-macOS%20%7C%20Windows-lightgrey)
 
+<!-- TODO: add real screenshot once captured (requires Screen Recording permission)
 ![Portreaper](website/assets/screenshot-main.png)
+-->
 
 ### 它能做什么
 
@@ -183,7 +193,9 @@ Portreaper **不是**通用的端口查看器。它常驻托盘，每隔两秒�
 | 启动链断裂 —— 已死的 shell → 仍存活的开发服务器 | Homebrew 服务路径 |
 | 孤儿 TTY 会话 | 标准安装路径（`/Applications`、`Program Files` 等） |
 | 已死（`Z` / defunct 状态） | 由 `pm2` 托管 |
-| 命中 dev-server 关键字（`vite`、`node`、`cargo run` 等）—— 额外理由，非必需 | 启动不足 10 秒的宽限期内 |
+| 命中 dev-server 关键字（`vite`、`node`、`cargo run` 等）—— 额外理由，非必需 | |
+
+启动（或被收养）不足 10 秒的进程会被**降级为「可能」**——仍会标注原因，但永远不会进入清扫。
 
 | 置信度 | 含义 | 计入一键清扫？ |
 | --- | --- | --- |
@@ -192,6 +204,8 @@ Portreaper **不是**通用的端口查看器。它常驻托盘，每隔两秒�
 | **可能（possible）** | 仅一个较弱的信号；会显示但谨慎对待 | ❌ |
 
 **一键清扫**只会终止 `confirmed` + `likely`。收藏（白名单）中的进程会被豁免于疑似判断、托盘计数和清扫 —— 它仍会出现在列表中，并带一个 ★ 标记。
+
+> **已知限制**：你*有意*脱离终端的 dev server（`nohup ... &` 后关掉 shell）与意外产生的僵尸在行为上无法区分，会被标记。如果你确实需要这样跑守护进程，给它点一次 ★ 收藏即可永久豁免；由 `launchd`、`brew services` 或 `pm2` 托管的守护会被自动豁免。
 
 应用为**中英双语**，默认跟随系统语言，也可手动切换。
 
@@ -222,7 +236,9 @@ src/                  React 19 + TS 单文件 UI（App.tsx）—— 轮询扫描
 src-tauri/src/
   lib.rs              托盘、窗口生命周期、invoke 处理器
   commands.rs         Tauri 命令入口
-  scanner.rs          进程扫描 + 僵尸分类（核心逻辑）
+  scanner/            进程扫描 + v2 僵尸分类（核心逻辑）
+                      mod / model / classify / identify / macos / windows
+  platform.rs         跨平台 kill，带 PID 复用身份校验
   whitelist.rs        JSON 持久化的收藏（白名单）
 scripts/              发布工具（版本号 bump）
 .github/workflows/    CI 与发布流水线

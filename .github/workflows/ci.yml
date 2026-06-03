@@ -1,5 +1,9 @@
 name: CI
 
+# NOTE: paths-ignore means doc/website-only changes skip this job entirely.
+# Do NOT mark "CI / Check" as a *required* status check in branch protection —
+# a docs-only PR would wait forever for a status that never reports.
+# Keep CI advisory, or replace paths-ignore with an in-job path filter first.
 on:
   push:
     branches: [main]

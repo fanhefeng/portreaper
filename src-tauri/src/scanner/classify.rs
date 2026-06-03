@@ -194,12 +194,22 @@ pub(crate) fn classify(s: &ProcessSnapshot) -> Verdict {
     }
 
     // ---- 6. 置信分层 ----
+    // Windows 上「父进程已退出」是常态（Squirrel/Electron 的引导器模式：
+    // Update.exe 拉起应用后退出）—— 单独出现时只是弱信号，降到 Possible
+    // 永不入清扫；有 dev 特征 / 槽位复用证据 / 链与会话佐证时才升级。
+    let weak_parent_exited = s.direct_orphan == Some(ReasonCode::ParentExited)
+        && !dev_like
+        && !chain_orphan
+        && !s.tty_orphaned;
     let confidence =
         if (direct_orphan && (dev_like || s.tty_orphaned)) || (chain_orphan && dev_like) {
             // 孤儿 × dev 特征 / 孤儿 × 会话已死 —— 多信号互证
             Confidence::Confirmed
+        } else if weak_parent_exited {
+            Confidence::Possible
         } else if direct_orphan || chain_orphan {
-            // 孤儿但意图不可证（如 nohup 的非 dev 二进制）
+            // 孤儿但意图不可证（如 nohup 的非 dev 二进制）；
+            // macOS 的 PPID=1 与 Windows 的槽位复用都是强证据，保持 Likely
             Confidence::Likely
         } else {
             // 仅 tty_orphaned：父进程关系尚可解释，单独的会话信号只到存疑
@@ -426,7 +436,7 @@ mod tests {
                 want_reasons: &[ParentExited, DevServerKeyword],
             },
             Case {
-                name: "17 Win PID 槽位复用（父创建时间晚于子）",
+                name: "17 Win PID 槽位复用（父创建时间晚于子）—— 强证据保持 Likely",
                 snap: ProcessSnapshot {
                     direct_orphan: Some(PidSlotReused),
                     ..snap()
@@ -434,6 +444,17 @@ mod tests {
                 want_suspect: true,
                 want_conf: Likely,
                 want_reasons: &[PidSlotReused, NonstandardPath],
+            },
+            Case {
+                name: "19 Win 裸 ParentExited（无 dev/链/会话佐证）→ Possible，永不入清扫。\
+                       Squirrel 应用（Discord/Spotify）即使漏过 installed-app 归类也不会被误杀",
+                snap: ProcessSnapshot {
+                    direct_orphan: Some(ParentExited),
+                    ..snap()
+                },
+                want_suspect: true,
+                want_conf: Possible,
+                want_reasons: &[ParentExited, NonstandardPath],
             },
             Case {
                 name: "18 Win 正常 cmd→explorer 链的 dev server：explorer 活根挡住链孤儿",
