@@ -1,0 +1,235 @@
+name: Release
+
+on:
+  push:
+    tags:
+      - 'v*'
+
+permissions:
+  contents: write
+
+# Avoid two overlapping release runs for the same tag clobbering each other.
+concurrency:
+  group: release-${{ github.ref_name }}
+  cancel-in-progress: false
+
+jobs:
+  # --------------------------------------------------------------------------
+  # 1. Verify that the three (+lockfile) version files agree with the tag.
+  #    `v0.2.0` -> bump-version.mjs --check 0.2.0  (fails on any mismatch).
+  # --------------------------------------------------------------------------
+  verify-version:
+    name: Verify version matches tag
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Check version files match tag
+        run: node scripts/bump-version.mjs --check "${GITHUB_REF_NAME#v}"
+
+  # --------------------------------------------------------------------------
+  # 2. Build per-target bundles and upload them to a DRAFT GitHub release.
+  #    The release is kept as a draft until the publish job verifies/renames
+  #    the assets, so users never see a half-uploaded release.
+  # --------------------------------------------------------------------------
+  build:
+    name: Build (${{ matrix.target || matrix.os }})
+    needs: verify-version
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: macos-latest
+            target: aarch64-apple-darwin
+            bundles: dmg
+          - os: macos-latest
+            target: x86_64-apple-darwin
+            bundles: dmg
+          - os: windows-latest
+            target: ''
+            bundles: nsis
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Install pnpm
+        uses: pnpm/action-setup@v4
+        with:
+          version: 9
+
+      - name: Setup Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: pnpm
+
+      # On Windows the matrix target is empty (host = x86_64-pc-windows-msvc),
+      # so we pass an empty `targets:` and let rustup use the default host.
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: ${{ matrix.target }}
+
+      - name: Cache Rust
+        uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: 'src-tauri -> target'
+
+      - name: Install dependencies
+        run: pnpm install --frozen-lockfile
+
+      - name: Build and upload bundle
+        uses: tauri-apps/tauri-action@v0
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          # ----------------------------------------------------------------
+          # Signing/notarization secrets (PLACEHOLDERS — currently unset).
+          #
+          # macOS builds ship UNSIGNED until an Apple Developer ID cert is
+          # added. Populate these repo secrets to enable signing + notarization:
+          #   APPLE_CERTIFICATE           base64 of the .p12 Developer ID cert
+          #   APPLE_CERTIFICATE_PASSWORD  password for that .p12
+          #   APPLE_SIGNING_IDENTITY      e.g. "Developer ID Application: Name (TEAMID)"
+          #   APPLE_ID                    Apple ID email used for notarization
+          #   APPLE_PASSWORD              app-specific password for notarization
+          #   APPLE_TEAM_ID               10-char Apple Developer Team ID
+          # Tauri updater signing (only needed once an updater is shipped):
+          #   TAURI_SIGNING_PRIVATE_KEY
+          #   TAURI_SIGNING_PRIVATE_KEY_PASSWORD
+          # While these secrets are empty the env vars are simply blank and
+          # tauri-action falls back to an unsigned build — no failure.
+          APPLE_CERTIFICATE: ${{ secrets.APPLE_CERTIFICATE }}
+          APPLE_CERTIFICATE_PASSWORD: ${{ secrets.APPLE_CERTIFICATE_PASSWORD }}
+          APPLE_SIGNING_IDENTITY: ${{ secrets.APPLE_SIGNING_IDENTITY }}
+          APPLE_ID: ${{ secrets.APPLE_ID }}
+          APPLE_PASSWORD: ${{ secrets.APPLE_PASSWORD }}
+          APPLE_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
+          TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
+          TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
+          # FUTURE (Windows code signing): tauri-action does not sign Windows
+          # bundles itself. To sign the NSIS installer, configure a signing
+          # command via tauri.conf.json `bundle.windows.signCommand` (Tauri 2)
+          # and provide the cert through a secret consumed by that command.
+        with:
+          tagName: ${{ github.ref_name }}
+          releaseName: 'Portreaper ${{ github.ref_name }}'
+          releaseDraft: true
+          prerelease: false
+          # `args` is empty for Windows (no --target), so omit --target there.
+          args: ${{ matrix.target && format('--target {0} --bundles {1}', matrix.target, matrix.bundles) || format('--bundles {0}', matrix.bundles) }}
+          releaseBody: |
+            ## Downloads
+
+            - macOS (Apple Silicon): `Portreaper-macos-arm64.dmg`
+            - macOS (Intel): `Portreaper-macos-x64.dmg`
+            - Windows (x64): `Portreaper-windows-x64-setup.exe`
+
+            ---
+
+            ### macOS — app is unsigned / 应用未签名
+
+            The macOS build is **not code-signed or notarized**, so Gatekeeper
+            will warn on first launch. To open it:
+
+            - Right-click (or Control-click) the app → **Open** → **Open**, or
+            - **System Settings → Privacy & Security → Open Anyway**, or
+            - Remove the quarantine flag in Terminal:
+              `xattr -dr com.apple.quarantine /Applications/Portreaper.app`
+
+            macOS 版本**未签名、未公证**，首次打开会被 Gatekeeper 拦截。可以：
+
+            - 右键（或按住 Control 点击）应用 → **打开** → **打开**，或
+            - 打开 **系统设置 → 隐私与安全性 → 仍要打开**，或
+            - 在终端中移除隔离属性：
+              `xattr -dr com.apple.quarantine /Applications/Portreaper.app`
+
+            ### Windows — experimental build / 实验性版本
+
+            The Windows build is **experimental (CI-tested only, no manual QA
+            yet)**. Please report any issues.
+
+            Windows 版本为**实验性（仅经 CI 测试，尚未人工 QA）**，欢迎反馈问题。
+
+  # --------------------------------------------------------------------------
+  # 3. Verify the 3 expected assets exist on the draft release, re-upload them
+  #    under STABLE names, then (and only then) flip the release out of draft.
+  #    If any expected asset is missing the job fails and the release stays a
+  #    draft so nothing broken is ever published.
+  # --------------------------------------------------------------------------
+  publish:
+    name: Verify, rename assets, and publish
+    needs: build
+    runs-on: ubuntu-latest
+    env:
+      GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+      GH_REPO: ${{ github.repository }}
+      TAG: ${{ github.ref_name }}
+    steps:
+      - name: Verify expected assets exist
+        run: |
+          set -euo pipefail
+          echo "Inspecting release assets for $TAG ..."
+          names="$(gh release view "$TAG" --json assets --jq '.assets[].name')"
+          echo "Found assets:"
+          echo "$names"
+
+          # Tauri 2 bundler naming (confirmed from tauri-bundler source):
+          #   aarch64-apple-darwin -> Portreaper_<ver>_aarch64.dmg
+          #   x86_64-apple-darwin  -> Portreaper_<ver>_x64.dmg
+          #   x86_64 NSIS          -> Portreaper_<ver>_x64-setup.exe
+          # Match with tolerant globs so an exact version / future locale
+          # suffix does not break the check.
+          missing=0
+          check() {
+            local label="$1" pattern="$2"
+            local match
+            match="$(echo "$names" | grep -iE "$pattern" | head -n1 || true)"
+            if [ -z "$match" ]; then
+              echo "::error::Missing expected asset: $label (pattern: $pattern)"
+              missing=1
+            else
+              echo "OK  $label -> $match"
+            fi
+          }
+          check "macOS arm64 dmg"  '^Portreaper_.*_aarch64\.dmg$'
+          check "macOS x64 dmg"    '^Portreaper_.*_x64\.dmg$'
+          check "Windows x64 nsis" '^Portreaper_.*_x64-setup\.exe$'
+
+          if [ "$missing" -ne 0 ]; then
+            echo "::error::One or more bundles are missing; leaving release as draft."
+            exit 1
+          fi
+
+      - name: Re-upload assets under stable names
+        run: |
+          set -euo pipefail
+          names="$(gh release view "$TAG" --json assets --jq '.assets[].name')"
+
+          pick() { echo "$names" | grep -iE "$1" | head -n1; }
+          arm_dmg="$(pick '^Portreaper_.*_aarch64\.dmg$')"
+          x64_dmg="$(pick '^Portreaper_.*_x64\.dmg$')"
+          win_exe="$(pick '^Portreaper_.*_x64-setup\.exe$')"
+
+          mkdir -p dist
+          echo "Downloading: $arm_dmg $x64_dmg $win_exe"
+          gh release download "$TAG" --dir dist \
+            --pattern "$arm_dmg" \
+            --pattern "$x64_dmg" \
+            --pattern "$win_exe"
+
+          cp "dist/$arm_dmg" "dist/Portreaper-macos-arm64.dmg"
+          cp "dist/$x64_dmg" "dist/Portreaper-macos-x64.dmg"
+          cp "dist/$win_exe" "dist/Portreaper-windows-x64-setup.exe"
+
+          gh release upload "$TAG" --clobber \
+            "dist/Portreaper-macos-arm64.dmg" \
+            "dist/Portreaper-macos-x64.dmg" \
+            "dist/Portreaper-windows-x64-setup.exe"
+
+      - name: Publish release (un-draft)
+        run: |
+          set -euo pipefail
+          gh release edit "$TAG" --draft=false
+          echo "Published release $TAG."
