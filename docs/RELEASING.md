@@ -70,7 +70,15 @@ The release is created as a **draft** and only published in the final `publish` 
 
 ## Future: code signing
 
-Builds are currently **unsigned** (hence the Gatekeeper / SmartScreen steps in the README). Signing is wired to be **secret-driven**: add the secrets below in **repo Settings → Secrets and variables → Actions** and the workflow will sign **with no workflow changes** required. Until they exist, the signing steps are skipped and unsigned artifacts ship.
+Builds are currently **unsigned** (hence the Gatekeeper / SmartScreen steps in the README).
+
+To enable signing: (1) add the secrets below in **repo Settings → Secrets and variables → Actions**, then (2) **uncomment the signing `env:` block** in `.github/workflows/release.yml`.
+
+> ⚠️ Why the block is commented out rather than always-on: an unset GitHub
+> secret renders as an *empty string*, and tauri-bundler treats a
+> present-but-empty `APPLE_CERTIFICATE` as a signing request — `security
+> import` then fails the entire macOS build leg (verified on the first
+> v0.2.0 run). Only uncomment after the secrets actually exist.
 
 | Secret | Purpose |
 | --- | --- |

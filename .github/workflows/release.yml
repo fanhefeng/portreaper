@@ -156,29 +156,31 @@ jobs:
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           # ----------------------------------------------------------------
-          # Signing/notarization secrets (PLACEHOLDERS — currently unset).
+          # Signing/notarization (currently DISABLED — builds ship unsigned).
           #
-          # macOS builds ship UNSIGNED until an Apple Developer ID cert is
-          # added. Populate these repo secrets to enable signing + notarization:
+          # ⚠️ Do NOT re-add these env lines while the secrets are unset:
+          # an unset secret renders as an EMPTY string, and tauri-bundler
+          # treats a *present* APPLE_CERTIFICATE (even empty) as "please
+          # sign" → `security import` fails and the whole build leg dies.
+          # (Verified on the first v0.2.0 run.)
+          #
+          # To enable signing later: add the repo secrets below, then
+          # UNCOMMENT this block. See docs/RELEASING.md.
           #   APPLE_CERTIFICATE           base64 of the .p12 Developer ID cert
           #   APPLE_CERTIFICATE_PASSWORD  password for that .p12
           #   APPLE_SIGNING_IDENTITY      e.g. "Developer ID Application: Name (TEAMID)"
           #   APPLE_ID                    Apple ID email used for notarization
           #   APPLE_PASSWORD              app-specific password for notarization
           #   APPLE_TEAM_ID               10-char Apple Developer Team ID
-          # Tauri updater signing (only needed once an updater is shipped):
-          #   TAURI_SIGNING_PRIVATE_KEY
-          #   TAURI_SIGNING_PRIVATE_KEY_PASSWORD
-          # While these secrets are empty the env vars are simply blank and
-          # tauri-action falls back to an unsigned build — no failure.
-          APPLE_CERTIFICATE: ${{ secrets.APPLE_CERTIFICATE }}
-          APPLE_CERTIFICATE_PASSWORD: ${{ secrets.APPLE_CERTIFICATE_PASSWORD }}
-          APPLE_SIGNING_IDENTITY: ${{ secrets.APPLE_SIGNING_IDENTITY }}
-          APPLE_ID: ${{ secrets.APPLE_ID }}
-          APPLE_PASSWORD: ${{ secrets.APPLE_PASSWORD }}
-          APPLE_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
-          TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
-          TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
+          # APPLE_CERTIFICATE: ${{ secrets.APPLE_CERTIFICATE }}
+          # APPLE_CERTIFICATE_PASSWORD: ${{ secrets.APPLE_CERTIFICATE_PASSWORD }}
+          # APPLE_SIGNING_IDENTITY: ${{ secrets.APPLE_SIGNING_IDENTITY }}
+          # APPLE_ID: ${{ secrets.APPLE_ID }}
+          # APPLE_PASSWORD: ${{ secrets.APPLE_PASSWORD }}
+          # APPLE_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
+          # Tauri updater signing (only once an updater is shipped):
+          # TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
+          # TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
           # FUTURE (Windows code signing): tauri-action does not sign Windows
           # bundles itself. To sign the NSIS installer, configure a signing
           # command via tauri.conf.json `bundle.windows.signCommand` (Tauri 2)
