@@ -263,7 +263,7 @@ mod live_smoke {
     }
 }
 
-#[cfg(test)]
+#[cfg(all(test, target_os = "macos"))] // 链 fixture 全部基于 macOS 进程形态
 mod chain_tests {
     use super::*;
 
