@@ -129,3 +129,46 @@ pub fn kill(pid: u32, _force: bool, expected_start: Option<u64>) -> Result<(), S
     }
     Ok(())
 }
+
+#[cfg(all(test, target_os = "macos"))]
+mod live_tests {
+    use std::time::{SystemTime, UNIX_EPOCH};
+
+    /// 真机验证 kill 身份校验（默认忽略：cargo test kill_identity -- --ignored）：
+    /// 错误令牌必须拒绝（ERR_PID_REUSED）、缺令牌必须拒绝（ERR_IDENTITY_UNKNOWN）、
+    /// 正确令牌应放行并真正终止目标。
+    #[test]
+    #[ignore]
+    fn kill_identity_verification() {
+        use std::process::Command;
+        let mut child = Command::new("sleep").arg("300").spawn().unwrap();
+        let pid = child.id();
+        std::thread::sleep(std::time::Duration::from_secs(1));
+        let now = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap()
+            .as_secs();
+
+        // 1. 缺令牌 → fail-closed
+        let err = super::kill(pid, false, None).unwrap_err();
+        assert!(err.contains("ERR_IDENTITY_UNKNOWN"), "got: {err}");
+
+        // 2. 错误令牌（伪造一个 1 小时前的创建时间）→ 拒绝
+        let err = super::kill(pid, false, Some(now - 3600)).unwrap_err();
+        assert!(err.contains("ERR_PID_REUSED"), "got: {err}");
+
+        // 3. 正确令牌（刚创建，约 now-1）→ 放行并终止。
+        //    被杀的直接子进程在父 wait() 回收前是 defunct，先 reap 再断言。
+        super::kill(pid, true, Some(now - 1)).expect("correct token should kill");
+        let status = child.wait().expect("reap killed child");
+        assert!(!status.success(), "child should have been killed");
+        let alive = Command::new("ps")
+            .args(["-p", &pid.to_string(), "-o", "pid="])
+            .output()
+            .unwrap();
+        assert!(
+            String::from_utf8_lossy(&alive.stdout).trim().is_empty(),
+            "process should be gone after reaping"
+        );
+    }
+}
