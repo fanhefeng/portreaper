@@ -20,7 +20,7 @@ const zh = {
   // ---- sections ----
   // 注意三层词汇不撞车：标签页「可疑」› 分区「可疑进程」› 行内判定「确认僵尸/疑似僵尸/存疑」
   "section.suspects": "可疑进程",
-  "section.suspects.sub": "启动它们的软件已经退出，进程被遗留，正占用端口",
+  "section.suspects.sub": "来源已退出或同项目重复启动，正占用端口",
   "section.healthy": "正常监听",
   "section.starred": "已收藏",
   "allclear": "未发现僵尸进程，一切正常",
@@ -60,6 +60,7 @@ const zh = {
   "story.pid_slot_reused": "原父进程已死",
   "story.orphaned_session": "终端会话已死",
   "story.just_reparented": "刚启动，观察中",
+  "story.duplicate_dev_server": "与 PID {pid} 重复启动",
   "story.nonstandard_path": "非标准路径",
   "story.dev_server_keyword": "疑似开发服务器",
   "story.launchedBy": "由 {app} 启动",
@@ -120,6 +121,7 @@ const zh = {
   "reason.orphaned_session": "终端会话已死",
   "reason.nonstandard_path": "非标准安装路径",
   "reason.dev_server_keyword": "dev-server 关键字",
+  "reason.duplicate_dev_server": "同项目重复实例",
   "reason.launchd_managed": "launchd 托管",
   "reason.brew_service_path": "Homebrew 服务",
   "reason.installed_app": "正规安装位置",
@@ -138,6 +140,8 @@ const zh = {
     "进程持有真实终端 (ttys)，但该终端已没有会话首进程 —— 终端应用可能已崩溃或被强杀。",
   "reasonTip.nonstandard_path": "可执行文件不在系统 / 应用程序等标准安装位置。",
   "reasonTip.dev_server_keyword": "命令行命中常见 dev-server 关键字（vite / node / uvicorn …）。",
+  "reasonTip.duplicate_dev_server":
+    "同一项目已有另一个相同的开发服务器实例在监听（端口被顺延或分散在多个终端 / IDE）—— 通常是忘了已经启动过。确认在用哪个后终止另一个；两个都需要时可收藏豁免。",
   "reasonTip.launchd_managed":
     "launchctl 认领的任务（LaunchAgent / brew services）—— 由 launchd 有意托管，不是僵尸。",
   "reasonTip.brew_service_path":
@@ -192,7 +196,7 @@ const en: Record<I18nKey, string> = {
 
   "section.suspects": "Suspects",
   "section.suspects.sub":
-    "The programs that launched them have exited; they linger and hold ports",
+    "Launchers exited, or duplicates of the same project — still holding ports",
   "section.healthy": "Healthy listeners",
   "section.starred": "Starred",
   "allclear": "No zombies. All clear",
@@ -228,6 +232,7 @@ const en: Record<I18nKey, string> = {
   "story.pid_slot_reused": "original parent is dead",
   "story.orphaned_session": "dead terminal session",
   "story.just_reparented": "just started, watching",
+  "story.duplicate_dev_server": "duplicate of PID {pid}",
   "story.nonstandard_path": "non-standard path",
   "story.dev_server_keyword": "looks like a dev server",
   "story.launchedBy": "launched by {app}",
@@ -284,6 +289,7 @@ const en: Record<I18nKey, string> = {
   "reason.orphaned_session": "dead terminal session",
   "reason.nonstandard_path": "non-standard path",
   "reason.dev_server_keyword": "dev-server keyword",
+  "reason.duplicate_dev_server": "duplicate instance",
   "reason.launchd_managed": "launchd-managed",
   "reason.brew_service_path": "Homebrew service",
   "reason.installed_app": "standard install location",
@@ -306,6 +312,8 @@ const en: Record<I18nKey, string> = {
     "The executable is not in a standard install location (Applications, system dirs, Program Files).",
   "reasonTip.dev_server_keyword":
     "The command line matches a common dev-server keyword (vite / node / uvicorn …).",
+  "reasonTip.duplicate_dev_server":
+    "Another identical dev-server instance of the same project is already listening (port auto-incremented, or spread across terminals / IDEs) — usually a forgotten earlier launch. Keep the one you use and kill the other; star both if intentional.",
   "reasonTip.launchd_managed":
     "Claimed by launchctl (LaunchAgent / brew services) — intentionally supervised by launchd, not a zombie.",
   "reasonTip.brew_service_path":

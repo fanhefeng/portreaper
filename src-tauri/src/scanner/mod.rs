@@ -23,7 +23,7 @@ pub use model::ProcessEntry;
 #[cfg(target_os = "macos")]
 pub(crate) use macos::parse_etime as parse_etime_secs;
 
-use classify::{classify, is_dev_server};
+use classify::{classify, is_dev_server, Confidence, ReasonCode};
 use identify::basename;
 use model::{ParentRef, ProcMeta, ProcessSnapshot};
 
@@ -130,8 +130,12 @@ pub fn scan(whitelist: &[String]) -> Vec<ProcessEntry> {
             confidence: verdict.confidence,
             zombie_reasons: verdict.reasons,
             is_whitelisted,
+            duplicate_of: None,
         });
     }
+
+    // 跨条目后处理：同项目重复 dev server（classify 是单进程纯函数看不到全局）
+    mark_duplicates(&mut entries, &collected.cwds);
 
     // 排序：嫌疑优先 → 置信度高优先 → 端口号
     entries.sort_by(|a, b| {
@@ -148,6 +152,119 @@ pub fn scan(whitelist: &[String]) -> Vec<ProcessEntry> {
     });
 
     entries
+}
+
+/// 同项目重复 dev server 检测（跨条目后处理）。覆盖两类真实场景：
+///   a) 完整命令逐字相同 —— 忘了已启动过，又跑了一遍同一条命令
+///     （vite 会把第二个实例顺延到 3001，端口被白占）；
+///   b) 同项目在不同终端 / IDE（Warp 起 5173、VS Code 起 5174）各起了一个实例
+///     —— cwd 相同 + 脚本/模块身份相同，或路径推断的（项目, 脚本）一致。
+///
+/// cwd 是最强证据（评审发现）：monorepo 各子包 / git worktree 的 cwd 必然不同
+/// （turbo 等编排器按包目录设 cwd），同项目重复启动的 cwd 必然相同 ——
+/// 两侧 cwd 已知且不同 ⇒ 一票否决（hoisted node_modules 让路径推断的项目名
+/// 全部坍缩到仓库根，仅靠路径会把 monorepo 的两个 app 误判成重复）。
+///
+/// 其余排除（全部有测试锁定）：
+///   - 端口集相交：SO_REUSEPORT 多 worker 共享端口，不是重复；
+///   - 互为父子：cluster master/worker；
+///   - 真实存活的同一非 shell 父（concurrently / cluster master）⇒ 有意多实例；
+///     父是 shell 或已死（合成 init 根）则照常比对 —— 同一终端重复跑两次、
+///     双双被收养的孤儿对，正是要抓的场景（评审发现）；
+///   - 共同祖父且祖父是存活的非 shell 编排器（turbo 经 shell 包装的堂兄弟）。
+///
+/// 不变量：重复信号只到 Possible，永不入清扫 —— 机器无法判断用户正在用哪个实例。
+fn mark_duplicates(entries: &mut [ProcessEntry], cwds: &HashMap<u32, String>) {
+    fn eligible(e: &ProcessEntry) -> bool {
+        e.app_category == "dev-script"
+            && !e.is_whitelisted
+            // 被硬豁免的条目（launchd/brew/pm2/标准路径）不参与
+            && !(!e.is_zombie_suspect && !e.zombie_reasons.is_empty())
+    }
+    /// 脚本/模块身份：vite.js / http.server（b 档比对的一半）
+    fn script_identity(e: &ProcessEntry) -> Option<String> {
+        identify::extract_script_arg(&e.full_command)
+            .map(|s| basename(s).to_string())
+            .or_else(|| identify::extract_module_arg(&e.full_command).map(String::from))
+    }
+    /// 路径推断身份键：（项目名, 脚本）—— cwd 不可用时的回退
+    fn project_key(e: &ProcessEntry) -> Option<(String, String)> {
+        Some((
+            identify::extract_project_name(&e.full_command)?,
+            script_identity(e)?,
+        ))
+    }
+    fn chain_node(e: &ProcessEntry, depth: usize) -> Option<(u32, bool)> {
+        e.parent_chain
+            .get(depth)
+            .map(|p| (p.pid, platform_impl::is_shell(&p.exe_path)))
+    }
+
+    let n = entries.len();
+    let mut peer: Vec<Option<u32>> = vec![None; n];
+    for i in 0..n {
+        for j in (i + 1)..n {
+            let (a, b) = (&entries[i], &entries[j]);
+            if !eligible(a) || !eligible(b) {
+                continue;
+            }
+            // 互为父子（master/worker）
+            if a.ppid == b.pid || b.ppid == a.pid {
+                continue;
+            }
+            // 端口集相交（多 worker 共享端口）
+            if a.ports.iter().any(|p| b.ports.contains(p)) {
+                continue;
+            }
+            // cwd 一票否决：两侧已知且不同 ⇒ 不同子包/worktree/项目
+            let (cwd_a, cwd_b) = (cwds.get(&a.pid), cwds.get(&b.pid));
+            if let (Some(ca), Some(cb)) = (cwd_a, cwd_b) {
+                if ca != cb {
+                    continue;
+                }
+            }
+            // 真实存活的同一非 shell 父 ⇒ 编排器拉起的有意多实例；
+            // 父是 shell / 已死（合成根 pid≤1）/ 链缺失 ⇒ 照常比对
+            if a.ppid == b.ppid {
+                if let Some((ppid_real, is_sh)) = chain_node(a, 0) {
+                    if ppid_real == a.ppid && ppid_real > 1 && !is_sh {
+                        continue;
+                    }
+                }
+            }
+            // 共同祖父的堂兄弟：祖父是存活的非 shell 编排器（turbo 经 shell 包装）
+            if let (Some((ga, ga_sh)), Some((gb, _))) = (chain_node(a, 1), chain_node(b, 1)) {
+                if ga == gb && ga > 1 && !ga_sh {
+                    continue;
+                }
+            }
+            let same_cmd = !a.full_command.is_empty() && a.full_command == b.full_command;
+            let same_project = match (project_key(a), project_key(b)) {
+                (Some(x), Some(y)) => x == y,
+                _ => false,
+            };
+            let same_cwd = matches!((cwd_a, cwd_b), (Some(x), Some(y)) if x == y);
+            let same_cwd_identity = same_cwd
+                && matches!(
+                    (script_identity(a), script_identity(b)),
+                    (Some(x), Some(y)) if x == y
+                );
+            if same_cmd || same_project || same_cwd_identity {
+                peer[i].get_or_insert(b.pid);
+                peer[j].get_or_insert(a.pid);
+            }
+        }
+    }
+    for (i, p) in peer.into_iter().enumerate() {
+        let Some(pid) = p else { continue };
+        let e = &mut entries[i];
+        e.duplicate_of = Some(pid);
+        e.zombie_reasons.push(ReasonCode::DuplicateDevServer);
+        if !e.is_zombie_suspect {
+            e.is_zombie_suspect = true;
+            e.confidence = Confidence::Possible;
+        }
+    }
 }
 
 /// Homebrew 服务豁免按「身份路径」取证：dev-script 的身份是脚本/模块，
@@ -281,6 +398,255 @@ mod live_smoke {
                 e.exe_path
             );
         }
+    }
+}
+
+#[cfg(test)] // 平台中性：ProcessEntry 纯数据，is_shell 用 bash（双平台 shell 表都含）
+mod dup_tests {
+    use super::*;
+
+    const VITE_A: &str = "node /Users/x/ai-portal/node_modules/vite/bin/vite.js dev --port 3000";
+
+    fn entry(pid: u32, ppid: u32, ports: &[u16], cmd: &str) -> ProcessEntry {
+        ProcessEntry {
+            pid,
+            ppid,
+            ports: ports.to_vec(),
+            command: "node".into(),
+            full_command: cmd.into(),
+            exe_path: "/opt/homebrew/bin/node".into(),
+            app_label: String::new(),
+            app_category: "dev-script".into(),
+            parent_chain: vec![],
+            launcher_label: String::new(),
+            user: String::new(),
+            tty: String::new(),
+            elapsed_secs: 3600,
+            start_unix: Some(1000),
+            cpu_percent: 0.0,
+            mem_mb: 0.0,
+            state: String::new(),
+            is_zombie_suspect: false,
+            confidence: Confidence::None,
+            zombie_reasons: vec![],
+            is_whitelisted: false,
+            duplicate_of: None,
+        }
+    }
+
+    fn parent(pid: u32, exe: &str) -> ParentRef {
+        ParentRef {
+            pid,
+            label: basename(exe).to_string(),
+            category: "unknown".into(),
+            exe_path: exe.into(),
+        }
+    }
+
+    fn no_cwd() -> HashMap<u32, String> {
+        HashMap::new()
+    }
+
+    fn cwd_map(pairs: &[(u32, &str)]) -> HashMap<u32, String> {
+        pairs.iter().map(|(p, c)| (*p, c.to_string())).collect()
+    }
+
+    #[test]
+    fn exact_command_duplicate_flagged_both_ways() {
+        // ai-portal 真实案例：同命令、同 cwd、不同父链、端口被顺延
+        let mut a = entry(88898, 88877, &[3000, 4206], VITE_A);
+        a.parent_chain = vec![
+            parent(88877, "/opt/homebrew/bin/node"),
+            parent(88876, "/usr/local/bin/node"),
+        ];
+        let mut b = entry(46392, 46371, &[3001, 61405], VITE_A);
+        b.parent_chain = vec![
+            parent(46371, "/opt/homebrew/bin/node"),
+            parent(46370, "/usr/local/bin/node"),
+        ];
+        let mut es = vec![a, b];
+        mark_duplicates(
+            &mut es,
+            &cwd_map(&[(88898, "/Users/x/ai-portal"), (46392, "/Users/x/ai-portal")]),
+        );
+        assert!(es[0].is_zombie_suspect && es[1].is_zombie_suspect);
+        assert_eq!(es[0].confidence, Confidence::Possible);
+        assert_eq!(es[0].duplicate_of, Some(46392));
+        assert_eq!(es[1].duplicate_of, Some(88898));
+        assert!(es[0]
+            .zombie_reasons
+            .contains(&ReasonCode::DuplicateDevServer));
+    }
+
+    #[test]
+    fn same_project_different_launcher_flagged() {
+        // 用户场景：Warp 起 5173、VS Code 起 5174 —— 命令参数不同但项目+脚本一致
+        let a = entry(100, 10, &[5173], VITE_A);
+        let b = entry(
+            200,
+            20,
+            &[5174],
+            "node /Users/x/ai-portal/node_modules/vite/bin/vite.js dev",
+        );
+        let mut es = vec![a, b];
+        mark_duplicates(&mut es, &no_cwd());
+        assert!(es[0].is_zombie_suspect && es[1].is_zombie_suspect);
+        assert_eq!(es[0].duplicate_of, Some(200));
+    }
+
+    #[test]
+    fn same_cwd_identity_flagged_outside_users() {
+        // 项目不在 /Users 下（路径推断失效）：cwd + 脚本身份兜底
+        let a = entry(100, 10, &[8080], "node /srv/proj/server.js");
+        let b = entry(200, 20, &[8081], "node /srv/proj/server.js --verbose");
+        let mut es = vec![a, b];
+        mark_duplicates(&mut es, &cwd_map(&[(100, "/srv/proj"), (200, "/srv/proj")]));
+        assert!(es[0].is_zombie_suspect && es[1].is_zombie_suspect);
+    }
+
+    #[test]
+    fn monorepo_apps_different_cwd_not_flagged() {
+        // 评审发现：hoisted node_modules 下两个不同 app 的命令行可能逐字相同，
+        // 路径推断的项目名也坍缩到仓库根 —— cwd 不同一票否决
+        let cmd = "node /Users/x/mono/node_modules/vite/bin/vite.js dev";
+        let a = entry(100, 10, &[3000], cmd);
+        let b = entry(200, 20, &[3001], cmd);
+        let mut es = vec![a, b];
+        mark_duplicates(
+            &mut es,
+            &cwd_map(&[
+                (100, "/Users/x/mono/apps/web"),
+                (200, "/Users/x/mono/apps/docs"),
+            ]),
+        );
+        assert!(!es[0].is_zombie_suspect && !es[1].is_zombie_suspect);
+    }
+
+    #[test]
+    fn worktrees_different_cwd_not_flagged() {
+        let a = entry(100, 10, &[3000], VITE_A);
+        let b = entry(200, 20, &[3001], VITE_A);
+        let mut es = vec![a, b];
+        mark_duplicates(
+            &mut es,
+            &cwd_map(&[(100, "/Users/x/ai-portal"), (200, "/Users/x/ai-portal-wt2")]),
+        );
+        assert!(!es[0].is_zombie_suspect && !es[1].is_zombie_suspect);
+    }
+
+    #[test]
+    fn cluster_workers_same_master_not_flagged() {
+        // 同父且父是存活的编排器（node master）：有意的多实例
+        let mut a = entry(100, 600, &[3000], VITE_A);
+        a.parent_chain = vec![parent(600, "/opt/homebrew/bin/node")];
+        let mut b = entry(200, 600, &[3001], VITE_A);
+        b.parent_chain = vec![parent(600, "/opt/homebrew/bin/node")];
+        let mut es = vec![a, b];
+        mark_duplicates(&mut es, &no_cwd());
+        assert!(!es[0].is_zombie_suspect && !es[1].is_zombie_suspect);
+    }
+
+    #[test]
+    fn same_shell_run_twice_flagged() {
+        // 同一个 shell 里后台跑了两次：正是要抓的重复
+        let mut a = entry(100, 500, &[3000], VITE_A);
+        a.parent_chain = vec![parent(500, "/bin/bash")];
+        let mut b = entry(200, 500, &[3001], VITE_A);
+        b.parent_chain = vec![parent(500, "/bin/bash")];
+        let mut es = vec![a, b];
+        mark_duplicates(&mut es, &no_cwd());
+        assert!(es[0].is_zombie_suspect && es[1].is_zombie_suspect);
+    }
+
+    #[test]
+    fn coreparented_orphan_siblings_flagged() {
+        // 评审发现：双双被收养（ppid=1，链上是合成 init 根）的同命令对
+        // 不能被「同父编排器」守卫吞掉 —— 父已死不构成编排证据
+        let mut a = entry(100, 1, &[3000], VITE_A);
+        a.parent_chain = vec![parent(1, "/sbin/launchd")];
+        let mut b = entry(200, 1, &[3001], VITE_A);
+        b.parent_chain = vec![parent(1, "/sbin/launchd")];
+        let mut es = vec![a, b];
+        mark_duplicates(&mut es, &no_cwd());
+        assert!(es[0].is_zombie_suspect && es[1].is_zombie_suspect);
+    }
+
+    #[test]
+    fn orchestrator_cousins_not_flagged() {
+        // turbo 经 shell 包装拉起的堂兄弟：共同祖父是存活的编排器（非 shell）
+        let mut a = entry(100, 601, &[3000], VITE_A);
+        a.parent_chain = vec![parent(601, "/bin/sh"), parent(700, "/usr/local/bin/node")];
+        let mut b = entry(200, 602, &[3001], VITE_A);
+        b.parent_chain = vec![parent(602, "/bin/sh"), parent(700, "/usr/local/bin/node")];
+        let mut es = vec![a, b];
+        mark_duplicates(&mut es, &no_cwd());
+        assert!(!es[0].is_zombie_suspect && !es[1].is_zombie_suspect);
+    }
+
+    #[test]
+    fn shared_port_workers_not_flagged() {
+        // SO_REUSEPORT 多 worker 共享端口
+        let a = entry(100, 10, &[3000], VITE_A);
+        let b = entry(200, 20, &[3000, 3005], VITE_A);
+        let mut es = vec![a, b];
+        mark_duplicates(&mut es, &no_cwd());
+        assert!(!es[0].is_zombie_suspect && !es[1].is_zombie_suspect);
+    }
+
+    #[test]
+    fn parent_child_not_flagged() {
+        let a = entry(100, 10, &[3000], VITE_A);
+        let b = entry(200, 100, &[3001], VITE_A); // b 是 a 的子进程
+        let mut es = vec![a, b];
+        mark_duplicates(&mut es, &no_cwd());
+        assert!(!es[0].is_zombie_suspect && !es[1].is_zombie_suspect);
+    }
+
+    #[test]
+    fn different_projects_same_script_not_flagged() {
+        let a = entry(
+            100,
+            10,
+            &[3000],
+            "node /Users/x/blog/node_modules/vite/bin/vite.js dev",
+        );
+        let b = entry(
+            200,
+            20,
+            &[3001],
+            "node /Users/x/shop/node_modules/vite/bin/vite.js dev",
+        );
+        let mut es = vec![a, b];
+        mark_duplicates(&mut es, &no_cwd());
+        assert!(!es[0].is_zombie_suspect && !es[1].is_zombie_suspect);
+    }
+
+    #[test]
+    fn whitelisted_excluded() {
+        let mut a = entry(100, 10, &[3000], VITE_A);
+        a.is_whitelisted = true;
+        let b = entry(200, 20, &[3001], VITE_A);
+        let mut es = vec![a, b];
+        mark_duplicates(&mut es, &no_cwd());
+        assert!(!es[0].is_zombie_suspect && !es[1].is_zombie_suspect);
+    }
+
+    #[test]
+    fn existing_suspect_keeps_confidence_gains_reason() {
+        // 一个本来就是孤儿 Confirmed：置信度不降级，只追加重复信号
+        let mut a = entry(100, 1, &[3000], VITE_A);
+        a.is_zombie_suspect = true;
+        a.confidence = Confidence::Confirmed;
+        a.zombie_reasons = vec![ReasonCode::Ppid1Orphan];
+        let b = entry(200, 20, &[3001], VITE_A);
+        let mut es = vec![a, b];
+        mark_duplicates(&mut es, &no_cwd());
+        assert_eq!(es[0].confidence, Confidence::Confirmed);
+        assert!(es[0]
+            .zombie_reasons
+            .contains(&ReasonCode::DuplicateDevServer));
+        assert_eq!(es[0].duplicate_of, Some(200));
+        assert_eq!(es[1].confidence, Confidence::Possible);
     }
 }
 

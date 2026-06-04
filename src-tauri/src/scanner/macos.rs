@@ -228,11 +228,42 @@ pub(crate) fn collect() -> Collected {
     );
     let launchd_pids = parse_launchctl(&cmd_output("launchctl", &["list"]).unwrap_or_default());
 
+    // 仅查监听者的 cwd（一次 lsof，~15 个 PID）：重复 dev server 检测的证据
+    let pid_csv = listeners
+        .iter()
+        .map(|l| l.pid.to_string())
+        .collect::<Vec<_>>()
+        .join(",");
+    let cwds = if pid_csv.is_empty() {
+        HashMap::new()
+    } else {
+        parse_cwd(
+            &cmd_output("lsof", &["-a", "-p", &pid_csv, "-d", "cwd", "-Fpn"]).unwrap_or_default(),
+        )
+    };
+
     Collected {
         listeners,
         procs,
         launchd_pids,
+        cwds,
     }
+}
+
+/// `lsof -a -p <pids> -d cwd -Fpn` 输出：pPID 行后跟 n<路径> 行。
+fn parse_cwd(text: &str) -> HashMap<u32, String> {
+    let mut map = HashMap::new();
+    let mut cur: Option<u32> = None;
+    for line in text.lines() {
+        if let Some(rest) = line.strip_prefix('p') {
+            cur = rest.parse().ok();
+        } else if let Some(path) = line.strip_prefix('n') {
+            if let Some(pid) = cur {
+                map.insert(pid, path.to_string());
+            }
+        }
+    }
+    map
 }
 
 /// lsof -F 字段前缀模式：p=PID c=命令 L=用户 n=地址。一个 PID 多端口合并。

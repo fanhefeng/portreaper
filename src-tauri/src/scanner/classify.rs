@@ -27,6 +27,10 @@ pub enum ReasonCode {
     NonstandardPath,
     /// 命令行命中 dev-server 关键字
     DevServerKeyword,
+    /// 同项目重复 dev server（另一实例见 ProcessEntry::duplicate_of）。
+    /// 由 scan() 的跨条目后处理标注（classify 是单进程纯函数，看不到其他条目）；
+    /// 只到 Possible，永不入清扫 —— 机器无法判断用户正在用哪个实例。
+    DuplicateDevServer,
     // —— 豁免/降级信号（解释为什么不标记 / 降级）——
     /// launchctl 认领的任务（LaunchAgent / brew services 等）
     LaunchdManaged,

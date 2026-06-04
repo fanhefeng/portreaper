@@ -35,6 +35,8 @@ pub struct ProcessEntry {
     pub confidence: Confidence, // "none" | "possible" | "likely" | "confirmed"
     pub zombie_reasons: Vec<ReasonCode>, // 机器码，前端 i18n 翻译
     pub is_whitelisted: bool,
+    /// 同项目重复 dev server 的对端 PID（scan() 后处理填充；前端用于行内故事）
+    pub duplicate_of: Option<u32>,
 }
 
 /// 平台 provider 产出的「监听者」：lsof / GetExtendedTcpTable 的归一化结果。
@@ -70,6 +72,10 @@ pub(crate) struct Collected {
     pub procs: std::collections::HashMap<u32, ProcMeta>,
     /// launchctl 认领的 PID 集合（Windows 恒为空）
     pub launchd_pids: std::collections::HashSet<u32>,
+    /// 监听者的工作目录（仅监听 PID；macOS=lsof -d cwd，Windows=sysinfo cwd()）。
+    /// 重复 dev server 检测的最强证据：monorepo 不同子包 / git worktree 的
+    /// cwd 必然不同，同项目重复启动的 cwd 必然相同。读不到时优雅缺席。
+    pub cwds: std::collections::HashMap<u32, String>,
 }
 
 /// 喂给纯分类器的进程信号快照 —— 不含任何平台/子进程依赖，可直接构造做表驱动单测。

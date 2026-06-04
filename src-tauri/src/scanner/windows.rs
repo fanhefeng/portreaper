@@ -8,7 +8,7 @@ use std::collections::HashMap;
 use std::ffi::c_void;
 use std::sync::{Mutex, OnceLock};
 
-use sysinfo::{ProcessesToUpdate, System, Users};
+use sysinfo::{Pid, ProcessesToUpdate, System, Users};
 use windows::Win32::Foundation::{ERROR_INSUFFICIENT_BUFFER, NO_ERROR};
 use windows::Win32::NetworkManagement::IpHelper::{
     GetExtendedTcpTable, MIB_TCP6TABLE_OWNER_PID, MIB_TCPTABLE_OWNER_PID,
@@ -407,6 +407,14 @@ pub(crate) fn collect() -> Collected {
         );
     }
 
+    // 仅监听者的 cwd：重复 dev server 检测的证据（MSIX/提权进程读不到时缺席）
+    let mut cwds: HashMap<u32, String> = HashMap::new();
+    for pid in ports_by_pid.keys() {
+        if let Some(p) = sys.process(Pid::from_u32(*pid)).and_then(|p| p.cwd()) {
+            cwds.insert(*pid, p.to_string_lossy().to_lowercase());
+        }
+    }
+
     let listeners = ports_by_pid
         .into_iter()
         .map(|(pid, mut ports)| {
@@ -425,6 +433,7 @@ pub(crate) fn collect() -> Collected {
         listeners,
         procs,
         launchd_pids: Default::default(),
+        cwds,
     }
 }
 

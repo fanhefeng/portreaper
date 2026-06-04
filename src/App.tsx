@@ -35,6 +35,7 @@ type ProcessEntry = {
   confidence: Confidence;
   zombie_reasons: string[];
   is_whitelisted: boolean;
+  duplicate_of: number | null;
 };
 
 type Os = "macos" | "windows";
@@ -69,6 +70,7 @@ const REASON_PRIORITY = [
   "parent_exited",
   "pid_slot_reused",
   "orphaned_session",
+  "duplicate_dev_server",
   "just_reparented",
   "nonstandard_path",
   "dev_server_keyword",
@@ -855,7 +857,11 @@ function Row({
                 {primary && (
                   <span className="desc-text">
                     {" · "}
-                    {t(`story.${primary}` as I18nKey)}
+                    {t(
+                      `story.${primary}` as I18nKey,
+                      // duplicate 故事需要对端 PID 插值；其余 key 无占位符，参数无害
+                      { pid: e.duplicate_of ?? "?" },
+                    )}
                   </span>
                 )}
                 <span className="desc-text desc-dim">
@@ -1013,7 +1019,13 @@ function Detail({ e, os, id }: { e: ProcessEntry; os: Os; id: string }) {
           </div>
           {e.zombie_reasons.map((r) => (
             <div className="evidence-item" key={r}>
-              <span className="evidence-name">{t(`reason.${r}` as I18nKey)}</span>
+              <span className="evidence-name">
+                {t(`reason.${r}` as I18nKey)}
+                {/* 重复实例的可操作目标（对端 PID）必须在详情里可见（评审发现） */}
+                {r === "duplicate_dev_server" && e.duplicate_of != null && (
+                  <span className="detail-dim"> · PID {e.duplicate_of}</span>
+                )}
+              </span>
               <span className="evidence-text">{t(`reasonTip.${r}` as I18nKey)}</span>
             </div>
           ))}
