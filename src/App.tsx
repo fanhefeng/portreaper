@@ -1,7 +1,7 @@
-import { useCallback, useEffect, useRef, useState } from "react";
+import { useCallback, useEffect, useRef, useState, type KeyboardEvent as ReactKeyboardEvent } from "react";
 import { invoke } from "@tauri-apps/api/core";
 import { openUrl } from "@tauri-apps/plugin-opener";
-import { useI18n, type I18nKey } from "./i18n";
+import { useI18n, type I18nKey, type Lang } from "./i18n";
 import "./App.css";
 
 type ParentRef = {
@@ -50,57 +50,10 @@ type ConfirmState = {
   startUnix: number | null;
 } | null;
 
-const CATEGORY_META: Record<string, { color: string; bg: string; border: string }> = {
-  "installed-app": {
-    color: "#10b981",
-    bg: "rgba(16, 185, 129, 0.12)",
-    border: "rgba(16, 185, 129, 0.32)",
-  },
-  system: {
-    color: "#60a5fa",
-    bg: "rgba(96, 165, 250, 0.12)",
-    border: "rgba(96, 165, 250, 0.3)",
-  },
-  "dev-script": {
-    color: "#f59e0b",
-    bg: "rgba(245, 158, 11, 0.12)",
-    border: "rgba(245, 158, 11, 0.3)",
-  },
-  "user-binary": {
-    color: "#a78bfa",
-    bg: "rgba(167, 139, 250, 0.13)",
-    border: "rgba(167, 139, 250, 0.3)",
-  },
-  unknown: {
-    color: "#6b7280",
-    bg: "rgba(107, 114, 128, 0.15)",
-    border: "rgba(107, 114, 128, 0.3)",
-  },
-};
+/** 一键清理覆盖的置信层级（Possible 永不入清扫） */
+const SWEEPABLE: ReadonlySet<Confidence> = new Set(["confirmed", "likely"]);
 
-/** 置信度徽章配色：确认红 / 很可能琥珀 / 存疑蓝灰 */
-const CONFIDENCE_META: Record<
-  Exclude<Confidence, "none">,
-  { color: string; bg: string; border: string }
-> = {
-  confirmed: {
-    color: "#ef4444",
-    bg: "rgba(239, 68, 68, 0.14)",
-    border: "rgba(239, 68, 68, 0.4)",
-  },
-  likely: {
-    color: "#f59e0b",
-    bg: "rgba(245, 158, 11, 0.13)",
-    border: "rgba(245, 158, 11, 0.38)",
-  },
-  possible: {
-    color: "#94a3b8",
-    bg: "rgba(148, 163, 184, 0.13)",
-    border: "rgba(148, 163, 184, 0.35)",
-  },
-};
-
-/** 豁免类 reason code —— 非嫌疑行上以「为什么没被标记」的形式展示 */
+/** 豁免类 reason code —— 非嫌疑行的详情里以「为什么不是僵尸」展示 */
 const EXEMPT_REASONS = new Set([
   "launchd_managed",
   "brew_service_path",
@@ -108,8 +61,112 @@ const EXEMPT_REASONS = new Set([
   "pm2_managed",
 ]);
 
-/** 一键清扫覆盖的置信层级（Possible 永不入清扫） */
-const SWEEPABLE: ReadonlySet<Confidence> = new Set(["confirmed", "likely"]);
+/** 行内只讲一个最重要的原因（其余进详情面板），此为优先级 */
+const REASON_PRIORITY = [
+  "defunct",
+  "ppid1_orphan",
+  "orphaned_chain",
+  "parent_exited",
+  "pid_slot_reused",
+  "orphaned_session",
+  "just_reparented",
+  "nonstandard_path",
+  "dev_server_keyword",
+];
+
+function primaryReason(reasons: string[]): string | null {
+  for (const r of REASON_PRIORITY) if (reasons.includes(r)) return r;
+  return reasons[0] ?? null;
+}
+
+/**
+ * 常见进程知识库：让非技术用户一眼知道「这是什么软件、干什么用的」。
+ * 顺序即优先级（具体的在前，node/python 等泛化的在后）；
+ * 未命中时退回 desc.<category> 的类别描述。
+ */
+const KNOWN_PROCESSES: ReadonlyArray<readonly [RegExp, string, string]> = [
+  // —— 开发服务器 / 框架（先于泛化的 node/python）——
+  [/vite/, "Vite 前端开发服务器", "Vite frontend dev server"],
+  [/webpack/, "Webpack 前端开发服务", "Webpack dev server"],
+  [/next dev|next-server|next start/, "Next.js 开发服务器", "Next.js dev server"],
+  [/nuxt/, "Nuxt 开发服务器", "Nuxt dev server"],
+  [/uvicorn|gunicorn|fastapi|flask|django/, "Python Web 服务", "Python web service"],
+  [/http\.server/, "Python 临时文件服务器", "Python ad-hoc file server"],
+  [/jupyter/, "Jupyter 笔记本服务", "Jupyter notebook server"],
+  [/storybook/, "Storybook 组件预览服务", "Storybook preview server"],
+  // —— 数据库 / 服务 ——
+  [/postgres/, "PostgreSQL 数据库", "PostgreSQL database"],
+  [/mysqld|mariadb/, "MySQL 数据库", "MySQL database"],
+  [/mongod/, "MongoDB 数据库", "MongoDB database"],
+  [/\bredis\b/, "Redis 数据库", "Redis database"],
+  [/nginx/, "Nginx Web 服务器", "Nginx web server"],
+  [/caddy/, "Caddy Web 服务器", "Caddy web server"],
+  [/docker|containerd/, "Docker 容器服务", "Docker container service"],
+  [/ollama/, "Ollama 本地 AI 模型服务", "Ollama local AI model server"],
+  // —— 常见桌面软件（带 \b 词界防止子串误匹配，如路径里恰好含 "php"）——
+  [/wechat|weixin/, "微信", "WeChat messenger"],
+  [/wxwork|wework/, "企业微信", "WeCom"],
+  [/qqmusic/, "QQ 音乐", "QQ Music"],
+  [/\bqq\b/, "QQ", "QQ messenger"],
+  [/dingtalk/, "钉钉", "DingTalk"],
+  [/feishu|\blark\b/, "飞书", "Lark / Feishu"],
+  [/cloudmusic|neteasemusic/, "网易云音乐", "NetEase Cloud Music"],
+  [/wemeet|tencentmeeting/, "腾讯会议", "Tencent Meeting"],
+  [/todesk/, "ToDesk 远程控制", "ToDesk remote desktop"],
+  [/clash|v2ray|xray|sing-box|shadowsocks|trojan/, "网络代理工具", "network proxy tool"],
+  [/raycast/, "Raycast 快捷启动工具", "Raycast launcher"],
+  [/alfred/, "Alfred 快捷启动工具", "Alfred launcher"],
+  [/\bspotify\b/, "Spotify 音乐", "Spotify music"],
+  [/\bsteam\b/, "Steam 游戏平台", "Steam gaming platform"],
+  [/onedrive/, "OneDrive 网盘同步", "OneDrive sync"],
+  [/dropbox/, "Dropbox 网盘同步", "Dropbox sync"],
+  [/baidunetdisk/, "百度网盘", "Baidu Netdisk"],
+  [/code helper|visual studio code/, "VS Code 代码编辑器", "VS Code editor"],
+  [/\bcursor\b/, "Cursor 代码编辑器", "Cursor editor"],
+  [/iterm/, "iTerm 终端", "iTerm terminal"],
+  [/\bwarp\b/, "Warp 终端", "Warp terminal"],
+  // —— macOS 系统组件 ——
+  [/controlcenter/, "macOS 控制中心（系统组件）", "macOS Control Center (system)"],
+  [/rapportd/, "苹果设备互联服务（接力 / 隔空）", "Apple continuity service"],
+  [/sharingd/, "macOS 共享服务", "macOS sharing service"],
+  [/airplay/, "隔空播放服务", "AirPlay service"],
+  // —— 泛化运行时（永远放最后；\b 词界防止把无关二进制误标）——
+  [/cargo|target\/(debug|release)/, "Rust 开发程序", "Rust dev program"],
+  [/\bnode\b|\bnpm\b|\bpnpm\b|\byarn\b|\bbun\b/, "Node.js 程序", "Node.js program"],
+  [/\bpython/, "Python 程序", "Python program"],
+  [/\bjava\b|gradle|tomcat/, "Java 程序", "Java program"],
+  [/\bruby\b|\brails\b/, "Ruby 程序", "Ruby program"],
+  [/\bphp\b/, "PHP 程序", "PHP program"],
+];
+
+/** 类别 → 兜底描述 key（知识库未命中时） */
+const DESC_KEYS: Record<string, I18nKey> = {
+  "installed-app": "desc.installed-app",
+  system: "desc.system",
+  "dev-script": "desc.dev-script",
+  "user-binary": "desc.user-binary",
+  unknown: "desc.unknown",
+};
+
+/** 「这是什么」：知识库命中 → 友好名；未命中 → 类别描述兜底 */
+function describeEntry(e: ProcessEntry, lang: Lang): string | null {
+  const hay = `${e.app_label} ${e.command} ${e.exe_path}`.toLowerCase();
+  for (const [re, zh, enText] of KNOWN_PROCESSES) {
+    if (re.test(hay)) return lang === "zh" ? zh : enText;
+  }
+  return null;
+}
+
+/** 粗粒度运行时长（精确值在详情面板） */
+function formatUptime(
+  secs: number,
+  t: (k: I18nKey, p?: Record<string, string | number>) => string,
+): string {
+  if (secs < 60) return t("uptime.now");
+  if (secs < 3600) return t("uptime.min", { n: Math.floor(secs / 60) });
+  if (secs < 86400) return t("uptime.hour", { n: Math.floor(secs / 3600) });
+  return t("uptime.day", { n: Math.floor(secs / 86400) });
+}
 
 function formatDuration(secs: number): string {
   const d = Math.floor(secs / 86400);
@@ -120,6 +177,26 @@ function formatDuration(secs: number): string {
   return d > 0
     ? `${d}-${pad(h)}:${pad(m)}:${pad(s)}`
     : `${pad(h)}:${pad(m)}:${pad(s)}`;
+}
+
+/** 极简焦点圈定：Tab 在弹窗内的按钮间循环（毁灭性确认弹窗的键盘安全网） */
+function trapTab(ev: ReactKeyboardEvent<HTMLDivElement>) {
+  if (ev.key !== "Tab") return;
+  const btns = ev.currentTarget.querySelectorAll<HTMLButtonElement>("button");
+  if (btns.length === 0) return;
+  const first = btns[0];
+  const last = btns[btns.length - 1];
+  const active = document.activeElement;
+  const inside = ev.currentTarget.contains(active);
+  if (ev.shiftKey) {
+    if (active === first || !inside) {
+      ev.preventDefault();
+      last.focus();
+    }
+  } else if (active === last || !inside) {
+    ev.preventDefault();
+    first.focus();
+  }
 }
 
 /** 后端语义错误（ERR_* 前缀）→ 本地化文案；其余透传 OS 原文 */
@@ -144,8 +221,8 @@ function App() {
   const [confirm, setConfirm] = useState<ConfirmState>(null);
   const [batchConfirm, setBatchConfirm] = useState<ProcessEntry[] | null>(null);
   const [sweeping, setSweeping] = useState(false);
-  const [lastScan, setLastScan] = useState<Date | null>(null);
-  const inFlight = useRef(false);
+  const [expandedPid, setExpandedPid] = useState<number | null>(null);
+  const inFlight = useRef<Promise<void> | null>(null);
 
   useEffect(() => {
     invoke<Os>("get_platform")
@@ -153,35 +230,61 @@ function App() {
       .catch(() => {});
   }, []);
 
-  const refresh = useCallback(async () => {
-    if (inFlight.current) return;
-    inFlight.current = true;
+  const runScan = useCallback(async () => {
     try {
       const data = await invoke<ProcessEntry[]>("scan_ports");
       setEntries(data);
-      setLastScan(new Date());
-      // 托盘只计入会被清扫的层级（Confirmed + Likely），避免宽限期内的闪烁
+      setError(null);
+      // 托盘只计入会被清扫的层级（Confirmed + Likely），避免宽限期内的闪烁。
+      // 托盘更新是装饰性的 —— fire-and-forget（与 i18n.ts 的 set_tray_language
+      // 同一约定），绝不能让它把一次成功的扫描标成错误（评审发现）。
       const suspectCount = data.filter(
         (e) => e.is_zombie_suspect && SWEEPABLE.has(e.confidence),
       ).length;
       const totalPorts = data.reduce((sum, e) => sum + e.ports.length, 0);
-      await invoke("update_tray_title", {
+      invoke("update_tray_title", {
         count: totalPorts,
         suspectCount,
-      });
-      setError(null);
+      }).catch(() => {});
     } catch (e) {
       setError(String(e));
-    } finally {
-      inFlight.current = false;
     }
   }, []);
+
+  /** 轮询入口：已有扫描在跑则复用它的 Promise（防并发扫描） */
+  const refresh = useCallback(() => {
+    if (!inFlight.current) {
+      inFlight.current = runScan().finally(() => {
+        inFlight.current = null;
+      });
+    }
+    return inFlight.current;
+  }, [runScan]);
+
+  /** kill 之后用：先等正在跑的扫描收尾，再扫一次，确保拿到 kill 后的真实状态
+   *（runScan 内部消化所有异常，这里的 await 不会抛） */
+  const freshScan = useCallback(async () => {
+    if (inFlight.current) await inFlight.current;
+    return refresh();
+  }, [refresh]);
 
   useEffect(() => {
     refresh();
     const id = setInterval(refresh, 2000);
     return () => clearInterval(id);
   }, [refresh]);
+
+  // Esc 关闭弹窗 / 收起详情
+  useEffect(() => {
+    const onKey = (ev: KeyboardEvent) => {
+      if (ev.key !== "Escape") return;
+      if (confirm) setConfirm(null);
+      else if (batchConfirm) setBatchConfirm(null);
+      else setExpandedPid(null);
+    };
+    window.addEventListener("keydown", onKey);
+    return () => window.removeEventListener("keydown", onKey);
+  }, [confirm, batchConfirm]);
 
   const suspectCount = entries.filter((e) => e.is_zombie_suspect).length;
   const sweepables = entries.filter(
@@ -207,6 +310,9 @@ function App() {
     return true;
   });
 
+  const suspects = filtered.filter((e) => e.is_zombie_suspect);
+  const healthy = filtered.filter((e) => !e.is_zombie_suspect);
+
   const askKill = (e: ProcessEntry, force: boolean) => {
     setConfirm({
       pid: e.pid,
@@ -226,7 +332,7 @@ function App() {
     try {
       await invoke("kill_process", { pid, force, startUnix });
       await new Promise((r) => setTimeout(r, 250));
-      await refresh();
+      await freshScan();
     } catch (err) {
       setError(t("error.killFailed", { err: localizeKillError(String(err), t) }));
     } finally {
@@ -285,8 +391,7 @@ function App() {
       }
     }
     await new Promise((r) => setTimeout(r, 700));
-    inFlight.current = false; // 防止与 2s 自动刷新撞车导致这次 refresh 被静默丢掉
-    await refresh();
+    await freshScan(); // 等掉撞车的轮询再扫一次，结果必然包含 kill 之后的状态
     setSweeping(false);
     if (failures.length > 0) {
       setError(
@@ -299,118 +404,107 @@ function App() {
     }
   };
 
+  const toggleExpand = (pid: number) =>
+    setExpandedPid((cur) => (cur === pid ? null : pid));
+
+  const rowProps = {
+    os,
+    lang,
+    killingPid,
+    onAskKill: askKill,
+    onToggleWhitelist: handleToggleWhitelist,
+    onOpenPort: handleOpen,
+    onToggleExpand: toggleExpand,
+  };
+
   return (
     <div className="app">
       <header className="header">
-        <div className="title-row">
-          <div className="brand">
-            <svg
-              className="brand-icon"
-              viewBox="0 0 24 24"
-              width="22"
-              height="22"
-              fill="none"
-              stroke="currentColor"
-              strokeWidth="1.6"
-              strokeLinecap="round"
-              strokeLinejoin="round"
-            >
-              <path d="M3 7l9 5 9-5" />
-              <path d="M3 7v10l9 5 9-5V7" />
-              <path d="M12 12v10" />
-            </svg>
-            <h1>Portreaper</h1>
-          </div>
-          <div className="pills">
-            <span className="pill">
-              <span className="pill-num">{entries.length}</span>
-              <span className="pill-label">{t("pills.processes")}</span>
-            </span>
-            <span className="pill">
-              <span className="pill-num">{totalPortCount}</span>
-              <span className="pill-label">{t("pills.ports")}</span>
-            </span>
-            <span className={`pill ${suspectCount > 0 ? "danger" : ""}`}>
-              <span className="pill-num">{suspectCount}</span>
-              <span className="pill-label">{t("pills.suspects")}</span>
-            </span>
-            <span className="pill mute">
-              <span className="pill-num">{whitelistCount}</span>
-              <span className="pill-label">{t("pills.whitelisted")}</span>
-            </span>
-          </div>
-          <div className="meta">
-            {lastScan && <span className="last-scan">{t("header.autoRefresh")}</span>}
-            <button
-              className="btn-ghost lang-toggle"
-              onClick={() => setLang(lang === "zh" ? "en" : "zh")}
-              title={lang === "zh" ? "Switch to English" : "切换为中文"}
-            >
-              {lang === "zh" ? "EN" : "中"}
-            </button>
-          </div>
+        <div className="brand">
+          <svg
+            className="brand-icon"
+            viewBox="0 0 24 24"
+            width="20"
+            height="20"
+            fill="none"
+            stroke="currentColor"
+            strokeWidth="1.6"
+            strokeLinecap="round"
+            strokeLinejoin="round"
+          >
+            <path d="M3 7l9 5 9-5" />
+            <path d="M3 7v10l9 5 9-5V7" />
+            <path d="M12 12v10" />
+          </svg>
+          <h1>Portreaper</h1>
         </div>
 
-        <div className="toolbar">
-          <div className="search-wrap">
-            <svg
-              viewBox="0 0 24 24"
-              width="14"
-              height="14"
-              fill="none"
-              stroke="currentColor"
-              strokeWidth="2"
-              strokeLinecap="round"
-              strokeLinejoin="round"
-            >
-              <circle cx="11" cy="11" r="7" />
-              <line x1="21" y1="21" x2="16.65" y2="16.65" />
-            </svg>
-            <input
-              type="text"
-              placeholder={t("search.placeholder")}
-              value={search}
-              onChange={(e) => setSearch(e.target.value)}
-              className="search"
-            />
-          </div>
-          <div className="filter-tabs">
-            <button
-              className={filter === "all" ? "active" : ""}
-              onClick={() => setFilter("all")}
-            >
-              {t("filter.all")}
-            </button>
-            <button
-              className={filter === "suspect" ? "active" : ""}
-              onClick={() => setFilter("suspect")}
-            >
-              {t("filter.suspect")}
-            </button>
-            <button
-              className={filter === "whitelist" ? "active" : ""}
-              onClick={() => setFilter("whitelist")}
-            >
-              {t("filter.whitelist")}
-            </button>
-          </div>
-          <button
-            className="btn-cleanup"
-            disabled={sweepables.length === 0 || sweeping}
-            onClick={askKillAllSuspects}
-            title={t("sweep.title")}
+        <div className="search-wrap">
+          <svg
+            viewBox="0 0 24 24"
+            width="14"
+            height="14"
+            fill="none"
+            stroke="currentColor"
+            strokeWidth="2"
+            strokeLinecap="round"
+            strokeLinejoin="round"
           >
-            {sweeping
-              ? t("sweep.sweeping")
-              : `${t("sweep.button")} ${sweepables.length > 0 ? `(${sweepables.length})` : ""}`}
+            <circle cx="11" cy="11" r="7" />
+            <line x1="21" y1="21" x2="16.65" y2="16.65" />
+          </svg>
+          <input
+            type="text"
+            placeholder={t("search.placeholder")}
+            value={search}
+            onChange={(e) => setSearch(e.target.value)}
+            className="search"
+          />
+        </div>
+
+        <div className="filter-tabs">
+          <button
+            className={filter === "all" ? "active" : ""}
+            onClick={() => setFilter("all")}
+          >
+            {t("filter.all")}
+            <span className="tab-count">{entries.length}</span>
           </button>
           <button
-            className="btn-ghost btn-refresh"
-            onClick={refresh}
-            title={t("refresh.title")}
-            aria-label={t("refresh.aria")}
+            className={`${filter === "suspect" ? "active" : ""} ${suspectCount > 0 ? "has-suspects" : ""}`}
+            onClick={() => setFilter("suspect")}
           >
-            ↻
+            {t("filter.suspect")}
+            <span className="tab-count">{suspectCount}</span>
+          </button>
+          <button
+            className={filter === "whitelist" ? "active" : ""}
+            onClick={() => setFilter("whitelist")}
+          >
+            {t("filter.whitelist")}
+            <span className="tab-count">{whitelistCount}</span>
+          </button>
+        </div>
+
+        <div className="header-right">
+          {sweepables.length > 0 && (
+            <button
+              className="btn-sweep"
+              disabled={sweeping}
+              onClick={askKillAllSuspects}
+              title={t("sweep.title")}
+            >
+              {sweeping
+                ? t("sweep.sweeping")
+                : `${t("sweep.button")} (${sweepables.length})`}
+            </button>
+          )}
+          <button
+            className="lang-toggle"
+            onClick={() => setLang(lang === "zh" ? "en" : "zh")}
+            title={lang === "zh" ? "Switch to English" : "切换为中文"}
+          >
+            {lang === "zh" ? "EN" : "中"}
           </button>
         </div>
       </header>
@@ -421,240 +515,101 @@ function App() {
         </div>
       )}
 
-      <div className="table-wrap">
-        <table>
-          <thead>
-            <tr>
-              <th style={{ width: 96 }} title={t("th.ports.tip")}>
-                {t("th.ports")}
-              </th>
-              <th style={{ width: 88 }} title={t("th.type.tip")}>
-                {t("th.type")}
-              </th>
-              <th style={{ width: 360 }} title={t("th.app.tip")}>
-                {t("th.app")}
-              </th>
-              <th className="th-path" title={t("th.path.tip")}>
-                {t("th.path")}
-              </th>
-              <th style={{ width: 150 }} title={t("th.launcher.tip")}>
-                {t("th.launcher")}
-              </th>
-              <th
-                style={{ width: 150 }}
-                title={os === "macos" ? t("th.pid.tip.macos") : t("th.pid.tip.windows")}
-              >
-                {t("th.pid")}
-              </th>
-              <th style={{ width: 100 }} title={t("th.elapsed.tip")}>
-                {t("th.elapsed")}
-              </th>
-              <th style={{ width: 78 }} title={t("th.cpu.tip")}>
-                {t("th.cpu")}
-              </th>
-              <th style={{ width: 92 }} title={t("th.mem.tip")}>
-                {t("th.mem")}
-              </th>
-              <th
-                style={{ width: 198 }}
-                title={
-                  os === "macos"
-                    ? t("th.actions.tip.macos")
-                    : t("th.actions.tip.windows")
-                }
-              >
-                {t("th.actions")}
-              </th>
-            </tr>
-          </thead>
-          <tbody>
-            {filtered.map((e) => {
-              const meta = CATEGORY_META[e.app_category] || CATEGORY_META.unknown;
-              const catLabelKey = (
-                CATEGORY_META[e.app_category] ? `cat.${e.app_category}` : "cat.unknown"
-              ) as I18nKey;
-              const confMeta =
-                e.confidence !== "none" ? CONFIDENCE_META[e.confidence] : null;
-              const exemptReasons = !e.is_zombie_suspect
-                ? e.zombie_reasons.filter((r) => EXEMPT_REASONS.has(r))
-                : [];
-              const showCmd =
-                e.full_command && e.full_command !== (e.exe_path || e.command);
-              return (
-                <tr key={e.pid} className={e.is_zombie_suspect ? "suspect" : ""}>
-                  <td className="ports-cell">
-                    <div className="ports-list">
-                      {e.ports.map((p) => (
-                        <button
-                          key={p}
-                          className="port-link"
-                          onClick={() => handleOpen(p)}
-                          title={t("port.tip", { port: p })}
-                        >
-                          :{p}
-                        </button>
-                      ))}
-                    </div>
-                  </td>
-                  <td className="cat-cell">
-                    <span
-                      className="cat-badge"
-                      style={{
-                        color: meta.color,
-                        background: meta.bg,
-                        borderColor: meta.border,
-                      }}
-                    >
-                      {t(catLabelKey)}
-                    </span>
-                  </td>
-                  <td className="app-cell">
-                    <AppLabel label={e.app_label} whitelisted={e.is_whitelisted} />
-                    {e.is_zombie_suspect && (
-                      <div className="suspect-tags">
-                        {confMeta && (
-                          <span
-                            className="chip"
-                            style={{
-                              color: confMeta.color,
-                              background: confMeta.bg,
-                              borderColor: confMeta.border,
-                            }}
-                          >
-                            {t(`confidence.${e.confidence}` as I18nKey)}
-                          </span>
-                        )}
-                        {e.zombie_reasons.map((r) => (
-                          <span
-                            key={r}
-                            className="chip chip-sus"
-                            title={t(`reasonTip.${r}` as I18nKey)}
-                          >
-                            {t(`reason.${r}` as I18nKey)}
-                          </span>
-                        ))}
-                      </div>
-                    )}
-                    {exemptReasons.length > 0 && (
-                      <div className="suspect-tags">
-                        {exemptReasons.map((r) => (
-                          <span
-                            key={r}
-                            className="chip chip-exempt"
-                            title={
-                              t("exempt.tip") + t(`reasonTip.${r}` as I18nKey)
-                            }
-                          >
-                            ✓ {t(`reason.${r}` as I18nKey)}
-                          </span>
-                        ))}
-                      </div>
-                    )}
-                  </td>
-                  <td className="path-cell">
-                    <div className="path-line mono" title={e.exe_path || e.command}>
-                      {e.exe_path || e.command}
-                    </div>
-                    {showCmd && (
-                      <div
-                        className="path-args mono"
-                        title={t("cmd.full.tip", { cmd: e.full_command })}
-                      >
-                        {t("args.label")}:{" "}
-                        {e.full_command.slice((e.exe_path || e.command).length).trim()}
-                      </div>
-                    )}
-                  </td>
-                  <td>
-                    <LauncherChain entry={e} />
-                  </td>
-                  <td className="pid-cell">
-                    <div className="pid-line" title={t("pid.self.tip")}>
-                      <span className="pid-label">{t("pid.self")}</span>
-                      <span className="pid-num mono">{e.pid}</span>
-                    </div>
-                    <div
-                      className="pid-line"
-                      title={
-                        os === "macos" && e.ppid === 1
-                          ? t("pid.parent.tip.launchd")
-                          : t("pid.parent.tip.normal")
-                      }
-                    >
-                      <span className="pid-label">{t("pid.parent")}</span>
-                      <span className="pid-num mono">
-                        {os === "macos" && e.ppid === 1 ? "1 · launchd" : e.ppid}
-                      </span>
-                    </div>
-                  </td>
-                  <td className="time-cell mono">{formatDuration(e.elapsed_secs)}</td>
-                  <td
-                    className="metric-cell mono"
-                    title={t("cpu.tip", { v: e.cpu_percent.toFixed(1) })}
-                  >
-                    {e.cpu_percent.toFixed(1)}%
-                  </td>
-                  <td
-                    className="metric-cell mono"
-                    title={t("mem.tip", { v: e.mem_mb.toFixed(1) })}
-                  >
-                    {e.mem_mb.toFixed(1)} MB
-                  </td>
-                  <td className="actions">
-                    {os === "macos" ? (
-                      <>
-                        <button
-                          className="btn-kill"
-                          onClick={() => askKill(e, false)}
-                          disabled={killingPid === e.pid}
-                        >
-                          {t("kill.btn")}
-                        </button>
-                        <button
-                          className="btn-force"
-                          onClick={() => askKill(e, true)}
-                          disabled={killingPid === e.pid}
-                          title={t("kill.force.tip")}
-                        >
-                          {t("kill.force.btn")}
-                        </button>
-                      </>
-                    ) : (
-                      <button
-                        className="btn-force"
-                        onClick={() => askKill(e, true)}
-                        disabled={killingPid === e.pid}
-                        title={t("kill.terminate.tip")}
-                      >
-                        {t("kill.terminate.btn")}
-                      </button>
-                    )}
-                    <button
-                      className={`btn-star ${e.is_whitelisted ? "active" : ""}`}
-                      onClick={() => handleToggleWhitelist(e)}
-                      title={e.is_whitelisted ? t("star.remove.tip") : t("star.add.tip")}
-                    >
-                      {e.is_whitelisted ? "★" : "☆"}
-                    </button>
-                  </td>
-                </tr>
-              );
-            })}
-            {filtered.length === 0 && (
-              <tr>
-                <td colSpan={10} className="empty">
-                  {entries.length === 0 ? t("empty.none") : t("empty.noMatch")}
-                </td>
-              </tr>
+      <main className="list">
+        {entries.length === 0 ? (
+          <div className="empty">{t("empty.none")}</div>
+        ) : filtered.length === 0 ? (
+          <div className="empty">{t("empty.noMatch")}</div>
+        ) : (
+          <>
+            {filter !== "whitelist" && suspects.length > 0 && (
+              <section>
+                <div className="section-head section-head-danger">
+                  <span className="section-title">{t("section.suspects")}</span>
+                  <span className="section-count">{suspects.length}</span>
+                  <span className="section-sub">{t("section.suspects.sub")}</span>
+                </div>
+                {suspects.map((e) => (
+                  <Row
+                    key={e.pid}
+                    e={e}
+                    expanded={expandedPid === e.pid}
+                    {...rowProps}
+                  />
+                ))}
+              </section>
             )}
-          </tbody>
-        </table>
-      </div>
+
+            {filter !== "whitelist" && suspects.length === 0 && (
+              <div className="allclear">
+                <svg
+                  viewBox="0 0 24 24"
+                  width="15"
+                  height="15"
+                  fill="none"
+                  stroke="currentColor"
+                  strokeWidth="2.2"
+                  strokeLinecap="round"
+                  strokeLinejoin="round"
+                >
+                  <path d="M20 6L9 17l-5-5" />
+                </svg>
+                {t("allclear")}
+              </div>
+            )}
+
+            {filter === "all" && healthy.length > 0 && (
+              <section>
+                <div className="section-head">
+                  <span className="section-title">{t("section.healthy")}</span>
+                  <span className="section-count">{healthy.length}</span>
+                </div>
+                {healthy.map((e) => (
+                  <Row
+                    key={e.pid}
+                    e={e}
+                    expanded={expandedPid === e.pid}
+                    {...rowProps}
+                  />
+                ))}
+              </section>
+            )}
+
+            {filter === "whitelist" && (
+              <section>
+                <div className="section-head">
+                  <span className="section-title">{t("section.starred")}</span>
+                  <span className="section-count">{filtered.length}</span>
+                </div>
+                {filtered.map((e) => (
+                  <Row
+                    key={e.pid}
+                    e={e}
+                    expanded={expandedPid === e.pid}
+                    {...rowProps}
+                  />
+                ))}
+              </section>
+            )}
+          </>
+        )}
+      </main>
+
+      <footer className="footer">
+        {t("footer.status", { procs: entries.length, ports: totalPortCount })}
+      </footer>
 
       {batchConfirm && (
         <div className="modal-backdrop" onClick={() => setBatchConfirm(null)}>
-          <div className="modal" onClick={(e) => e.stopPropagation()}>
-            <div className="modal-title">
+          <div
+            className="modal"
+            role="dialog"
+            aria-modal="true"
+            aria-labelledby="batch-modal-title"
+            onClick={(e) => e.stopPropagation()}
+            onKeyDown={trapTab}
+          >
+            <div className="modal-title" id="batch-modal-title">
               {t("batch.title", { n: batchConfirm.length })}
             </div>
             <div className="modal-body">
@@ -688,10 +643,15 @@ function App() {
               </div>
             </div>
             <div className="modal-actions">
-              <button className="btn-ghost" onClick={() => setBatchConfirm(null)}>
+              {/* autoFocus 落在取消键：Enter 永远不应直接触发批量终止 */}
+              <button
+                className="btn-ghost"
+                autoFocus
+                onClick={() => setBatchConfirm(null)}
+              >
                 {t("batch.cancel")}
               </button>
-              <button className="btn-kill solid" onClick={doBatchKill}>
+              <button className="btn-danger-solid" onClick={doBatchKill}>
                 {t("batch.confirm")}
               </button>
             </div>
@@ -701,8 +661,15 @@ function App() {
 
       {confirm && (
         <div className="modal-backdrop" onClick={() => setConfirm(null)}>
-          <div className="modal" onClick={(e) => e.stopPropagation()}>
-            <div className="modal-title">
+          <div
+            className="modal"
+            role="dialog"
+            aria-modal="true"
+            aria-labelledby="confirm-modal-title"
+            onClick={(e) => e.stopPropagation()}
+            onKeyDown={trapTab}
+          >
+            <div className="modal-title" id="confirm-modal-title">
               {confirm.force && os === "macos"
                 ? t("confirm.title.force")
                 : t("confirm.title.kill")}
@@ -744,13 +711,11 @@ function App() {
               </div>
             </div>
             <div className="modal-actions">
-              <button className="btn-ghost" onClick={() => setConfirm(null)}>
+              {/* autoFocus 落在取消键：Enter 永远不应直接触发终止 */}
+              <button className="btn-ghost" autoFocus onClick={() => setConfirm(null)}>
                 {t("confirm.cancel")}
               </button>
-              <button
-                className={confirm.force ? "btn-force solid" : "btn-kill solid"}
-                onClick={doKill}
-              >
+              <button className="btn-danger-solid" onClick={doKill}>
                 {confirm.force && os === "macos"
                   ? t("confirm.force")
                   : t("confirm.kill")}
@@ -763,64 +728,309 @@ function App() {
   );
 }
 
-function AppLabel({ label, whitelisted }: { label: string; whitelisted: boolean }) {
+// ────────────────────────────────────────────────────────────────────────────
+
+type RowProps = {
+  e: ProcessEntry;
+  expanded: boolean;
+  os: Os;
+  lang: Lang;
+  killingPid: number | null;
+  onAskKill: (e: ProcessEntry, force: boolean) => void;
+  onToggleWhitelist: (e: ProcessEntry) => void;
+  onOpenPort: (port: number) => void;
+  onToggleExpand: (pid: number) => void;
+};
+
+function Row({
+  e,
+  expanded,
+  os,
+  lang,
+  killingPid,
+  onAskKill,
+  onToggleWhitelist,
+  onOpenPort,
+  onToggleExpand,
+}: RowProps) {
   const { t } = useI18n();
-  const idx = label.indexOf(" · ");
-  const main = idx >= 0 ? label.slice(0, idx) : label;
-  const sub = idx >= 0 ? label.slice(idx + 3) : null;
+
+  // app_label 形如 "dev-server.js · node" —— 主名 + 次级说明
+  const sep = e.app_label.indexOf(" · ");
+  const name = sep >= 0 ? e.app_label.slice(0, sep) : e.app_label;
+  const nameSub = sep >= 0 ? e.app_label.slice(sep + 3) : null;
+
+  const known = describeEntry(e, lang);
+  const desc = known ?? t(DESC_KEYS[e.app_category] ?? "desc.unknown");
+
+  // 来源：谁启动的 / 谁在托管
+  const exempt = !e.is_zombie_suspect
+    ? e.zombie_reasons.filter((r) => EXEMPT_REASONS.has(r))
+    : [];
+  let provenance: string | null = null;
+  if (exempt.includes("launchd_managed")) {
+    provenance = t("story.managedBySystem");
+  } else if (exempt.length > 0 && exempt[0] !== "installed_app") {
+    provenance = t(`reason.${exempt[0]}` as I18nKey);
+  } else if (e.launcher_label && e.launcher_label !== "?") {
+    provenance =
+      e.launcher_label === "launchd"
+        ? t("story.launchedBySystem")
+        : t("story.launchedBy", { app: e.launcher_label });
+  }
+
+  const primary = e.is_zombie_suspect ? primaryReason(e.zombie_reasons) : null;
+  const shownPorts = e.ports.slice(0, 3);
+  const morePorts = e.ports.length - shownPorts.length;
+  const killing = killingPid === e.pid;
+
   return (
-    <div className="app-stack">
-      <div className="app-line-1">
-        <span className="app-name-main" title={label}>
-          {main}
-        </span>
-        {whitelisted && <span className="chip chip-wl">{t("whitelist.chip")}</span>}
-      </div>
-      {sub && (
-        <div className="app-name-sub" title={sub}>
-          {sub}
+    <div className={`row-block ${expanded ? "open" : ""}`}>
+      {/* 行整体可点（鼠标增强）；键盘路径走真实的折叠按钮 —— 避免 button 嵌套 */}
+      <div
+        className={`row ${e.is_zombie_suspect ? `row-suspect row-${e.confidence}` : ""}`}
+        onClick={() => onToggleExpand(e.pid)}
+      >
+        <button
+          className={`disclosure ${expanded ? "open" : ""}`}
+          aria-expanded={expanded}
+          aria-controls={`proc-detail-${e.pid}`}
+          aria-label={t("row.expand.tip")}
+          title={t("row.expand.tip")}
+          onClick={(ev) => {
+            ev.stopPropagation();
+            onToggleExpand(e.pid);
+          }}
+        >
+          <svg
+            viewBox="0 0 24 24"
+            width="12"
+            height="12"
+            fill="none"
+            stroke="currentColor"
+            strokeWidth="2.4"
+            strokeLinecap="round"
+            strokeLinejoin="round"
+          >
+            <path d="M9 6l6 6-6 6" />
+          </svg>
+        </button>
+
+        <div className="row-main">
+          <div className="row-title">
+            <span className="row-name">{name}</span>
+            {nameSub && <span className="row-name-sub">{nameSub}</span>}
+            <span className="row-ports mono">
+              {shownPorts.map((p) => (
+                <button
+                  key={p}
+                  className="port-link"
+                  onClick={(ev) => {
+                    ev.stopPropagation();
+                    onOpenPort(p);
+                  }}
+                  title={t("port.tip", { port: p })}
+                >
+                  :{p}
+                </button>
+              ))}
+              {morePorts > 0 && (
+                <span
+                  className="port-more"
+                  title={e.ports.map((p) => `:${p}`).join(" ")}
+                >
+                  +{morePorts}
+                </span>
+              )}
+            </span>
+          </div>
+          <div className="row-desc">
+            {e.is_zombie_suspect ? (
+              <>
+                <span className={`verdict verdict-${e.confidence}`}>
+                  {t(`verdict.${e.confidence}` as I18nKey)}
+                </span>
+                {primary && (
+                  <span className="desc-text">
+                    {" · "}
+                    {t(`story.${primary}` as I18nKey)}
+                  </span>
+                )}
+                <span className="desc-text desc-dim">
+                  {" · "}
+                  {desc}
+                </span>
+              </>
+            ) : (
+              <>
+                {e.is_whitelisted && (
+                  <span className="desc-starred">★ {t("story.starred")} · </span>
+                )}
+                <span className="desc-text">{desc}</span>
+                {provenance && (
+                  <span className="desc-text desc-dim"> · {provenance}</span>
+                )}
+              </>
+            )}
+          </div>
         </div>
-      )}
+
+        <span className="row-uptime" title={formatDuration(e.elapsed_secs)}>
+          {formatUptime(e.elapsed_secs, t)}
+        </span>
+
+        <div
+          className={`row-actions ${e.is_zombie_suspect ? "always" : ""}`}
+          onClick={(ev) => ev.stopPropagation()}
+        >
+          {os === "macos" ? (
+            <>
+              <button
+                className={`btn-act btn-kill ${e.is_zombie_suspect ? "primary" : ""}`}
+                onClick={() => onAskKill(e, false)}
+                disabled={killing}
+                title={t("kill.btn.tip")}
+              >
+                {t("kill.btn")}
+              </button>
+              <button
+                className="btn-act btn-force"
+                onClick={() => onAskKill(e, true)}
+                disabled={killing}
+                title={t("kill.force.tip")}
+              >
+                {t("kill.force.btn")}
+              </button>
+            </>
+          ) : (
+            <button
+              className={`btn-act btn-kill ${e.is_zombie_suspect ? "primary" : ""}`}
+              onClick={() => onAskKill(e, true)}
+              disabled={killing}
+              title={t("kill.terminate.tip")}
+            >
+              {t("kill.terminate.btn")}
+            </button>
+          )}
+          <button
+            className={`btn-act btn-star ${e.is_whitelisted ? "active" : ""}`}
+            onClick={() => onToggleWhitelist(e)}
+            title={e.is_whitelisted ? t("star.remove.tip") : t("star.add.tip")}
+          >
+            {e.is_whitelisted ? "★" : "☆"}
+          </button>
+        </div>
+      </div>
+
+      {expanded && <Detail e={e} os={os} id={`proc-detail-${e.pid}`} />}
     </div>
   );
 }
 
-function LauncherChain({ entry }: { entry: ProcessEntry }) {
-  const chain = entry.parent_chain;
-  if (chain.length === 0) {
-    return <span className="launcher-empty">—</span>;
-  }
-  const top = chain[chain.length - 1];
-  const topMeta = CATEGORY_META[top.category] || CATEGORY_META.unknown;
-  // 倒序：从靠近顶端 App 的中间过程，一层层缩进到直接父进程
-  const intermediate = chain.slice(0, -1).reverse();
+function Detail({ e, os, id }: { e: ProcessEntry; os: Os; id: string }) {
+  const { t } = useI18n();
 
-  const tooltip = chain
-    .map((p: ParentRef) => `${p.label} (PID ${p.pid})`)
-    .reverse()
-    .join("  →  ");
+  // 链末节点用主名（app_label 可能带 " · node" 次级说明，链里不需要）
+  const sepIdx = e.app_label.indexOf(" · ");
+  const selfName = sepIdx >= 0 ? e.app_label.slice(0, sepIdx) : e.app_label;
+
+  const catKey = (
+    ["installed-app", "system", "dev-script", "user-binary"].includes(e.app_category)
+      ? `cat.${e.app_category}`
+      : "cat.unknown"
+  ) as I18nKey;
+
+  const exempt = !e.is_zombie_suspect
+    ? e.zombie_reasons.filter((r) => EXEMPT_REASONS.has(r))
+    : [];
+
+  // 启动链：根（顶端 App / 系统）在前，依次到直接父进程，最后是进程本身
+  const chainTopDown = [...e.parent_chain].reverse();
 
   return (
-    <div className="launcher" title={tooltip}>
-      <div
-        className="launcher-top"
-        style={{ color: topMeta.color, borderColor: topMeta.border }}
-      >
-        {top.label}
+    <div className="detail" id={id}>
+      <div className="detail-grid">
+        <span className="detail-label">{t("detail.command")}</span>
+        <span className="detail-value mono selectable">{e.full_command || e.command}</span>
+
+        <span className="detail-label">{t("detail.path")}</span>
+        <span className="detail-value mono selectable">{e.exe_path || "—"}</span>
+
+        <span className="detail-label">{t("detail.ports")}</span>
+        <span className="detail-value mono">
+          {e.ports.map((p) => `:${p}`).join("  ")}
+        </span>
+
+        <span className="detail-label">{t("detail.pid")}</span>
+        <span className="detail-value mono">
+          {e.pid}
+          <span className="detail-sep">·</span>
+          <span className="detail-dim">
+            {t("detail.parent")} {e.ppid}
+          </span>
+          {os === "macos" && e.ppid === 1 && (
+            <span className="detail-note">{t("detail.parent.launchdNote")}</span>
+          )}
+        </span>
+
+        <span className="detail-label">{t("detail.category")}</span>
+        <span className="detail-value">{t(catKey)}</span>
+
+        <span className="detail-label">{t("detail.resources")}</span>
+        <span className="detail-value mono">
+          {t("detail.resources.value", {
+            cpu: e.cpu_percent.toFixed(1),
+            mem: e.mem_mb.toFixed(1),
+            uptime: formatDuration(e.elapsed_secs),
+          })}
+        </span>
+
+        <span className="detail-label">{t("detail.chain")}</span>
+        <span className="detail-value">
+          {chainTopDown.length === 0 ? (
+            <span className="detail-dim">{t("detail.chain.empty")}</span>
+          ) : (
+            <span className="chain">
+              {chainTopDown.map((p, i) => (
+                <span className="chain-node" key={`${p.pid}-${i}`}>
+                  {i > 0 && <span className="chain-arrow">›</span>}
+                  {p.label}
+                </span>
+              ))}
+              <span className="chain-arrow">›</span>
+              <span className="chain-node chain-self">{selfName}</span>
+            </span>
+          )}
+        </span>
       </div>
-      {intermediate.map((p: ParentRef, i: number) => {
-        const m = CATEGORY_META[p.category] || CATEGORY_META.unknown;
-        return (
-          <div
-            key={`${p.pid}-${i}`}
-            className="launcher-tree-node"
-            style={{ paddingLeft: `${(i + 1) * 14}px`, color: m.color }}
-          >
-            <span className="launcher-tree-branch">└</span>
-            <span className="launcher-tree-label">{p.label}</span>
+
+      {e.is_zombie_suspect && e.zombie_reasons.length > 0 && (
+        <div className="evidence">
+          <div className="evidence-title evidence-title-danger">
+            {t("detail.evidence")}
           </div>
-        );
-      })}
+          {e.zombie_reasons.map((r) => (
+            <div className="evidence-item" key={r}>
+              <span className="evidence-name">{t(`reason.${r}` as I18nKey)}</span>
+              <span className="evidence-text">{t(`reasonTip.${r}` as I18nKey)}</span>
+            </div>
+          ))}
+        </div>
+      )}
+
+      {exempt.length > 0 && (
+        <div className="evidence">
+          <div className="evidence-title">{t("detail.whyNot")}</div>
+          {exempt.map((r) => (
+            <div className="evidence-item" key={r}>
+              <span className="evidence-name evidence-name-ok">
+                ✓ {t(`reason.${r}` as I18nKey)}
+              </span>
+              <span className="evidence-text">{t(`reasonTip.${r}` as I18nKey)}</span>
+            </div>
+          ))}
+        </div>
+      )}
     </div>
   );
 }

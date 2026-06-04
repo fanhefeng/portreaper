@@ -1,96 +1,110 @@
 // 轻量类型安全 i18n —— 不引库：
 // - key 类型从 zh 字典推导，en 用 Record<Key, string> 约束 → 缺/多 key 都是 tsc 编译错误
-// - reason.* / confidence.* 键与 Rust 端 ReasonCode/Confidence 的 serde 名一一对应，
-//   CI 的 scripts/check-reason-parity.mjs 做机械校验
+// - reason.* / reasonTip.* / confidence.* 键与 Rust 端 ReasonCode/Confidence 的 serde 名
+//   一一对应，CI 的 scripts/check-reason-parity.mjs 做机械校验
+// - story.* 是产品层文案：把主判定码翻译成一句人话结论（行内展示）；
+//   reason.*（短标签）+ reasonTip.*（完整解释）用于展开的详情面板
 import { useSyncExternalStore } from "react";
 import { invoke } from "@tauri-apps/api/core";
 
 const zh = {
-  // ---- header ----
-  "pills.processes": "进程",
-  "pills.ports": "端口",
-  "pills.suspects": "疑似僵尸",
-  "pills.whitelisted": "已收藏",
-  "header.autoRefresh": "· 每 2s 自动刷新",
-
   // ---- toolbar ----
   "search.placeholder": "搜索 端口 / PID / App / 启动方",
   "filter.all": "全部",
-  "filter.suspect": "仅疑似僵尸",
-  "filter.whitelist": "已收藏",
-  "sweep.button": "一键清扫",
-  "sweep.sweeping": "清扫中…",
+  "filter.suspect": "可疑",
+  "filter.whitelist": "收藏",
+  "sweep.button": "一键清理",
+  "sweep.sweeping": "清理中…",
   "sweep.title": "批量终止「确认 + 很可能」级别的疑似僵尸（「存疑」不会被清扫）",
-  "refresh.title": "立即刷新（自动每 2 秒会刷一次）",
-  "refresh.aria": "立即刷新",
+
+  // ---- sections ----
+  // 注意三层词汇不撞车：标签页「可疑」› 分区「可疑进程」› 行内判定「确认僵尸/疑似僵尸/存疑」
+  "section.suspects": "可疑进程",
+  "section.suspects.sub": "启动它们的软件已经退出，进程被遗留，正占用端口",
+  "section.healthy": "正常监听",
+  "section.starred": "已收藏",
+  "allclear": "未发现僵尸进程，一切正常",
+
+  // ---- footer ----
+  "footer.status": "{procs} 个进程 · {ports} 个端口 · 每 2 秒自动扫描",
 
   // ---- errors ----
   "error.clickToClose": "· 点击关闭",
-  "error.killFailed": "Kill 失败: {err}",
+  "error.killFailed": "终止失败: {err}",
   "error.openBrowser": "打开浏览器失败: {err}",
-  "error.batchFailed": "{failed}/{total} 个进程 kill 失败：",
+  "error.batchFailed": "{failed}/{total} 个进程终止失败：",
   "error.pidReused": "进程身份已变化（PID 被复用），已取消终止，请重新扫描",
   "error.processGone": "进程已不存在（可能刚刚退出）",
   "error.identityUnknown": "缺少进程身份信息，已取消终止，请刷新后重试",
 
-  // ---- table headers ----
-  "th.ports": "端口",
-  "th.ports.tip":
-    "进程正在 TCP LISTEN 的本地端口。点击端口 chip 会在浏览器打开 http://localhost:PORT",
-  "th.type": "类型",
-  "th.type.tip": "进程分类（脚本 / APP / 系统 / CLI）",
-  "th.app": "App",
-  "th.app.tip": "App 名称（由 Rust 端的 identify_app 算出的人类可读标签）",
-  "th.path": "路径",
-  "th.path.tip": "可执行文件的完整路径。鼠标悬停在路径上可查看完整命令行（含所有参数）",
-  "th.launcher": "启动者",
-  "th.launcher.tip": "沿父进程链向上找到的第一个用户可见 App；下方小字是中间的脚本/进程",
-  "th.pid": "PID",
-  "th.pid.tip.macos":
-    "本进程 PID / 父进程 PID。父进程是 launchd (PID 1) 意味着原启动者已退出 —— 这是「孤儿」信号。",
-  "th.pid.tip.windows":
-    "本进程 PID / 父进程 PID。父进程已退出意味着原启动者（终端 / IDE）不在了 —— 这是「孤儿」信号。",
-  "th.elapsed": "已运行",
-  "th.elapsed.tip": "进程已运行时长（HH:MM:SS，超过 1 天显示为 dd-HH:MM:SS）",
-  "th.cpu": "CPU",
-  "th.cpu.tip": "进程占用 CPU 的百分比（瞬时采样，多线程可超过 100%）",
-  "th.mem": "内存",
-  "th.mem.tip": "进程常驻物理内存（RSS）",
-  "th.actions": "操作",
-  "th.actions.tip.macos":
-    "Kill = SIGTERM 优雅终止；强杀 = SIGKILL 强制终止；★ 加入收藏后不再被判为僵尸",
-  "th.actions.tip.windows":
-    "终止 = TerminateProcess（Windows 无 SIGTERM，无法优雅终止脱离控制台的进程）；★ 加入收藏后不再被判为僵尸",
-
-  // ---- cells ----
+  // ---- row ----
   "port.tip": "在浏览器打开 http://localhost:{port}",
-  "args.label": "参数",
-  "cmd.full.tip": "完整命令：{cmd}",
-  "pid.self": "本进程",
-  "pid.self.tip": "本进程 PID（检测到正在监听端口的进程）",
-  "pid.parent": "父进程",
-  "pid.parent.tip.launchd":
-    "父进程 PID 1 = launchd —— macOS 的进程主控（开机后第一个启动，所有进程的最终祖先）。父进程为 launchd 通常意味着原启动者（终端 / IDE）已退出，本进程被「收养」为孤儿。",
-  "pid.parent.tip.normal": "父进程 PID（启动本进程的进程）",
-  "cpu.tip": "CPU 占用 {v}%",
-  "mem.tip": "常驻物理内存 {v} MB",
+  "row.expand.tip": "查看详情",
+
+  // ---- uptime（粗粒度，精确值在详情）----
+  "uptime.now": "刚刚",
+  "uptime.min": "{n} 分钟",
+  "uptime.hour": "{n} 小时",
+  "uptime.day": "{n} 天",
+
+  // ---- verdict（结论前缀，按置信层级）----
+  "verdict.confirmed": "确认僵尸",
+  "verdict.likely": "疑似僵尸",
+  "verdict.possible": "存疑",
+
+  // ---- story（主判定码 → 一句人话；与 ReasonCode 蛇形名对应）----
+  "story.defunct": "进程已死，等待回收",
+  "story.ppid1_orphan": "启动它的程序已退出",
+  "story.orphaned_chain": "启动它的终端已关闭",
+  "story.parent_exited": "父进程已退出",
+  "story.pid_slot_reused": "原父进程已死",
+  "story.orphaned_session": "终端会话已死",
+  "story.just_reparented": "刚启动，观察中",
+  "story.nonstandard_path": "非标准路径",
+  "story.dev_server_keyword": "疑似开发服务器",
+  "story.launchedBy": "由 {app} 启动",
+  "story.launchedBySystem": "系统启动",
+  "story.managedBySystem": "系统托管",
+  "story.starred": "已收藏",
+
+  // ---- desc（类别 → 小白能懂的一句话，知识库未命中时的兜底）----
+  "desc.installed-app": "已安装应用的服务",
+  "desc.system": "系统组件",
+  "desc.dev-script": "开发脚本 / 本地服务器",
+  "desc.user-binary": "命令行工具",
+  "desc.unknown": "未知程序",
 
   // ---- actions ----
-  "kill.btn": "Kill",
+  "kill.btn": "终止",
+  "kill.btn.tip": "SIGTERM 优雅终止",
   "kill.force.btn": "强杀",
-  "kill.force.tip": "kill -9 强制",
+  "kill.force.tip": "SIGKILL 强制终止（不可被忽略）",
   "kill.terminate.btn": "终止",
   "kill.terminate.tip": "TerminateProcess 立即终止（Windows 无优雅终止）",
-  "star.add.tip": "加入收藏（不再被标记为僵尸）",
-  "star.remove.tip": "从收藏移除",
-  "whitelist.chip": "★ 收藏",
+  "star.add.tip": "收藏（不再被标记为僵尸）",
+  "star.remove.tip": "取消收藏",
+
+  // ---- detail panel ----
+  "detail.command": "完整命令",
+  "detail.path": "可执行文件",
+  "detail.ports": "端口",
+  "detail.pid": "PID",
+  "detail.parent": "父进程",
+  "detail.parent.launchdNote": "PID 1 = launchd：原启动者已退出，本进程已被系统收养",
+  "detail.chain": "启动链",
+  "detail.chain.empty": "无法回溯",
+  "detail.category": "类别",
+  "detail.resources": "资源",
+  "detail.resources.value": "CPU {cpu}% · 内存 {mem} MB · 已运行 {uptime}",
+  "detail.evidence": "判定依据",
+  "detail.whyNot": "为什么不是僵尸",
 
   // ---- categories ----
-  "cat.installed-app": "APP",
-  "cat.system": "系统",
-  "cat.dev-script": "脚本",
-  "cat.user-binary": "CLI",
-  "cat.unknown": "?",
+  "cat.installed-app": "应用程序",
+  "cat.system": "系统进程",
+  "cat.dev-script": "开发脚本",
+  "cat.user-binary": "命令行工具",
+  "cat.unknown": "未知",
 
   // ---- confidence tiers（与 Rust Confidence serde 名对应）----
   "confidence.confirmed": "确认",
@@ -132,14 +146,12 @@ const zh = {
   "reasonTip.pm2_managed": "由 pm2 守护进程托管 —— 用户有意让它常驻，不是僵尸。",
   "reasonTip.just_reparented": "启动（或刚被收养）不足 10 秒，可能正处于重启过渡态 —— 暂列存疑，不会被清扫。",
 
-  "exempt.tip": "为什么未被标记：",
-
   // ---- empty states ----
   "empty.none": "没有发现任何监听端口",
   "empty.noMatch": "没有匹配项",
 
   // ---- batch modal ----
-  "batch.title": "一键清扫 {n} 个疑似僵尸进程",
+  "batch.title": "清扫 {n} 个疑似僵尸进程",
   "batch.signal": "信号",
   "batch.signal.macos": "SIGTERM (-15) 优雅终止",
   "batch.signal.windows": "TerminateProcess（强制终止）",
@@ -169,22 +181,23 @@ const zh = {
 export type I18nKey = keyof typeof zh;
 
 const en: Record<I18nKey, string> = {
-  "pills.processes": "processes",
-  "pills.ports": "ports",
-  "pills.suspects": "suspects",
-  "pills.whitelisted": "starred",
-  "header.autoRefresh": "· refreshes every 2s",
-
   "search.placeholder": "Search port / PID / app / launcher",
   "filter.all": "All",
-  "filter.suspect": "Suspects only",
+  "filter.suspect": "Zombies",
   "filter.whitelist": "Starred",
-  "sweep.button": "Sweep",
-  "sweep.sweeping": "Sweeping…",
+  "sweep.button": "Clean up",
+  "sweep.sweeping": "Cleaning…",
   "sweep.title":
     "Batch-terminate Confirmed + Likely suspects (Possible is never swept)",
-  "refresh.title": "Refresh now (auto-refreshes every 2 seconds)",
-  "refresh.aria": "Refresh now",
+
+  "section.suspects": "Suspects",
+  "section.suspects.sub":
+    "The programs that launched them have exited; they linger and hold ports",
+  "section.healthy": "Healthy listeners",
+  "section.starred": "Starred",
+  "allclear": "No zombies. All clear",
+
+  "footer.status": "{procs} processes · {ports} ports · rescans every 2s",
 
   "error.clickToClose": "· click to dismiss",
   "error.killFailed": "Kill failed: {err}",
@@ -196,63 +209,68 @@ const en: Record<I18nKey, string> = {
   "error.identityUnknown":
     "Missing process identity token — kill aborted, refresh and retry",
 
-  "th.ports": "Ports",
-  "th.ports.tip":
-    "Local TCP LISTEN ports of this process. Click a port chip to open http://localhost:PORT",
-  "th.type": "Type",
-  "th.type.tip": "Process category (script / app / system / CLI)",
-  "th.app": "App",
-  "th.app.tip": "Human-readable label computed by identify_app on the Rust side",
-  "th.path": "Path",
-  "th.path.tip":
-    "Full executable path. Hover to see the complete command line with all arguments",
-  "th.launcher": "Launcher",
-  "th.launcher.tip":
-    "First user-visible app found walking up the parent chain; smaller lines are intermediate processes",
-  "th.pid": "PID",
-  "th.pid.tip.macos":
-    "Process PID / parent PID. A parent of launchd (PID 1) means the original launcher exited — the orphan signal.",
-  "th.pid.tip.windows":
-    "Process PID / parent PID. A vanished parent means the original launcher (terminal / IDE) is gone — the orphan signal.",
-  "th.elapsed": "Uptime",
-  "th.elapsed.tip": "Elapsed run time (HH:MM:SS, or dd-HH:MM:SS beyond one day)",
-  "th.cpu": "CPU",
-  "th.cpu.tip": "CPU usage (instantaneous sample; can exceed 100% for multithreaded processes)",
-  "th.mem": "Memory",
-  "th.mem.tip": "Resident set size (RSS)",
-  "th.actions": "Actions",
-  "th.actions.tip.macos":
-    "Kill = SIGTERM (graceful); Force = SIGKILL; ★ starred entries are never flagged as zombies",
-  "th.actions.tip.windows":
-    "Terminate = TerminateProcess (Windows has no SIGTERM for detached processes); ★ starred entries are never flagged",
-
   "port.tip": "Open http://localhost:{port} in browser",
-  "args.label": "args",
-  "cmd.full.tip": "Full command: {cmd}",
-  "pid.self": "self",
-  "pid.self.tip": "PID of the listening process",
-  "pid.parent": "parent",
-  "pid.parent.tip.launchd":
-    "Parent PID 1 = launchd — macOS's process supervisor (first process at boot, ultimate ancestor of everything). A launchd parent usually means the original launcher (terminal / IDE) exited and this process was adopted as an orphan.",
-  "pid.parent.tip.normal": "Parent PID (the process that started this one)",
-  "cpu.tip": "CPU usage {v}%",
-  "mem.tip": "Resident memory {v} MB",
+  "row.expand.tip": "Show details",
+
+  "uptime.now": "now",
+  "uptime.min": "{n} min",
+  "uptime.hour": "{n} hr",
+  "uptime.day": "{n} d",
+
+  "verdict.confirmed": "Zombie",
+  "verdict.likely": "Likely zombie",
+  "verdict.possible": "Possible",
+
+  "story.defunct": "dead, never reaped",
+  "story.ppid1_orphan": "its launcher has exited",
+  "story.orphaned_chain": "its terminal is gone",
+  "story.parent_exited": "parent process exited",
+  "story.pid_slot_reused": "original parent is dead",
+  "story.orphaned_session": "dead terminal session",
+  "story.just_reparented": "just started, watching",
+  "story.nonstandard_path": "non-standard path",
+  "story.dev_server_keyword": "looks like a dev server",
+  "story.launchedBy": "launched by {app}",
+  "story.launchedBySystem": "started by the system",
+  "story.managedBySystem": "managed by the system",
+  "story.starred": "starred",
+
+  "desc.installed-app": "Service of an installed app",
+  "desc.system": "System component",
+  "desc.dev-script": "Dev script / local server",
+  "desc.user-binary": "Command-line tool",
+  "desc.unknown": "Unknown program",
 
   "kill.btn": "Kill",
+  "kill.btn.tip": "SIGTERM, graceful",
   "kill.force.btn": "Force",
-  "kill.force.tip": "kill -9 (SIGKILL)",
+  "kill.force.tip": "SIGKILL, cannot be ignored",
   "kill.terminate.btn": "Terminate",
   "kill.terminate.tip":
     "TerminateProcess — immediate (Windows has no graceful kill for detached processes)",
   "star.add.tip": "Star (never flag as zombie)",
   "star.remove.tip": "Remove star",
-  "whitelist.chip": "★ starred",
 
-  "cat.installed-app": "APP",
-  "cat.system": "SYS",
-  "cat.dev-script": "DEV",
-  "cat.user-binary": "CLI",
-  "cat.unknown": "?",
+  "detail.command": "Command",
+  "detail.path": "Executable",
+  "detail.ports": "Ports",
+  "detail.pid": "PID",
+  "detail.parent": "Parent",
+  "detail.parent.launchdNote":
+    "PID 1 = launchd: the original launcher exited and this process was adopted",
+  "detail.chain": "Launch chain",
+  "detail.chain.empty": "untraceable",
+  "detail.category": "Category",
+  "detail.resources": "Resources",
+  "detail.resources.value": "CPU {cpu}% · {mem} MB RAM · up {uptime}",
+  "detail.evidence": "Why flagged",
+  "detail.whyNot": "Why not a zombie",
+
+  "cat.installed-app": "Application",
+  "cat.system": "System process",
+  "cat.dev-script": "Dev script",
+  "cat.user-binary": "CLI tool",
+  "cat.unknown": "Unknown",
 
   "confidence.confirmed": "Confirmed",
   "confidence.likely": "Likely",
@@ -298,8 +316,6 @@ const en: Record<I18nKey, string> = {
     "Supervised by the pm2 daemon — intentionally long-running, not a zombie.",
   "reasonTip.just_reparented":
     "Started (or reparented) less than 10 seconds ago — possibly a restart in flight. Listed as Possible; never swept.",
-
-  "exempt.tip": "Why not flagged: ",
 
   "empty.none": "No listening ports found",
   "empty.noMatch": "No matches",
@@ -377,8 +393,8 @@ export function translate(
   key: I18nKey,
   params?: Record<string, string | number>,
 ): string {
-  // 兜底：动态 key（reason.* 经 as 断言传入）在 Rust 新增码而字典未更新的
-  // 陈旧构建里可能缺失 —— 退回英文，再退回 key 本身，绝不渲染空 chip。
+  // 兜底：动态 key（reason.* / story.* 经 as 断言传入）在 Rust 新增码而字典
+  // 未更新的陈旧构建里可能缺失 —— 退回英文，再退回 key 本身，绝不渲染空文案。
   // （CI 的 check-reason-parity.mjs 保证正常构建不会走到兜底。）
   let s: string = dict[lang][key] ?? dict.en[key] ?? key;
   if (params) {
