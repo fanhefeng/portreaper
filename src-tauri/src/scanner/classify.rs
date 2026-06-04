@@ -468,6 +468,36 @@ mod tests {
                 want_conf: None,
                 want_reasons: &[],
             },
+            Case {
+                // 真实漏报修复：brew 解释器跑 `-m http.server`，孤儿化后曾被
+                // brew_service_path 整体豁免。mod.rs 现按「身份路径」取证 ——
+                // 模块调用没有可豁免的脚本路径 ⇒ brew_service_path=false、
+                // 类别 dev-script ⇒ 直接孤儿 × dev ⇒ Confirmed 入清扫。
+                name: "20 孤儿 python -m http.server（brew 解释器）：身份是模块，必须检出",
+                snap: ProcessSnapshot {
+                    direct_orphan: Some(Ppid1Orphan),
+                    dev_keyword: true,        // "python" 命中 DEV_SERVER_PATTERNS
+                    dev_category: true,       // identify_app `-m 模块` → dev-script
+                    brew_service_path: false, // brew_service_exemption 按模块身份判为不豁免
+                    ..snap()
+                },
+                want_suspect: true,
+                want_conf: Confirmed,
+                want_reasons: &[Ppid1Orphan, DevServerKeyword, NonstandardPath],
+            },
+            Case {
+                name: "21 launchd 托管的 python -m 守护（LaunchAgent）：托管豁免优先于一切模块判定",
+                snap: ProcessSnapshot {
+                    direct_orphan: Some(Ppid1Orphan),
+                    launchd_managed: true,
+                    dev_keyword: true,
+                    dev_category: true,
+                    ..snap()
+                },
+                want_suspect: false,
+                want_conf: None,
+                want_reasons: &[LaunchdManaged],
+            },
         ];
 
         for c in &cases {

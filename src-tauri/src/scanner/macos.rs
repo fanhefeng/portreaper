@@ -85,14 +85,40 @@ pub(crate) fn is_chain_stopper(exe_path: &str, category: &str) -> bool {
     category == "installed-app" || exe_path.contains(".app/")
 }
 
-/// (label, category) —— macOS 路径阶梯。顺序敏感：.app → /Applications 裸 →
-/// 系统 → 脚本运行时 → Homebrew CLI → cargo 产物 → 用户目录 → unknown。
+/// (label, category) —— macOS 路径阶梯。顺序敏感：脚本/模块身份 → .app →
+/// /Applications 裸 → 系统 → 裸脚本运行时 → Homebrew CLI → cargo 产物 →
+/// 用户目录 → unknown。脚本/模块必须最先判：解释器自身可能就住在
+/// .app bundle / 系统路径里（Python.app、/usr/bin/python3）。
 pub(crate) fn identify_app(
     full_command: &str,
     short_command: &str,
     exe_path: &str,
 ) -> (String, String) {
     let exe = exe_path;
+
+    // 0. 脚本/模块身份优先于一切路径与 .app 判定 —— brew / python.org 的
+    //    Python 都以 .../Python.app/Contents/MacOS/Python 形态存在，若先走
+    //    .app 阶梯会被归 installed-app 豁免（真实漏报：孤儿 python -m
+    //    http.server 占着 8000 端口，解释器在 Cellar 的 Python.app 里）。
+    if is_script_runtime(short_command) {
+        if let Some(script) = super::identify::extract_script_arg(full_command) {
+            if is_standard_install_path(script) {
+                // 系统自带的脚本任务（/System/.../foo.py）仍归系统
+                return (basename(script).to_string(), "system".to_string());
+            }
+            return (
+                script_runtime_label(full_command, short_command),
+                "dev-script".to_string(),
+            );
+        }
+        // `-m 模块` 调用：身份是模块（python -m http.server）
+        if let Some(module) = super::identify::extract_module_arg(full_command) {
+            return (
+                format!("{} · {}", module, short_command.to_lowercase()),
+                "dev-script".to_string(),
+            );
+        }
+    }
 
     // 1. .app bundle —— 抽出 .app 名（exe 来自 ps comm，含空格也完整）
     if let Some(idx) = exe.find(".app/") {
@@ -111,22 +137,6 @@ pub(crate) fn identify_app(
     // 2a. /Applications/ 下的裸二进制
     if exe.starts_with("/Applications/") {
         return (basename(exe).to_string(), "installed-app".to_string());
-    }
-
-    // 2b. 带脚本参数的运行时 —— 进程身份是「脚本」而非解释器 exe：
-    //    /usr/bin/python3 跑 /Users/x/app.py 必须按脚本分类，否则系统自带
-    //    运行时的孤儿 dev server 会被路径豁免吞掉（漏报）。
-    if is_script_runtime(short_command) {
-        if let Some(script) = super::identify::extract_script_arg(full_command) {
-            if is_standard_install_path(script) {
-                // 系统自带的脚本任务（/System/.../foo.py）仍归系统
-                return (basename(script).to_string(), "system".to_string());
-            }
-            return (
-                script_runtime_label(full_command, short_command),
-                "dev-script".to_string(),
-            );
-        }
     }
 
     // 2c. 系统组件
@@ -536,6 +546,35 @@ mod tests {
             "mytool",
             "/Users/x/rust/mytool/target/debug/mytool",
         );
+        assert_eq!(cat, "dev-script");
+
+        // `-m 模块` 调用：身份是模块，不因解释器在 brew/系统路径而改类。
+        // 必须用完整真实路径：brew 的 Python 住在 Cellar 的 Python.app bundle
+        // 里，曾被 .app 阶梯先一步归 installed-app 豁免（真实漏报案例：
+        // 孤儿 python -m http.server 占着 8000 端口）。
+        let (label, cat) = identify_app(
+            "/opt/homebrew/Cellar/python@3.14/3.14.5/Frameworks/Python.framework/Versions/3.14/Resources/Python.app/Contents/MacOS/Python -m http.server 8000",
+            "Python",
+            "/opt/homebrew/Cellar/python@3.14/3.14.5/Frameworks/Python.framework/Versions/3.14/Resources/Python.app/Contents/MacOS/Python",
+        );
+        assert_eq!(label, "http.server · python");
+        assert_eq!(cat, "dev-script");
+
+        // 同形态跑用户脚本：身份是脚本，.app 包装不豁免
+        let (label, cat) = identify_app(
+            "/Library/Frameworks/Python.framework/Versions/3.12/Resources/Python.app/Contents/MacOS/Python /Users/x/bot/main.py",
+            "Python",
+            "/Library/Frameworks/Python.framework/Versions/3.12/Resources/Python.app/Contents/MacOS/Python",
+        );
+        assert_eq!(label, "main.py · Python");
+        assert_eq!(cat, "dev-script");
+
+        let (label, cat) = identify_app(
+            "/usr/bin/python3 -m http.server 9000",
+            "python3",
+            "/usr/bin/python3",
+        );
+        assert_eq!(label, "http.server · python3");
         assert_eq!(cat, "dev-script");
     }
 

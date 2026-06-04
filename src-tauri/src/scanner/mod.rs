@@ -73,6 +73,7 @@ pub fn scan(whitelist: &[String]) -> Vec<ProcessEntry> {
         let exe_is_standard_install = app_category == "installed-app"
             || app_category == "system"
             || (platform_impl::is_standard_install_path(&exe_path) && app_category != "dev-script");
+        let brew_service_path = brew_service_exemption(&app_category, &full_command, &exe_path);
 
         let snapshot = ProcessSnapshot {
             state: meta.state.clone(),
@@ -81,7 +82,7 @@ pub fn scan(whitelist: &[String]) -> Vec<ProcessEntry> {
             chain_terminates_at_init: chain_flags.terminates_at_init,
             chain_has_orphan_shell: chain_flags.has_orphan_shell,
             launchd_managed: collected.launchd_pids.contains(&l.pid),
-            brew_service_path: platform_impl::is_brew_service_path(&exe_path),
+            brew_service_path,
             pm2_managed: chain_flags.pm2 || full_command.contains("ProcessContainer"),
             tty_orphaned: meta.tty_orphaned,
             exe_is_standard_install,
@@ -147,6 +148,26 @@ pub fn scan(whitelist: &[String]) -> Vec<ProcessEntry> {
     });
 
     entries
+}
+
+/// Homebrew 服务豁免按「身份路径」取证：dev-script 的身份是脚本/模块，
+/// 不是解释器的安装位置 —— brew 装的 python/node 跑用户脚本或 `-m 模块`
+/// 时不得享受服务豁免（真实漏报：孤儿 `python -m http.server`，解释器在
+/// /opt/homebrew/Cellar/ 下被整体放行）。
+/// 无脚本也无模块（REPL、console-script 包装如 supervisord）时保守沿用
+/// 解释器路径 —— system-domain 的 brew python 服务仍受兜底保护。
+fn brew_service_exemption(app_category: &str, full_command: &str, exe_path: &str) -> bool {
+    if app_category != "dev-script" {
+        return platform_impl::is_brew_service_path(exe_path);
+    }
+    match identify::extract_script_arg(full_command) {
+        // 有脚本：豁免与否看脚本自己的位置（brew 包内脚本 → 豁免保留）
+        Some(script) => platform_impl::is_brew_service_path(script),
+        None => {
+            identify::extract_module_arg(full_command).is_none()
+                && platform_impl::is_brew_service_path(exe_path)
+        }
+    }
 }
 
 /// 沿 PPID 向上回溯（≤12 层），同时收集孤儿链信号。
@@ -304,6 +325,50 @@ mod chain_tests {
         assert!(flags.has_orphan_shell, "链上应识别出孤儿 zsh");
         // 链：npm → zsh → launchd
         assert_eq!(chain.last().unwrap().label, "launchd");
+    }
+
+    /// brew 豁免的「身份路径」矩阵：解释器位置 ≠ 进程身份。
+    #[cfg(target_os = "macos")]
+    #[test]
+    fn brew_exemption_follows_identity_path() {
+        const BREW_PY: &str =
+            "/opt/homebrew/Cellar/python@3.14/3.14.5/Frameworks/Python.framework/Versions/3.14/Resources/Python.app/Contents/MacOS/Python";
+
+        // 孤儿 http.server 真实案例：brew 解释器 + `-m 模块` → 不豁免
+        assert!(!brew_service_exemption(
+            "dev-script",
+            "Python -m http.server 8000",
+            BREW_PY
+        ));
+        // brew 解释器跑用户脚本 → 不豁免（身份是脚本，脚本不在 brew）
+        assert!(!brew_service_exemption(
+            "dev-script",
+            "python3 /Users/x/bot/main.py",
+            BREW_PY
+        ));
+        // brew 包内脚本（python3 /opt/homebrew/libexec/foo.py）→ 豁免保留
+        assert!(brew_service_exemption(
+            "dev-script",
+            "python3 /opt/homebrew/Cellar/somepkg/1.0/libexec/foo.py",
+            BREW_PY
+        ));
+        // console-script 包装（supervisord，无扩展名无 -m）→ 保守沿用解释器路径
+        assert!(brew_service_exemption(
+            "dev-script",
+            "python3 /opt/homebrew/bin/supervisord -c /opt/homebrew/etc/supervisord.conf",
+            BREW_PY
+        ));
+        // 非 dev-script（postgres 等编译型服务）→ 维持原语义
+        assert!(brew_service_exemption(
+            "user-binary",
+            "/opt/homebrew/opt/postgresql@16/bin/postgres -D /opt/homebrew/var/postgresql@16",
+            "/opt/homebrew/opt/postgresql@16/bin/postgres"
+        ));
+        assert!(!brew_service_exemption(
+            "user-binary",
+            "/Users/x/go/bin/server",
+            "/Users/x/go/bin/server"
+        ));
     }
 
     #[cfg(target_os = "macos")]

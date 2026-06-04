@@ -36,6 +36,34 @@ pub(crate) fn extract_script_arg(full_command: &str) -> Option<&str> {
     })
 }
 
+/// 从解释器命令行中提取 `-m <模块>` 调用（python -m http.server / -mhttp.server）。
+/// 模块名是进程身份（类比脚本文件）—— 孤儿化的 `python -m http.server` 不能
+/// 因解释器装在系统路径 / Homebrew 而被豁免（真实漏报案例）。
+///
+/// 扫描整个参数段而非「遇首个位置参数即停」：`-W ignore -m http.server` 的
+/// 分离值 `ignore` 不带 `-`，按位置参数终止会漏掉模块（评审发现）。真正的
+/// 脚本位置参数由 extract_script_arg 在两个调用点先行处理，互不冲突。
+/// 例外：`-c` / `-e` / `-`（eval / stdin 模式）直接放弃 —— ps 会剥掉引号，
+/// 代码体的 token 不可信，里面的 `-m` 不是模块调用。
+pub(crate) fn extract_module_arg(full_command: &str) -> Option<&str> {
+    let mut args = full_command.split_whitespace().skip(1);
+    while let Some(tok) = args.next() {
+        match tok {
+            "-c" | "-e" | "-" => return None,
+            "-m" => return args.next(),
+            _ => {
+                if let Some(glued) = tok.strip_prefix("-m") {
+                    // 粘连写法 `-mhttp.server`（python 支持）；排除 `--module-x` 类长选项
+                    if !glued.is_empty() && !glued.starts_with('-') {
+                        return Some(glued);
+                    }
+                }
+            }
+        }
+    }
+    None
+}
+
 /// 从路径推断「项目名」：
 /// /Users/fhf/IT/code/portreaper/node_modules/... → "portreaper"
 /// C:\Users\fhf\code\myapp\node_modules\...       → "myapp"
@@ -146,6 +174,41 @@ mod tests {
             script_runtime_label("node server.js", "node"),
             "server.js · node"
         );
+    }
+
+    #[test]
+    fn module_arg_extraction() {
+        assert_eq!(
+            extract_module_arg("/usr/bin/python3 -m http.server 8000"),
+            Some("http.server")
+        );
+        assert_eq!(extract_module_arg("python -u -m flask run"), Some("flask"));
+        // 分离值选项不终止扫描（评审发现的漏报变体）
+        assert_eq!(
+            extract_module_arg("python -W ignore -m http.server"),
+            Some("http.server")
+        );
+        assert_eq!(
+            extract_module_arg("python -X importtime -m http.server"),
+            Some("http.server")
+        );
+        // 粘连写法
+        assert_eq!(
+            extract_module_arg("python -mhttp.server"),
+            Some("http.server")
+        );
+        // eval / stdin 模式熔断：代码体里的 token 不可信
+        assert_eq!(extract_module_arg("python -c print(1) -m x"), None);
+        assert_eq!(extract_module_arg("perl -e exec -m x"), None);
+        assert_eq!(extract_module_arg("python - -m x"), None);
+        // 有脚本位置参数时调用点会先走 extract_script_arg；本函数全段扫描
+        assert_eq!(
+            extract_module_arg("python app.py -m something"),
+            Some("something")
+        );
+        // 长选项不是粘连 -m
+        assert_eq!(extract_module_arg("node --max-old-space-size=4096"), None);
+        assert_eq!(extract_module_arg("python"), None);
     }
 
     #[test]

@@ -222,6 +222,15 @@ fn identify_app_with(
                 "installed-app".to_string(),
             );
         }
+        // `-m 模块` 调用：身份是模块（python.exe -m http.server）。必须在
+        // Program Files / WindowsApps 阶梯之前判，否则按解释器安装位置归
+        // installed-app 被豁免（与 macOS 同源的漏报）。
+        if let Some(module) = super::identify::extract_module_arg(full_command) {
+            return (
+                format!("{} · {}", module, strip_exe(short_command).to_lowercase()),
+                "dev-script".to_string(),
+            );
+        }
     }
 
     // 1. MSIX / Store 应用：去掉发布者哈希与版本，取包名友好形式
