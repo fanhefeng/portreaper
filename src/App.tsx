@@ -150,7 +150,9 @@ const DESC_KEYS: Record<string, I18nKey> = {
 
 /** 「这是什么」：知识库命中 → 友好名；未命中 → 类别描述兜底 */
 function describeEntry(e: ProcessEntry, lang: Lang): string | null {
-  const hay = `${e.app_label} ${e.command} ${e.exe_path}`.toLowerCase();
+  // full_command 必须参与匹配：lsof 的短名只有 "node"，脚本身份在完整命令行里
+  const hay =
+    `${e.app_label} ${e.command} ${e.full_command} ${e.exe_path}`.toLowerCase();
   for (const [re, zh, enText] of KNOWN_PROCESSES) {
     if (re.test(hay)) return lang === "zh" ? zh : enText;
   }

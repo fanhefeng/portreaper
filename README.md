@@ -13,9 +13,7 @@
 [![License: MIT](https://img.shields.io/badge/license-MIT-blue.svg)](LICENSE)
 ![Platform](https://img.shields.io/badge/platform-macOS%20%7C%20Windows-lightgrey)
 
-<!-- TODO: add real screenshot once captured (requires Screen Recording permission)
 ![Portreaper](website/assets/screenshot-main.png)
--->
 
 ### What it does
 
@@ -138,9 +136,7 @@ MIT © fhf. See [LICENSE](LICENSE).
 [![License: MIT](https://img.shields.io/badge/license-MIT-blue.svg)](LICENSE)
 ![Platform](https://img.shields.io/badge/platform-macOS%20%7C%20Windows-lightgrey)
 
-<!-- TODO: add real screenshot once captured (requires Screen Recording permission)
 ![Portreaper](website/assets/screenshot-main.png)
--->
 
 ### 它能做什么
 
