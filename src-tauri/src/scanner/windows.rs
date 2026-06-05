@@ -293,8 +293,12 @@ fn identify_app_with(
         }
     }
 
-    // 6. Cargo 产物
-    if p.contains("\\target\\debug\\") || p.contains("\\target\\release\\") {
+    // 6. Cargo 产物；go run 的临时编译产物（%TEMP%\go-build*\...）同理 ——
+    //    与 macOS 侧对齐：dev 编译产物必须拿到 dev-script 身份
+    if p.contains("\\target\\debug\\")
+        || p.contains("\\target\\release\\")
+        || p.contains("\\go-build")
+    {
         return (project_binary_label(exe_path), "dev-script".to_string());
     }
 
@@ -355,6 +359,17 @@ fn system() -> &'static Mutex<System> {
     SYSTEM.get_or_init(|| Mutex::new(System::new()))
 }
 
+/// 创建时间 / 运行时长的净化：start_time()==0 表示读取失败（句柄受限），
+/// 此时两个值都不可信 —— start 置 None（kill 走 fail-closed 的
+/// ERR_IDENTITY_UNKNOWN），elapsed 置 0（宽限期对这类路径豁免行无副作用）。
+fn sanitize_times(start: u64, run: u64) -> (Option<u64>, u64) {
+    if start > 0 {
+        (Some(start), run)
+    } else {
+        (None, 0)
+    }
+}
+
 pub(crate) fn collect() -> Collected {
     let ports_by_pid = tcp_listeners();
 
@@ -388,6 +403,12 @@ pub(crate) fn collect() -> Collected {
             .unwrap_or_default();
 
         names.insert(pid_u32, proc_.name().to_string_lossy().into_owned());
+        // 句柄受限（受保护/提权）进程 sysinfo 读不到创建时间时返回 0 ——
+        // 必须净化（评审发现）：start_unix=Some(0) 会让 kill 身份校验恒以
+        // ERR_PID_REUSED 误拒（语义应为缺令牌的 ERR_IDENTITY_UNKNOWN）、
+        // elapsed 变成 ~56 年的荒谬时长、并污染 direct_orphan 的槽位复用
+        // 比较（start=0 的父或子会伪造时间倒挂）。None 走 fail-closed 语义。
+        let (start_unix, elapsed_secs) = sanitize_times(proc_.start_time(), proc_.run_time());
         procs.insert(
             pid_u32,
             ProcMeta {
@@ -395,8 +416,8 @@ pub(crate) fn collect() -> Collected {
                 exe_path,
                 full_command,
                 user,
-                start_unix: Some(proc_.start_time()),
-                elapsed_secs: proc_.run_time(),
+                start_unix,
+                elapsed_secs,
                 // 与 macOS ps pcpu 同口径：单核百分比，多线程可超 100%
                 cpu_percent: proc_.cpu_usage(),
                 rss_kb: proc_.memory() / 1024, // sysinfo 0.33 memory() 为字节
@@ -640,6 +661,16 @@ mod tests {
         );
         assert_eq!(cat, "dev-script");
 
+        // go run 临时编译产物（%TEMP%\go-build*）：与 macOS 对齐归 dev-script
+        //（Temp 已被 5b 的 installed-app 例外排除，落到本规则）
+        let (_, cat) = identify_app_with(
+            &kp,
+            "C:\\Users\\fhf\\AppData\\Local\\Temp\\go-build123\\b001\\exe\\server.exe",
+            "server.exe",
+            "C:\\Users\\fhf\\AppData\\Local\\Temp\\go-build123\\b001\\exe\\server.exe",
+        );
+        assert_eq!(cat, "dev-script");
+
         let (label, cat) = identify_app_with(&kp, "", "System", "");
         assert_eq!(label, "System");
         assert_eq!(cat, "unknown");
@@ -748,6 +779,31 @@ mod tests {
         assert_eq!(
             direct_orphan(50, &procs[&40], &procs),
             Some(ReasonCode::PidSlotReused)
+        );
+
+        // 回归（评审发现）：创建时间读取失败（净化为 None）的父/子节点
+        // 不得伪造「时间倒挂」的槽位复用信号 —— (Some, None)/(None, Some)
+        // 任一侧缺失都应判 None
+        let mut unreadable_child = meta(10, 0);
+        unreadable_child.start_unix = None;
+        procs.insert(60, unreadable_child);
+        assert_eq!(direct_orphan(10, &procs[&60], &procs), None);
+        let mut unreadable_parent = meta(1, 0);
+        unreadable_parent.start_unix = None;
+        procs.insert(70, unreadable_parent);
+        let child_of_unreadable = meta(70, 2000);
+        assert_eq!(direct_orphan(70, &child_of_unreadable, &procs), None);
+    }
+
+    /// 回归（评审发现）：句柄受限进程 start_time()==0 时必须净化 ——
+    /// 否则 kill 校验恒报 ERR_PID_REUSED（应为 ERR_IDENTITY_UNKNOWN）、
+    /// UI 显示 ~56 年运行时长。
+    #[test]
+    fn unreadable_start_time_sanitized() {
+        assert_eq!(sanitize_times(0, 1_770_000_000), (None, 0));
+        assert_eq!(
+            sanitize_times(1_700_000_000, 3600),
+            (Some(1_700_000_000), 3600)
         );
     }
 }

@@ -167,8 +167,15 @@ pub(crate) fn identify_app(
         return (basename(exe).to_string(), "user-binary".to_string());
     }
 
-    // 5. /target/{debug,release}/ → Rust / Cargo 产物
-    if exe.contains("/target/debug/") || exe.contains("/target/release/") {
+    // 5. /target/{debug,release}/ → Rust / Cargo 产物；`go run` 的临时编译产物
+    //    （/private/var/folders/.../go-build*/exe/main）同理是 dev 进程 ——
+    //    必须先于路径豁免给出 dev-script 身份，否则 /private/var/folders/ 的
+    //    标准路径前缀会把孤儿 go run 服务整体豁免（评审发现的真实漏报；该前缀
+    //    本为 App Translocation 设，而那些路径含 .app/ 早被阶梯 1 接住）。
+    if exe.contains("/target/debug/")
+        || exe.contains("/target/release/")
+        || exe.contains("/go-build")
+    {
         return (project_binary_label(exe), "dev-script".to_string());
     }
 
@@ -578,6 +585,17 @@ mod tests {
             "/Users/x/rust/mytool/target/debug/mytool",
         );
         assert_eq!(cat, "dev-script");
+
+        // 回归（评审发现的真实漏报）：go run 临时编译产物在 /private/var/folders
+        // 下，必须拿到 dev-script 身份 —— 否则被标准路径前缀整体豁免，
+        // 孤儿 go run 服务永远不可见（CLAUDE.md 明示 cargo run 同类是产品目标）
+        let (label, cat) = identify_app(
+            "/private/var/folders/dx/T/go-build123/b001/exe/server --port 8080",
+            "server",
+            "/private/var/folders/dx/T/go-build123/b001/exe/server",
+        );
+        assert_eq!(cat, "dev-script");
+        assert_eq!(label, "server");
 
         // `-m 模块` 调用：身份是模块，不因解释器在 brew/系统路径而改类。
         // 必须用完整真实路径：brew 的 Python 住在 Cellar 的 Python.app bundle

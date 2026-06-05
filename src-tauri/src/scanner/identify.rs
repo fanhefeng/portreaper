@@ -21,19 +21,44 @@ pub(crate) fn strip_exe(name: &str) -> &str {
     }
 }
 
-/// 从完整命令行中找第一个脚本参数（.js/.ts/.py/...）。
+/// 「分离值」可能本身是脚本路径的预加载/注册类选项 —— 它们的值不是进程入口
+///（评审实锤：`node --import ./reg.js server.mjs` 曾把 OpenTelemetry/tsx 的注入
+/// 脚本当入口，标签、重复配对、brew 豁免三处全部用错身份）。粘连形
+/// `--import=./x.js` 整个 token 以 `-` 开头，由通用选项跳过规则天然覆盖。
+/// 与 extract_module_arg 处理 `-W ignore` 分离值是同一类问题的镜像。
+const SCRIPT_VALUE_FLAGS: &[&str] = &[
+    "-r",
+    "--require",
+    "--import",
+    "--loader",
+    "--experimental-loader",
+    "--preload",
+    "--config",
+];
+
+/// 从完整命令行中找真正的「入口脚本」（.js/.ts/.py/...）：
+/// 跳过所有选项 token 及已知带值选项的分离值，在位置参数中取第一个脚本扩展名者。
 pub(crate) fn extract_script_arg(full_command: &str) -> Option<&str> {
-    full_command.split_whitespace().skip(1).find(|a| {
-        let lower = a.to_lowercase();
-        lower.ends_with(".js")
-            || lower.ends_with(".mjs")
-            || lower.ends_with(".ts")
-            || lower.ends_with(".cjs")
-            || lower.ends_with(".py")
-            || lower.ends_with(".rb")
-            || lower.ends_with(".jar")
-            || lower.ends_with(".php")
-    })
+    fn has_script_ext(tok: &str) -> bool {
+        let lower = tok.to_lowercase();
+        [".js", ".mjs", ".ts", ".cjs", ".py", ".rb", ".jar", ".php"]
+            .iter()
+            .any(|ext| lower.ends_with(ext))
+    }
+    let mut args = full_command.split_whitespace().skip(1);
+    while let Some(tok) = args.next() {
+        if SCRIPT_VALUE_FLAGS.contains(&tok) {
+            args.next(); // 消费分离值：可能是脚本路径，但不是入口
+            continue;
+        }
+        if tok.starts_with('-') {
+            continue; // 其余选项（含 --flag=value 粘连形）
+        }
+        if has_script_ext(tok) {
+            return Some(tok);
+        }
+    }
+    None
 }
 
 /// 从解释器命令行中提取 `-m <模块>` 调用（python -m http.server / -mhttp.server）。
@@ -174,6 +199,42 @@ mod tests {
             script_runtime_label("node server.js", "node"),
             "server.js · node"
         );
+    }
+
+    /// 回归（评审实锤）：预加载/注册类选项的分离值不得被当作入口脚本 ——
+    /// 否则标签、重复配对、brew 豁免三处全部用错身份（注入脚本恰在
+    /// /opt/homebrew 内时会错误豁免一个真实孤儿 dev server）。
+    #[test]
+    fn script_arg_skips_flag_values() {
+        // 分离值形：值是脚本路径但不是入口
+        assert_eq!(
+            extract_script_arg("node --import ./reg.js server.mjs"),
+            Some("server.mjs")
+        );
+        assert_eq!(
+            extract_script_arg("node -r ts-node/register --require ./reg.js server.ts"),
+            Some("server.ts")
+        );
+        assert_eq!(
+            extract_script_arg("node --loader ./loader.mjs app.ts"),
+            Some("app.ts")
+        );
+        // 粘连形：整 token 以 - 开头，通用规则跳过
+        assert_eq!(
+            extract_script_arg("node --import=./reg.js server.mjs"),
+            Some("server.mjs")
+        );
+        // 只有预加载、没有入口：不得把注入脚本当身份
+        assert_eq!(
+            extract_script_arg("node --import ./reg.js dist/server"),
+            None
+        );
+        // 普通选项不受影响
+        assert_eq!(
+            extract_script_arg("python -W ignore app.py"),
+            Some("app.py")
+        );
+        assert_eq!(extract_script_arg("java -jar app.jar"), Some("app.jar"));
     }
 
     #[test]
