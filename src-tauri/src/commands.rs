@@ -98,6 +98,14 @@ pub fn set_tray_language(app: tauri::AppHandle, lang: String) -> Result<(), Stri
         items.show.set_text(show).map_err(|e| e.to_string())?;
         items.quit.set_text(quit).map_err(|e| e.to_string())?;
     }
+    // macOS 应用菜单的 ⌘Q 替代项（quit-to-tray）同步语言
+    #[cfg(target_os = "macos")]
+    if let Some(items) = app.try_state::<crate::AppMenuItems>() {
+        items
+            .quit_to_tray
+            .set_text(crate::quit_to_tray_text(lang))
+            .map_err(|e| e.to_string())?;
+    }
     Ok(())
 }
 

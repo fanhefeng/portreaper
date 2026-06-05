@@ -21,11 +21,26 @@ pub struct TrayMenuItems {
     pub quit: MenuItem<Wry>,
 }
 
+/// macOS 应用菜单里替代 predefined Quit 的 ⌘Q 项句柄（语言切换时 re-text）。
+#[cfg(target_os = "macos")]
+pub struct AppMenuItems {
+    pub quit_to_tray: MenuItem<Wry>,
+}
+
 pub(crate) fn tray_texts(lang: &str) -> (&'static str, &'static str) {
     if lang == "zh" {
         ("显示窗口", "退出 Portreaper")
     } else {
         ("Show Window", "Quit Portreaper")
+    }
+}
+
+#[cfg(target_os = "macos")]
+pub(crate) fn quit_to_tray_text(lang: &str) -> &'static str {
+    if lang == "zh" {
+        "隐藏到托盘"
+    } else {
+        "Hide to Tray"
     }
 }
 
@@ -40,7 +55,7 @@ fn detect_lang() -> &'static str {
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
-    tauri::Builder::default()
+    let builder = tauri::Builder::default()
         .plugin(tauri_plugin_opener::init())
         .invoke_handler(tauri::generate_handler![
             commands::scan_ports,
@@ -52,7 +67,66 @@ pub fn run() {
             commands::update_tray_title,
             commands::set_tray_language,
             commands::show_main_window,
-        ])
+        ]);
+
+    // 「仅托盘退出」不变量的真正实现（评审 + 实测推翻了旧的 ExitRequested 拦截）：
+    // 默认应用菜单的 predefined Quit（⌘Q）直接调 [NSApp terminate:]，而 tao 0.35
+    // 没有实现 applicationShouldTerminate:，terminate 既不可阻止也不会发出
+    // ExitRequested —— 实测（quit AppleEvent）进程直接退出，旧拦截分支从未生效。
+    // 解法：整体提供自定义应用菜单（默认菜单仅在 Builder::menu 缺席时安装），
+    // 把 ⌘Q 绑到自定义 quit-to-tray 项，行为与窗口关闭按钮一致（隐藏到托盘）。
+    // Dock 右键退出 / 注销关机走 AppleEvent quit，仍真正退出 —— 系统发起的退出
+    // 必须放行，否则应用无法被正常关闭（刻意决策）。
+    #[cfg(target_os = "macos")]
+    let builder = builder
+        .menu(|handle| {
+            use tauri::menu::SubmenuBuilder;
+            let quit_to_tray =
+                MenuItemBuilder::with_id("quit-to-tray", quit_to_tray_text(detect_lang()))
+                    .accelerator("Cmd+Q")
+                    .build(handle)?;
+            let app_submenu = SubmenuBuilder::new(handle, "Portreaper")
+                .about(None)
+                .separator()
+                .hide()
+                .hide_others()
+                .show_all()
+                .separator()
+                .item(&quit_to_tray)
+                .build()?;
+            // Edit/Window 子菜单必须保留：webview 的 ⌘C/⌘V/⌘X/⌘A 依赖这些
+            // predefined 项的 key equivalent；⌘W 走 close_window → 被
+            // on_window_event 拦成隐藏，与产品语义一致。
+            let edit_submenu = SubmenuBuilder::new(handle, "Edit")
+                .undo()
+                .redo()
+                .separator()
+                .cut()
+                .copy()
+                .paste()
+                .select_all()
+                .build()?;
+            let window_submenu = SubmenuBuilder::new(handle, "Window")
+                .minimize()
+                .close_window()
+                .build()?;
+            let menu = MenuBuilder::new(handle)
+                .items(&[&app_submenu, &edit_submenu, &window_submenu])
+                .build()?;
+            handle.manage(AppMenuItems { quit_to_tray });
+            Ok(menu)
+        })
+        .on_menu_event(|app, event| {
+            // 应用菜单 ⌘Q：与窗口关闭按钮同语义 —— 隐藏到托盘，不退出。
+            // 托盘菜单的 "show"/"quit" 走 TrayIconBuilder::on_menu_event，互不干扰。
+            if event.id.as_ref() == "quit-to-tray" {
+                if let Some(w) = app.get_webview_window("main") {
+                    let _ = w.hide();
+                }
+            }
+        });
+
+    builder
         .setup(|app| {
             if let Ok(dir) = app.path().app_config_dir() {
                 whitelist::init(dir.join("whitelist.json"));
@@ -125,31 +199,24 @@ pub fn run() {
         .build(tauri::generate_context!())
         .expect("error while building tauri application")
         .run(|app, event| {
+            // 注：这里不拦截 ExitRequested{code: None}。它只在「最后一个窗口被
+            // Destroyed」时发出（正常关闭已被 prevent_close 拦下，走不到销毁）——
+            // 窗口真被销毁属异常状态（如 webview 崩溃），此时 prevent_exit 只会
+            // 留下一个无窗口可恢复的僵尸托盘进程；放行退出才是健壮行为。
+            // ⌘Q 的「仅托盘退出」语义由上面的自定义应用菜单实现（terminate: 不经
+            // 此事件，拦了也没用 —— 实测验证）。
             #[cfg(target_os = "macos")]
-            match event {
-                tauri::RunEvent::Reopen {
-                    has_visible_windows,
-                    ..
-                } => {
-                    if !has_visible_windows {
-                        if let Some(w) = app.get_webview_window("main") {
-                            let _ = w.show();
-                            let _ = w.set_focus();
-                        }
-                    }
-                }
-                // 「仅托盘退出」不变量（CLAUDE.md / TESTING-WINDOWS.md 验收项）：
-                // 托盘菜单 Quit 走 app.exit(0)，携带 code=Some(0) ⇒ 放行真正退出；
-                // ⌘Q / App 菜单 Quit 触发的 ExitRequested code=None ⇒ 改为隐藏到
-                // 托盘并 prevent_exit，与窗口关闭按钮行为一致（评审发现：此前 ⌘Q
-                // 会绕过托盘直接整体退出，扫描与计数全部消失）。
-                tauri::RunEvent::ExitRequested { code, api, .. } if code.is_none() => {
+            if let tauri::RunEvent::Reopen {
+                has_visible_windows,
+                ..
+            } = event
+            {
+                if !has_visible_windows {
                     if let Some(w) = app.get_webview_window("main") {
-                        let _ = w.hide();
+                        let _ = w.show();
+                        let _ = w.set_focus();
                     }
-                    api.prevent_exit();
                 }
-                _ => {}
             }
             #[cfg(not(target_os = "macos"))]
             {
