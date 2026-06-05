@@ -107,6 +107,33 @@ describe("error channels", () => {
     expect(screen.queryByText(/Kill failed/)).toBeNull();
   });
 
+  it("后续操作成功后清除残留失败横幅：横幅反映最近一次操作的结果", async () => {
+    let killFails = true;
+    route({
+      get_platform: () => "macos",
+      scan_ports: () => [suspectEntry()],
+      kill_process: () => {
+        if (killFails) throw "ERR_PROCESS_GONE: process no longer exists";
+        return undefined;
+      },
+    });
+    render(<App />);
+    await advance(0);
+
+    // 第一次 kill 失败 → 横幅出现
+    fireEvent.click(screen.getAllByText("Kill")[0]);
+    fireEvent.click(screen.getByText("Terminate"));
+    await advance(0);
+    expect(screen.getByText(/Kill failed/)).toBeTruthy();
+
+    // 第二次 kill 成功 → 残留失败横幅被清除（无需用户点击）
+    killFails = false;
+    fireEvent.click(screen.getAllByText("Kill")[0]);
+    fireEvent.click(screen.getByText("Terminate"));
+    await advance(400); // 成功路径有 250ms 收尾等待 + freshScan
+    expect(screen.queryByText(/Kill failed/)).toBeNull();
+  });
+
   it("扫描错误保留自愈语义：后端恢复后下一轮轮询自动清除", async () => {
     let scanFails = true;
     route({

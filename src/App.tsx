@@ -340,6 +340,7 @@ function App() {
     setConfirm(null);
     try {
       await invoke("kill_process", { pid, force, startUnix });
+      setActionError(null); // 横幅反映最近一次操作的结果：本次成功 → 清除残留失败
       await new Promise((r) => setTimeout(r, 250));
       await freshScan();
     } catch (err) {
@@ -359,6 +360,7 @@ function App() {
       } else {
         await invoke("add_whitelist", { key });
       }
+      setActionError(null); // 最近一次操作成功 → 清除残留失败横幅
       await refresh();
     } catch (err) {
       setActionError(t("error.whitelistFailed", { err: String(err) }));
@@ -368,6 +370,7 @@ function App() {
   const handleOpen = async (port: number) => {
     try {
       await openUrl(`http://localhost:${port}`);
+      setActionError(null); // 最近一次操作成功 → 清除残留失败横幅
     } catch (err) {
       setActionError(t("error.openBrowser", { err: String(err) }));
     }
@@ -412,6 +415,8 @@ function App() {
         }) +
           failures.map((f) => `PID ${f.pid} ${f.label} (${f.err})`).join("；"),
       );
+    } else {
+      setActionError(null); // 全部成功 → 清除残留失败横幅
     }
   };
 
