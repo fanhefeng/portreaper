@@ -200,8 +200,21 @@ pub(crate) fn identify_app(
 // 采集
 // ---------------------------------------------------------------------------
 
+/// 系统工具固定绝对路径调用（纵深防御）：不经继承的 $PATH 解析，避免被排在
+/// /bin 之前的可写目录里的同名二进制劫持。对一个会代用户做破坏性操作（kill）
+/// 的工具，钉死系统二进制位置是零成本加固（评审发现）。未知名回退裸名。
+fn system_bin(program: &str) -> &str {
+    match program {
+        "lsof" => "/usr/sbin/lsof",
+        "ps" => "/bin/ps",
+        "launchctl" => "/bin/launchctl",
+        "kill" => "/bin/kill",
+        other => other,
+    }
+}
+
 fn cmd_output(program: &str, args: &[&str]) -> Option<String> {
-    let output = Command::new(program)
+    let output = Command::new(system_bin(program))
         .args(args)
         .env("LANG", "en_US.UTF-8")
         .env("LC_ALL", "en_US.UTF-8")

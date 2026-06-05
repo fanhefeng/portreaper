@@ -30,7 +30,9 @@ pub fn kill(pid: u32, force: bool, expected_start: Option<u64>) -> Result<(), St
     // 被复用且新进程创建时间恰落在 ±5s 容差内的概率可忽略 —— 接受并记录。
 
     let signal = if force { "-9" } else { "-15" };
-    let output = Command::new("kill")
+    // 固定绝对路径（纵深防御）：不经 $PATH 解析，避免被劫持的 `kill` 二进制
+    // 在用户每次点「终止」时执行任意代码（评审发现）。
+    let output = Command::new("/bin/kill")
         .args([signal, &pid.to_string()])
         .output()
         .map_err(|e| e.to_string())?;
@@ -46,7 +48,7 @@ fn current_start_unix(pid: u32) -> Option<u64> {
     use std::process::Command;
     use std::time::{SystemTime, UNIX_EPOCH};
 
-    let output = Command::new("ps")
+    let output = Command::new("/bin/ps")
         .args(["-o", "etime=", "-p", &pid.to_string()])
         .env("LANG", "en_US.UTF-8")
         .env("LC_ALL", "en_US.UTF-8")
