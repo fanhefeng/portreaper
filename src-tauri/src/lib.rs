@@ -118,7 +118,11 @@ pub fn run() {
         })
         .on_menu_event(|app, event| {
             // 应用菜单 ⌘Q：与窗口关闭按钮同语义 —— 隐藏到托盘，不退出。
-            // 托盘菜单的 "show"/"quit" 走 TrayIconBuilder::on_menu_event，互不干扰。
+            // 注意（评审核实）：tauri 把应用菜单与托盘菜单事件派发到同一个全局
+            // 监听列表 —— 本 handler 和 TrayIconBuilder::on_menu_event 都会收到
+            // 全部菜单事件，互不干扰靠的是 id 不相交，不是通道分离。给应用菜单
+            // 项起 id 绝不能复用 "quit"/"show"：复用 "quit" 会让托盘 handler 对
+            // ⌘Q 调 app.exit(0)，悄悄重新引入本项修复消灭的整体退出 bug。
             if event.id.as_ref() == "quit-to-tray" {
                 if let Some(w) = app.get_webview_window("main") {
                     let _ = w.hide();
