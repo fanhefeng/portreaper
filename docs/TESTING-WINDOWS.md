@@ -1,8 +1,8 @@
 # Windows 手动验收清单 / Windows Manual Acceptance Checklist
 
-> 状态：Windows 构建目前是**实验性**的 —— 只在 CI 里编译并跑过单元测试，**还没有在真机上做过人工验收**（暂时没有 Windows 机器）。等拿到 Windows 机器后，按本清单逐项验证；**全部通过后** → 移除 `release.yml` 的 `releaseBody` 以及官网上的「实验性」标签。
+> 状态：Windows 构建目前是**实验性**的 —— 只在 CI 里编译并跑过单元测试，**还没有在真机上做过人工验收**（暂时没有 Windows 机器）。等拿到 Windows 机器后，按本清单逐项验证；**全部通过后** → 移除 `release.yml` `create-release` 作业里 `body.md` heredoc 的 Windows 实验性段（约第 80–85 行）以及官网（`website/index.html` 的 `dl-btn--exp` / `dl.experimental`）上的「实验性」标签。
 >
-> Status: the Windows build is **experimental** — CI-compiled and unit-tested only, **with no manual QA on real hardware yet** (no Windows machine available). When a Windows machine is available, run this checklist top to bottom. **When everything passes** → remove the experimental label from `release.yml` `releaseBody` and from the website.
+> Status: the Windows build is **experimental** — CI-compiled and unit-tested only, **with no manual QA on real hardware yet** (no Windows machine available). When a Windows machine is available, run this checklist top to bottom. **When everything passes** → remove the experimental section from the `body.md` heredoc in `release.yml`'s `create-release` job (~lines 80–85) and from the website (`dl-btn--exp` / `dl.experimental` in `website/index.html`).
 
 平台差异要点 / Platform notes to keep in mind:
 
@@ -104,5 +104,5 @@
 
 ---
 
-**全部通过后 / When all pass** → 移除 `release.yml` `releaseBody` 与官网上的「实验性 / experimental」标签。
-Remove the experimental label from `release.yml` `releaseBody` and the website.
+**全部通过后 / When all pass** → 移除 `release.yml` `create-release` 作业 `body.md` heredoc 的 Windows 实验性段（约第 80–85 行）与官网（`website/index.html` 的 `dl-btn--exp` / `dl.experimental`）上的「实验性 / experimental」标签。
+Remove the experimental section from the `body.md` heredoc in `release.yml`'s `create-release` job (~lines 80–85) and from the website (`dl-btn--exp` / `dl.experimental` in `website/index.html`).
