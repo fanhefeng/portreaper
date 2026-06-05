@@ -28,14 +28,16 @@ pub fn get_whitelist() -> Vec<String> {
     whitelist::get_all()
 }
 
+/// 持久化失败（磁盘满/权限/路径被占）会上抛给前端：星标回弹 + 错误横幅，
+/// 而不是内存假成功、重启后丢收藏（评审发现）。
 #[tauri::command]
-pub fn add_whitelist(key: String) {
-    whitelist::add(key);
+pub fn add_whitelist(key: String) -> Result<(), String> {
+    whitelist::add(key)
 }
 
 #[tauri::command]
-pub fn remove_whitelist(key: String) {
-    whitelist::remove(&key);
+pub fn remove_whitelist(key: String) -> Result<(), String> {
+    whitelist::remove(&key)
 }
 
 /// 托盘计数展示：macOS 用菜单栏标题文本；Windows 通知区无标题，用 tooltip。
