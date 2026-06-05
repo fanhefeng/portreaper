@@ -108,11 +108,6 @@ const zh = {
   "cat.user-binary": "命令行工具",
   "cat.unknown": "未知",
 
-  // ---- confidence tiers（与 Rust Confidence serde 名对应）----
-  "confidence.confirmed": "确认",
-  "confidence.likely": "很可能",
-  "confidence.possible": "存疑",
-
   // ---- reason codes（与 Rust ReasonCode serde 名对应）----
   "reason.defunct": "进程已死 (defunct)",
   "reason.ppid1_orphan": "孤儿 (PPID=1)",
@@ -278,10 +273,6 @@ const en: Record<I18nKey, string> = {
   "cat.dev-script": "Dev script",
   "cat.user-binary": "CLI tool",
   "cat.unknown": "Unknown",
-
-  "confidence.confirmed": "Confirmed",
-  "confidence.likely": "Likely",
-  "confidence.possible": "Possible",
 
   "reason.defunct": "defunct",
   "reason.ppid1_orphan": "orphan (PPID=1)",

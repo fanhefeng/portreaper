@@ -25,7 +25,8 @@ pnpm test                                  # frontend regression tests (vitest +
 # Windows cross-compile check from macOS (needs `brew install llvm` for llvm-rc):
 PATH="/opt/homebrew/opt/llvm/bin:$PATH" cargo check --target x86_64-pc-windows-msvc
 
-node scripts/check-reason-parity.mjs       # Rust ReasonCode <-> i18n dict guard
+node scripts/check-reason-parity.mjs       # Rust ReasonCode <-> i18n/render-path guard
+node --test scripts/*.test.mjs             # guard-script self-tests
 node scripts/bump-version.mjs --check 0.1.0
 ```
 
@@ -76,7 +77,7 @@ Data sources: macOS = `lsof -iTCP -sTCP:LISTEN -P -n -FpcLn` + `ps -A -o pid=,pp
 - **Duplicate dev-server detection** (`mod.rs mark_duplicates`, cross-entry post-pass after the pure per-entry classify): two dev-script listeners are duplicates when ports are disjoint, they are not parent/child, and (a) the full command is identical, (b) the path-derived (project, script/module) identity matches, or (c) cwd is identical + script/module identity matches (catches "Warp started :5173, VS Code started :5174 of the same project"). **cwd is the strongest evidence and a known-different cwd vetoes the pair** — hoisted node_modules collapses path-derived project names to the monorepo root and even makes full commands identical across distinct apps, so monorepo sub-packages / git worktrees are only told apart by cwd (collected for listener PIDs only: macOS `lsof -d cwd`, Windows `sysinfo cwd()`). A live common non-shell parent or grandparent (concurrently/cluster/turbo) marks intentional multi-instance, never duplicates; a shell ancestor or a dead/synthetic parent does **not** exempt (re-running in one terminal, or a co-reparented orphan pair, is exactly the target). Duplicates only ever reach `Possible` (+ `duplicate_of` peer PID) — the machine cannot know which instance the user is using, so they are **never swept**.
 - Whitelist (`is_whitelisted`) still lists the row, forces `is_zombie_suspect=false`, excluded from sweep/tray. Key = `exe_path` falling back to lsof `command`; keep frontend (`App.tsx handleToggleWhitelist`) and `scan()` using the same precedence.
 
-`ReasonCode`/`Confidence` serialize as snake_case/lowercase and are translated in the frontend (`reason.*`, `confidence.*` keys). **Adding a variant requires adding zh+en keys in `src/i18n.ts`** — `scripts/check-reason-parity.mjs` (run in CI) fails otherwise.
+`ReasonCode`/`Confidence` serialize as snake_case/lowercase and are rendered in the frontend through four key families: `reason.*` + `reasonTip.*` (detail panel, every code), `story.*` (inline primary-reason story, positive codes only), `verdict.*` (inline confidence prefix). **Adding a ReasonCode variant requires (a) classifying it into `App.tsx` `REASON_PRIORITY` (positive) or `EXEMPT_REASONS` (exemption), and (b) adding the zh+en keys for its families in `src/i18n.ts`** — `scripts/check-reason-parity.mjs` (run in CI, self-tested by `scripts/check-reason-parity.test.mjs`) fails otherwise.
 
 ### Kill path (`platform.rs`)
 

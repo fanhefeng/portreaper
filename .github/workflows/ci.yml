@@ -85,7 +85,12 @@ jobs:
       - name: Rust build
         run: cargo build --manifest-path src-tauri/Cargo.toml
 
-      # macOS-specific scanner parity check (lsof/ps based) — run once only.
+      # Guard scripts (platform-neutral) — run once only, on the macOS leg.
+      # Self-tests first: a guard that silently passes is worse than no guard.
+      - name: Guard script self-tests
+        if: runner.os == 'macOS'
+        run: node --test scripts/*.test.mjs
+
       - name: Reason parity check
         if: runner.os == 'macOS'
         run: node scripts/check-reason-parity.mjs
