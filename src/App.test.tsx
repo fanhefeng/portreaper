@@ -265,13 +265,15 @@ describe("error channels", () => {
   });
 
   it("清扫进行中禁用行内终止按钮（防对同一进程二次 kill）", async () => {
-    let resolveKill: (() => void) | null = null;
+    // 对象持有器而非裸 let：tsc 的控制流分析看不到闭包内赋值，
+    // 会把顶层使用点的 let 收窄为 null（TS2349）
+    const killGate: { resolve: (() => void) | null } = { resolve: null };
     route({
       get_platform: () => "macos",
       scan_ports: () => [suspectEntry()],
       kill_process: () =>
         new Promise<void>((r) => {
-          resolveKill = r;
+          killGate.resolve = r;
         }),
     });
     render(<App />);
@@ -286,7 +288,7 @@ describe("error channels", () => {
     const killBtn = screen.getAllByText("Kill")[0] as HTMLButtonElement;
     expect(killBtn.disabled).toBe(true);
 
-    resolveKill?.();
+    killGate.resolve?.();
     await advance(800);
   });
 });
