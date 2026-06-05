@@ -38,6 +38,37 @@ struct ChainFlags {
     pm2: bool,
 }
 
+/// pm2 托管识别 —— 用「双标记并存」收紧裸子串误命中（评审发现）：单凭整行
+/// 含 "PM2"（如 Java 类名 com.foo.PM2Handler）或目录恰名为 "ProcessContainer"
+/// 就硬豁免，会让真孤儿漏报。pm2 实际形态唯一性足够：
+///   God Daemon 标题恒为 `PM2 vX.Y.Z: God Daemon (...)`（两标记并存）；
+///   被托管进程的包装器路径含 `.../pm2/.../ProcessContainer*`（pm2 + 容器名并存）。
+fn is_pm2_god_daemon(cmd: &str) -> bool {
+    cmd.contains("PM2") && cmd.contains("God Daemon")
+}
+fn is_pm2_container(cmd: &str) -> bool {
+    cmd.contains("ProcessContainer") && cmd.contains("pm2")
+}
+
+/// 白名单键：唯一标识「用户信任的这个监听者」，进程重启后仍要稳定匹配。
+///
+/// exe_path 含路径分隔符（绝对路径）时用它；否则是 PATH 解析的裸解释器名
+/// （macOS `ps -o comm=` 对 `node app.js` / shebang shim 只返回裸 "node"）——
+/// 此时 exe_path 在全机所有同名监听者间塌缩，单独加白一个 node server 会把
+/// 所有 node 监听者一并豁免、令真孤儿永久隐身（评审发现）。裸名时回退到
+/// 完整命令行（含脚本路径，足以区分不同 dev server）；命令行也空时退回 lsof 短名。
+///
+/// ⚠️ 前端 App.tsx `whitelistKey()` 是本函数的逐字镜像，二者必须同步修改。
+pub(crate) fn whitelist_key(exe_path: &str, full_command: &str, command: &str) -> String {
+    if exe_path.contains('/') || exe_path.contains('\\') {
+        exe_path.to_string()
+    } else if !full_command.is_empty() {
+        full_command.to_string()
+    } else {
+        command.to_string()
+    }
+}
+
 pub fn scan(whitelist: &[String]) -> Vec<ProcessEntry> {
     let collected = platform_impl::collect();
     let procs = &collected.procs;
@@ -83,7 +114,7 @@ pub fn scan(whitelist: &[String]) -> Vec<ProcessEntry> {
             chain_has_orphan_shell: chain_flags.has_orphan_shell,
             launchd_managed: collected.launchd_pids.contains(&l.pid),
             brew_service_path,
-            pm2_managed: chain_flags.pm2 || full_command.contains("ProcessContainer"),
+            pm2_managed: chain_flags.pm2 || is_pm2_container(&full_command),
             tty_orphaned: meta.tty_orphaned,
             exe_is_standard_install,
             dev_keyword: is_dev_server(&full_command) || is_dev_server(&l.command),
@@ -91,12 +122,8 @@ pub fn scan(whitelist: &[String]) -> Vec<ProcessEntry> {
         };
         let verdict = classify(&snapshot);
 
-        // 白名单 key：优先 exe_path（最稳定），否则退回 command
-        let wl_key = if !exe_path.is_empty() {
-            exe_path.clone()
-        } else {
-            l.command.clone()
-        };
+        // 白名单 key（前端 App.tsx handleToggleWhitelist 必须用同一优先级）
+        let wl_key = whitelist_key(&exe_path, &full_command, &l.command);
         let is_whitelisted = whitelist.contains(&wl_key);
 
         let mut ports = l.ports.clone();
@@ -224,17 +251,20 @@ fn mark_duplicates(entries: &mut [ProcessEntry], cwds: &HashMap<u32, String>) {
                 }
             }
             // 真实存活的同一非 shell 父 ⇒ 编排器拉起的有意多实例；
-            // 父是 shell / 已死（合成根 pid≤1）/ 链缺失 ⇒ 照常比对
+            // 父是 shell / 已死（合成根 pid≤1）/ 链缺失 ⇒ 照常比对。
+            // 两侧链都须独立印证该父（评审发现：只验 a 一侧、默认 b 链一致 ——
+            // b 链缺失/形态不同时会被静默当作同编排器而漏标；收紧到双侧印证）。
             if a.ppid == b.ppid {
-                if let Some((ppid_real, is_sh)) = chain_node(a, 0) {
-                    if ppid_real == a.ppid && ppid_real > 1 && !is_sh {
+                if let (Some((pa, pa_sh)), Some((pb, _))) = (chain_node(a, 0), chain_node(b, 0)) {
+                    if pa == a.ppid && pb == b.ppid && pa > 1 && !pa_sh {
                         continue;
                     }
                 }
             }
-            // 共同祖父的堂兄弟：祖父是存活的非 shell 编排器（turbo 经 shell 包装）
-            if let (Some((ga, ga_sh)), Some((gb, _))) = (chain_node(a, 1), chain_node(b, 1)) {
-                if ga == gb && ga > 1 && !ga_sh {
+            // 共同祖父的堂兄弟：祖父是存活的非 shell 编排器（turbo 经 shell 包装）。
+            // 两侧 is_shell 都须为假（pid 相等时本是同进程、冗余但语义自证）。
+            if let (Some((ga, ga_sh)), Some((gb, gb_sh))) = (chain_node(a, 1), chain_node(b, 1)) {
+                if ga == gb && ga > 1 && !ga_sh && !gb_sh {
                     continue;
                 }
             }
@@ -353,7 +383,7 @@ fn build_parent_chain(
         {
             flags.has_orphan_shell = true;
         }
-        if parent.full_command.contains("PM2") || parent.full_command.contains("God Daemon") {
+        if is_pm2_god_daemon(&parent.full_command) {
             flags.pm2 = true;
         }
 
@@ -398,6 +428,48 @@ mod live_smoke {
                 e.exe_path
             );
         }
+    }
+}
+
+#[cfg(test)]
+mod helper_tests {
+    use super::*;
+
+    #[test]
+    fn whitelist_key_resolves_bare_interpreter_to_full_command() {
+        // 绝对路径 exe：用 exe_path（向后兼容既有行为）
+        assert_eq!(
+            whitelist_key("/opt/homebrew/bin/node", "node app.js", "node"),
+            "/opt/homebrew/bin/node"
+        );
+        assert_eq!(
+            whitelist_key(
+                "C:\\Program Files\\nodejs\\node.exe",
+                "node x.js",
+                "node.exe"
+            ),
+            "C:\\Program Files\\nodejs\\node.exe"
+        );
+        // 裸解释器名（PATH 解析 / shebang shim）：回退完整命令行，避免塌缩
+        assert_eq!(
+            whitelist_key("node", "node /Users/x/proj/server.js", "node"),
+            "node /Users/x/proj/server.js"
+        );
+        // 裸名且命令行也空：退回 lsof 短名
+        assert_eq!(whitelist_key("node", "", "node"), "node");
+    }
+
+    #[test]
+    fn pm2_detection_requires_both_markers() {
+        // 真实 pm2 形态命中
+        assert!(is_pm2_god_daemon("PM2 v6.0.5: God Daemon (/Users/x/.pm2)"));
+        assert!(is_pm2_container(
+            "node /usr/local/lib/node_modules/pm2/lib/ProcessContainerFork.js"
+        ));
+        // 误命中面：单标记不豁免（评审发现）
+        assert!(!is_pm2_god_daemon("java -cp app.jar com.foo.PM2Handler"));
+        assert!(!is_pm2_god_daemon("node /Users/x/God Daemon Sim/server.js"));
+        assert!(!is_pm2_container("node /Users/x/ProcessContainer/index.js"));
     }
 }
 

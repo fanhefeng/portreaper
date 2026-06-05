@@ -36,6 +36,14 @@ const SCRIPT_VALUE_FLAGS: &[&str] = &[
     "--config",
 ];
 
+/// eval / stdin 模式（`python -c`、`node -e`、`-`）—— ps 剥掉引号后代码体的
+/// token 不可信，里面恰好以脚本扩展名结尾的词不是入口脚本。extract_script_arg
+/// 与 extract_module_arg 共用此熔断，避免两函数对同一类输入语义漂移（评审发现：
+/// `python -c "import sys" app.py` 曾把 app.py 误当入口）。
+fn is_eval_mode_flag(tok: &str) -> bool {
+    matches!(tok, "-c" | "-e" | "-")
+}
+
 /// 从完整命令行中找真正的「入口脚本」（.js/.ts/.py/...）：
 /// 跳过所有选项 token 及已知带值选项的分离值，在位置参数中取第一个脚本扩展名者。
 pub(crate) fn extract_script_arg(full_command: &str) -> Option<&str> {
@@ -47,6 +55,9 @@ pub(crate) fn extract_script_arg(full_command: &str) -> Option<&str> {
     }
     let mut args = full_command.split_whitespace().skip(1);
     while let Some(tok) = args.next() {
+        if is_eval_mode_flag(tok) {
+            return None; // 代码体的 token 不可信，整条放弃
+        }
         if SCRIPT_VALUE_FLAGS.contains(&tok) {
             args.next(); // 消费分离值：可能是脚本路径，但不是入口
             continue;
@@ -73,8 +84,10 @@ pub(crate) fn extract_script_arg(full_command: &str) -> Option<&str> {
 pub(crate) fn extract_module_arg(full_command: &str) -> Option<&str> {
     let mut args = full_command.split_whitespace().skip(1);
     while let Some(tok) = args.next() {
+        if is_eval_mode_flag(tok) {
+            return None;
+        }
         match tok {
-            "-c" | "-e" | "-" => return None,
             "-m" => return args.next(),
             _ => {
                 if let Some(glued) = tok.strip_prefix("-m") {
@@ -235,6 +248,10 @@ mod tests {
             Some("app.py")
         );
         assert_eq!(extract_script_arg("java -jar app.jar"), Some("app.jar"));
+        // eval / stdin 模式熔断：去引号后代码体里的脚本扩展名 token 不可信
+        assert_eq!(extract_script_arg("python -c import sys app.py"), None);
+        assert_eq!(extract_script_arg("node -e require app.js"), None);
+        assert_eq!(extract_script_arg("python - app.py"), None);
     }
 
     #[test]
