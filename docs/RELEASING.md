@@ -102,4 +102,4 @@ The macOS group (`APPLE_*`) enables Developer ID signing + notarization for the 
 - [ ] `verify-version` passed.
 - [ ] All three artifacts built and uploaded with stable names.
 - [ ] Release flipped from draft → published; `latest/download/...` links resolve.
-- [ ] (When Windows leaves experimental) experimental section removed from the `body.md` heredoc in `release.yml`'s `create-release` job (~lines 80–85) and the website (`dl-btn--exp` / `dl.experimental` in `website/index.html`).
+- [ ] (When Windows leaves experimental) experimental section removed from the `body.md` heredoc in `release.yml`'s `create-release` job (grep for the `WINDOWS-EXPERIMENTAL` anchor comment) and the website (`dl-btn--exp` / `dl.experimental` in `website/index.html`).
