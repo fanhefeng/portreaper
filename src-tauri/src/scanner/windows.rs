@@ -443,6 +443,25 @@ fn decode_port(dw_local_port: u32) -> u16 {
     u16::from_be_bytes([b[0], b[1]])
 }
 
+/// 缓冲字节数下界：空表时 API 只要求 4 字节（裸 dwNumEntries），但我们随后
+/// 会对整个表结构体取 `&T` —— Rust 引用必须覆盖完整的 size_of::<T>()（含
+/// 声明的 table[1] 首行，IPv4 28 字节 / IPv6 60 字节），缓冲小于结构体时
+/// 引用一经构造即属 UB（评审发现，与下方的对齐问题同源）。取两族最大值。
+const MIN_TABLE_BYTES: usize = {
+    let v4 = std::mem::size_of::<MIB_TCPTABLE_OWNER_PID>();
+    let v6 = std::mem::size_of::<MIB_TCP6TABLE_OWNER_PID>();
+    if v4 > v6 {
+        v4
+    } else {
+        v6
+    }
+};
+
+/// 表缓冲长度（u32 词数）：报告大小与结构体下界取大，向上取整到 4 字节。
+fn table_buf_words(reported: u32) -> usize {
+    (reported as usize).max(MIN_TABLE_BYTES).div_ceil(4)
+}
+
 /// GetExtendedTcpTable：LISTEN 态 TCP 表（含 owning PID），IPv4 与 IPv6 各查一次。
 fn tcp_listeners() -> HashMap<u32, Vec<u16>> {
     let mut map: HashMap<u32, Vec<u16>> = HashMap::new();
@@ -456,7 +475,7 @@ fn tcp_listeners() -> HashMap<u32, Vec<u16>> {
             // 缓冲用 Vec<u32> 而非 Vec<u8>：表结构全员 u32，需要 4 字节对齐 ——
             // Vec<u8> 的对齐由分配器碰巧保证，按语言规则属对齐 UB（评审发现）。
             for _ in 0..4 {
-                let mut buf = vec![0u32; (size.max(16) as usize).div_ceil(4)];
+                let mut buf = vec![0u32; table_buf_words(size)];
                 let ret = GetExtendedTcpTable(
                     Some(buf.as_mut_ptr() as *mut c_void),
                     &mut size,
@@ -524,6 +543,28 @@ mod tests {
         assert_eq!(decode_port(dw), 5173);
         let dw = u32::from_le_bytes([0x01, 0xBB, 0, 0]); // 443
         assert_eq!(decode_port(dw), 443);
+    }
+
+    /// 回归（评审发现的引用有效性 UB）：空表时 API 报告 size=4，但对表结构体
+    /// 取 &T 要求缓冲 ≥ size_of::<T>()（IPv4 28B / IPv6 60B）—— 旧下界 max(16)
+    /// 不足。任何报告值下缓冲都必须同时覆盖两族结构体与报告大小本身。
+    #[test]
+    fn table_buffer_never_smaller_than_struct_or_reported() {
+        for reported in [0u32, 4, 16, 28, 60, 61, 4096] {
+            let bytes = table_buf_words(reported) * 4;
+            assert!(
+                bytes >= std::mem::size_of::<MIB_TCPTABLE_OWNER_PID>(),
+                "reported={reported}: {bytes}B < IPv4 表结构体"
+            );
+            assert!(
+                bytes >= std::mem::size_of::<MIB_TCP6TABLE_OWNER_PID>(),
+                "reported={reported}: {bytes}B < IPv6 表结构体"
+            );
+            assert!(
+                bytes >= reported as usize,
+                "reported={reported}: 缓冲小于报告大小"
+            );
+        }
     }
 
     #[test]
