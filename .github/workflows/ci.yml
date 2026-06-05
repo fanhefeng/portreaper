@@ -65,6 +65,9 @@ jobs:
       - name: Type-check (tsc)
         run: pnpm exec tsc --noEmit
 
+      - name: Frontend tests (vitest)
+        run: pnpm exec vitest run
+
       - name: Build frontend (vite)
         run: pnpm exec vite build
 

@@ -1,0 +1,4 @@
+# esbuild 的 postinstall 只做二进制自检（实际二进制经平台 optionalDependencies 分发），
+# 不需要运行其构建脚本 —— 显式记录决策，否则 pnpm 10+ 在 install/exec 前置检查时报错。
+allowBuilds:
+  esbuild: false

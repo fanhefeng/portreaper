@@ -16,9 +16,11 @@ pnpm tauri dev         # run the desktop app (launches vite on :1420, then tauri
 pnpm tauri build       # produce a .app/.dmg (macOS) or NSIS .exe (Windows)
 pnpm build             # tsc --noEmit + vite build (used by tauri build)
 
-cd src-tauri && cargo test                 # 19+ unit tests incl. classify fixtures
+cd src-tauri && cargo test                 # 35+ unit tests incl. classify fixtures
 cd src-tauri && cargo clippy --all-targets -- -D warnings
 cargo test live_scan -- --ignored --nocapture   # real-machine smoke: scan this Mac
+
+pnpm test                                  # frontend regression tests (vitest + happy-dom)
 
 # Windows cross-compile check from macOS (needs `brew install llvm` for llvm-rc):
 PATH="/opt/homebrew/opt/llvm/bin:$PATH" cargo check --target x86_64-pc-windows-msvc

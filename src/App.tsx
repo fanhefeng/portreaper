@@ -220,7 +220,12 @@ function App() {
   const [entries, setEntries] = useState<ProcessEntry[]>([]);
   const [filter, setFilter] = useState<Filter>("all");
   const [search, setSearch] = useState("");
-  const [error, setError] = useState<string | null>(null);
+  // 错误分两路（评审发现）：扫描错误由下一次成功轮询自动清除（自愈语义）；
+  // 操作错误（kill / 清扫 / 收藏 / 打开浏览器）只能用户点击关闭 ——
+  // 否则 2s 轮询会在用户看清之前把失败原因静默冲掉。
+  const [scanError, setScanError] = useState<string | null>(null);
+  const [actionError, setActionError] = useState<string | null>(null);
+  const error = actionError ?? scanError;
   const [killingPid, setKillingPid] = useState<number | null>(null);
   const [confirm, setConfirm] = useState<ConfirmState>(null);
   const [batchConfirm, setBatchConfirm] = useState<ProcessEntry[] | null>(null);
@@ -238,7 +243,7 @@ function App() {
     try {
       const data = await invoke<ProcessEntry[]>("scan_ports");
       setEntries(data);
-      setError(null);
+      setScanError(null);
       // 托盘只计入会被清扫的层级（Confirmed + Likely），避免宽限期内的闪烁。
       // 托盘更新是装饰性的 —— fire-and-forget（与 i18n.ts 的 set_tray_language
       // 同一约定），绝不能让它把一次成功的扫描标成错误（评审发现）。
@@ -251,7 +256,7 @@ function App() {
         suspectCount,
       }).catch(() => {});
     } catch (e) {
-      setError(String(e));
+      setScanError(String(e));
     }
   }, []);
 
@@ -338,7 +343,9 @@ function App() {
       await new Promise((r) => setTimeout(r, 250));
       await freshScan();
     } catch (err) {
-      setError(t("error.killFailed", { err: localizeKillError(String(err), t) }));
+      setActionError(
+        t("error.killFailed", { err: localizeKillError(String(err), t) }),
+      );
     } finally {
       setKillingPid(null);
     }
@@ -354,7 +361,7 @@ function App() {
       }
       await refresh();
     } catch (err) {
-      setError(String(err));
+      setActionError(t("error.whitelistFailed", { err: String(err) }));
     }
   };
 
@@ -362,7 +369,7 @@ function App() {
     try {
       await openUrl(`http://localhost:${port}`);
     } catch (err) {
-      setError(t("error.openBrowser", { err: String(err) }));
+      setActionError(t("error.openBrowser", { err: String(err) }));
     }
   };
 
@@ -398,7 +405,7 @@ function App() {
     await freshScan(); // 等掉撞车的轮询再扫一次，结果必然包含 kill 之后的状态
     setSweeping(false);
     if (failures.length > 0) {
-      setError(
+      setActionError(
         t("error.batchFailed", {
           failed: failures.length,
           total: suspects.length,
@@ -514,7 +521,13 @@ function App() {
       </header>
 
       {error && (
-        <div className="error" onClick={() => setError(null)}>
+        <div
+          className="error"
+          onClick={() => {
+            setActionError(null);
+            setScanError(null);
+          }}
+        >
           {error} {t("error.clickToClose")}
         </div>
       )}
