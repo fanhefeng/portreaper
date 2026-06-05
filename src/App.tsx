@@ -413,7 +413,8 @@ function App() {
           failed: failures.length,
           total: suspects.length,
         }) +
-          failures.map((f) => `PID ${f.pid} ${f.label} (${f.err})`).join("；"),
+          // 分隔符语言无关（评审发现：全角「；」会出现在英文界面）
+          failures.map((f) => `PID ${f.pid} ${f.label} (${f.err})`).join("; "),
       );
     } else {
       setActionError(null); // 全部成功 → 清除残留失败横幅
@@ -427,6 +428,7 @@ function App() {
     os,
     lang,
     killingPid,
+    sweeping,
     onAskKill: askKill,
     onToggleWhitelist: handleToggleWhitelist,
     onOpenPort: handleOpen,
@@ -758,6 +760,7 @@ type RowProps = {
   os: Os;
   lang: Lang;
   killingPid: number | null;
+  sweeping: boolean;
   onAskKill: (e: ProcessEntry, force: boolean) => void;
   onToggleWhitelist: (e: ProcessEntry) => void;
   onOpenPort: (port: number) => void;
@@ -770,6 +773,7 @@ function Row({
   os,
   lang,
   killingPid,
+  sweeping,
   onAskKill,
   onToggleWhitelist,
   onOpenPort,
@@ -804,7 +808,9 @@ function Row({
   const primary = e.is_zombie_suspect ? primaryReason(e.zombie_reasons) : null;
   const shownPorts = e.ports.slice(0, 3);
   const morePorts = e.ports.length - shownPorts.length;
-  const killing = killingPid === e.pid;
+  // 清扫进行中禁用全部行内终止按钮（评审发现）：批量循环正逐个 kill，
+  // 此时对同一进程发起第二次 kill 只会制造一条多余的失败横幅
+  const killing = killingPid === e.pid || sweeping;
 
   return (
     <div className={`row-block ${expanded ? "open" : ""}`}>

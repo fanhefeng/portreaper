@@ -19,8 +19,8 @@ import App from "./App";
 
 const mockInvoke = vi.mocked(invoke);
 
-/** 一行可被 kill 的 Confirmed 嫌疑（serde 契约的最小镜像） */
-function suspectEntry() {
+/** 一行可被 kill 的 Confirmed 嫌疑（serde 契约的最小镜像），字段可覆盖 */
+function suspectEntry(over: Record<string, unknown> = {}) {
   return {
     pid: 4242,
     ppid: 1,
@@ -44,6 +44,7 @@ function suspectEntry() {
     zombie_reasons: ["ppid1_orphan", "dev_server_keyword"],
     is_whitelisted: false,
     duplicate_of: null,
+    ...over,
   };
 }
 
@@ -132,6 +133,41 @@ describe("error channels", () => {
     fireEvent.click(screen.getByText("Terminate"));
     await advance(400); // 成功路径有 250ms 收尾等待 + freshScan
     expect(screen.queryByText(/Kill failed/)).toBeNull();
+  });
+
+  it("批量清扫只含 Confirmed+Likely，失败聚合横幅在轮询后仍可见", async () => {
+    const killCalls: number[] = [];
+    route({
+      get_platform: () => "macos",
+      scan_ports: () => [
+        suspectEntry(), // confirmed, pid 4242
+        suspectEntry({ pid: 4343, confidence: "likely", ports: [5174] }),
+        suspectEntry({ pid: 4444, confidence: "possible", ports: [5175] }),
+      ],
+      kill_process: (args) => {
+        killCalls.push((args as { pid: number }).pid);
+        throw "ERR_PID_REUSED: process identity changed";
+      },
+    });
+    render(<App />);
+    await advance(0);
+
+    // 清扫按钮计数 = 2（Possible 永不入清扫 —— CLAUDE.md 不变量）
+    fireEvent.click(screen.getByText(/Clean up \(2\)/));
+    fireEvent.click(screen.getByText("Terminate all"));
+    await advance(800); // 批量循环 + 700ms 收尾等待
+
+    // 清扫范围：只杀了 confirmed + likely，4444 从未被尝试
+    expect(killCalls.sort()).toEqual([4242, 4343]);
+    expect(killCalls).not.toContain(4444);
+
+    // 失败聚合横幅：2/2 + 语言无关分隔符「; 」
+    const banner = screen.getByText(/2\/2 processes failed/);
+    expect(banner.textContent).toContain("; PID 4343");
+
+    // 两轮成功轮询后仍可见（actionError 不被轮询冲掉）
+    await advance(4500);
+    expect(screen.getByText(/2\/2 processes failed/)).toBeTruthy();
   });
 
   it("扫描错误保留自愈语义：后端恢复后下一轮轮询自动清除", async () => {
