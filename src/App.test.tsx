@@ -244,6 +244,50 @@ describe("error channels", () => {
     expect(added).toEqual(["node /Users/x/proj/server.js"]);
   });
 
+  it("收藏切换后触发全新扫描，而非复用读到落盘前数据的在途扫描（回归：星标曾滞后 2s）", async () => {
+    let whitelisted = false;
+    let gateNextScan = false;
+    const gate: { open: (() => void) | null } = { open: null };
+    route({
+      get_platform: () => "macos",
+      scan_ports: () => {
+        // 后端快照语义：扫描开始那一刻读取白名单状态
+        const snap = suspectEntry({
+          is_whitelisted: whitelisted,
+          is_zombie_suspect: !whitelisted,
+        });
+        if (gateNextScan) {
+          gateNextScan = false;
+          return new Promise((resolve) => {
+            gate.open = () => resolve([snap]);
+          });
+        }
+        return [snap];
+      },
+      add_whitelist: () => {
+        whitelisted = true;
+      },
+    });
+    render(<App />);
+    await advance(0); // 首次扫描落定，行未收藏（☆）
+
+    // 下一轮 2s 轮询被门控挂起：它的快照取自白名单写入**之前**
+    gateNextScan = true;
+    await advance(2000);
+
+    // 用户点星收藏：add_whitelist 落盘成功，但在途扫描还挂着
+    fireEvent.click(screen.getByText("☆"));
+    await advance(0);
+
+    // 在途的过期扫描落定 —— 修复后 freshScan 会再发起一次全新扫描
+    gate.open?.();
+    await advance(0);
+
+    // 星标必须立即反映收藏后状态，而不是等下一个 2s 轮询
+    expect(screen.getByText("★")).toBeTruthy();
+    expect(screen.queryByText("☆")).toBeNull();
+  });
+
   it("终止确认弹窗显示完整命令行（不是 lsof 短名）", async () => {
     route({
       get_platform: () => "macos",

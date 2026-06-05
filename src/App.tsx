@@ -374,7 +374,10 @@ function App() {
         await invoke("add_whitelist", { key });
       }
       setActionError(null); // 最近一次操作成功 → 清除残留失败横幅
-      await refresh();
+      // freshScan 而非 refresh：2s 轮询大概率正有一次扫描在飞行中，它读到的是
+      // 白名单落盘**之前**的数据；refresh 会复用该 Promise，星标/嫌疑态/清扫
+      // 计数要到下一轮才更新（评审发现）。kill 路径同理，早已用 freshScan。
+      await freshScan();
     } catch (err) {
       setActionError(t("error.whitelistFailed", { err: String(err) }));
     }
