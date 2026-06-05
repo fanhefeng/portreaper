@@ -1,4 +1,11 @@
+# packages 字段必须存在：CI 锁定的 pnpm 9 对缺失该字段的 workspace 文件直接报
+# `ERROR packages field missing or empty`（本机 pnpm 11 才容忍缺省）—— 单包仓库
+# 显式声明根目录即可（评审实测验证 pnpm 9.15.9 / 11.5.1 双通过）。
+packages:
+  - "."
+
 # esbuild 的 postinstall 只做二进制自检（实际二进制经平台 optionalDependencies 分发），
 # 不需要运行其构建脚本 —— 显式记录决策，否则 pnpm 10+ 在 install/exec 前置检查时报错。
+# （allowBuilds 是 pnpm 11 的键；pnpm 9 静默忽略未知键，不受影响。）
 allowBuilds:
   esbuild: false
