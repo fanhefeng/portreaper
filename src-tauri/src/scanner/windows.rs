@@ -507,6 +507,7 @@ fn tcp_listeners() -> HashMap<u32, Vec<u16>> {
             // 表可能在两次调用间增长，最多重试几次。
             // 缓冲用 Vec<u32> 而非 Vec<u8>：表结构全员 u32，需要 4 字节对齐 ——
             // Vec<u8> 的对齐由分配器碰巧保证，按语言规则属对齐 UB（评审发现）。
+            let mut settled = false;
             for _ in 0..4 {
                 let mut buf = vec![0u32; table_buf_words(size)];
                 let ret = GetExtendedTcpTable(
@@ -520,7 +521,14 @@ fn tcp_listeners() -> HashMap<u32, Vec<u16>> {
                 if ret == ERROR_INSUFFICIENT_BUFFER.0 {
                     continue;
                 }
+                settled = true;
                 if ret != NO_ERROR.0 {
+                    // 无真机可调试的平台：失败必须留痕，否则表现为「端口列表
+                    // 凭空变空」且无任何线索（评审发现，曾静默吞掉错误码）。
+                    eprintln!(
+                        "GetExtendedTcpTable(af={af}) failed with code {ret}; \
+                         port list may be incomplete"
+                    );
                     break;
                 }
                 if af == u32::from(AF_INET.0) {
@@ -547,6 +555,12 @@ fn tcp_listeners() -> HashMap<u32, Vec<u16>> {
                     }
                 }
                 break;
+            }
+            if !settled {
+                eprintln!(
+                    "GetExtendedTcpTable(af={af}) kept reporting ERROR_INSUFFICIENT_BUFFER \
+                     after 4 retries; port list may be incomplete"
+                );
             }
         }
     }
