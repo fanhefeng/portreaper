@@ -218,4 +218,75 @@ describe("error channels", () => {
     await advance(2100);
     expect(screen.getByText(/scan down/)).toBeTruthy();
   });
+
+  it("白名单键：裸解释器名回退完整命令行（不塌缩匹配全机同名进程）", async () => {
+    const added: string[] = [];
+    route({
+      get_platform: () => "macos",
+      // exe_path 是裸名 "node"（PATH/shebang 启动），不含路径分隔符
+      scan_ports: () => [
+        suspectEntry({
+          exe_path: "node",
+          full_command: "node /Users/x/proj/server.js",
+        }),
+      ],
+      add_whitelist: (args) => {
+        added.push((args as { key: string }).key);
+      },
+    });
+    render(<App />);
+    await advance(0);
+
+    fireEvent.click(screen.getByText("☆")); // 收藏
+    await advance(0);
+
+    // 键必须是完整命令行，而非塌缩的裸 "node"（前后端镜像一致性）
+    expect(added).toEqual(["node /Users/x/proj/server.js"]);
+  });
+
+  it("终止确认弹窗显示完整命令行（不是 lsof 短名）", async () => {
+    route({
+      get_platform: () => "macos",
+      scan_ports: () => [
+        suspectEntry({
+          command: "node",
+          full_command: "node /Users/x/proj/node_modules/vite/bin/vite.js dev",
+        }),
+      ],
+    });
+    render(<App />);
+    await advance(0);
+
+    fireEvent.click(screen.getAllByText("Kill")[0]);
+    // 弹窗「命令」行展示完整命令，用户能辨认杀的是什么
+    expect(
+      screen.getByText("node /Users/x/proj/node_modules/vite/bin/vite.js dev"),
+    ).toBeTruthy();
+  });
+
+  it("清扫进行中禁用行内终止按钮（防对同一进程二次 kill）", async () => {
+    let resolveKill: (() => void) | null = null;
+    route({
+      get_platform: () => "macos",
+      scan_ports: () => [suspectEntry()],
+      kill_process: () =>
+        new Promise<void>((r) => {
+          resolveKill = r;
+        }),
+    });
+    render(<App />);
+    await advance(0);
+
+    // 启动清扫（confirmed 1 个）
+    fireEvent.click(screen.getByText(/Clean up \(1\)/));
+    fireEvent.click(screen.getByText("Terminate all"));
+    await advance(0);
+
+    // 清扫期间行内 Kill 按钮被禁用
+    const killBtn = screen.getAllByText("Kill")[0] as HTMLButtonElement;
+    expect(killBtn.disabled).toBe(true);
+
+    resolveKill?.();
+    await advance(800);
+  });
 });

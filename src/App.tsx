@@ -44,8 +44,8 @@ type Filter = "all" | "suspect" | "whitelist";
 
 type ConfirmState = {
   pid: number;
-  ports: number[];
   command: string;
+  ports: number[];
   app_label: string;
   force: boolean;
   startUnix: number | null;
@@ -150,11 +150,22 @@ const DESC_KEYS: Record<string, I18nKey> = {
   unknown: "desc.unknown",
 };
 
+/**
+ * 白名单键 —— 必须与后端 scanner::mod::whitelist_key 逐字一致（评审发现）：
+ * exe_path 含路径分隔符（绝对路径）时用它；否则是 PATH 解析的裸解释器名
+ * （"node"），单独加白会塌缩匹配全机同名监听者 —— 回退完整命令行。
+ */
+function whitelistKey(e: ProcessEntry): string {
+  if (e.exe_path.includes("/") || e.exe_path.includes("\\")) return e.exe_path;
+  return e.full_command || e.command;
+}
+
 /** 「这是什么」：知识库命中 → 友好名；未命中 → 类别描述兜底 */
 function describeEntry(e: ProcessEntry, lang: Lang): string | null {
-  // full_command 必须参与匹配：lsof 的短名只有 "node"，脚本身份在完整命令行里
-  const hay =
-    `${e.app_label} ${e.command} ${e.full_command} ${e.exe_path}`.toLowerCase();
+  // 知识库的品牌词（spotify/steam/...）按进程的「身份字段」匹配，不含 exe_path /
+  // 完整路径：否则项目目录名恰含品牌词（~/code/spotify-clone/server.js）会被
+  // 误描述成该品牌（评审发现）。app_label 已含脚本/项目身份，command 是运行时短名。
+  const hay = `${e.app_label} ${e.command}`.toLowerCase();
   for (const [re, zh, enText] of KNOWN_PROCESSES) {
     if (re.test(hay)) return lang === "zh" ? zh : enText;
   }
@@ -325,8 +336,10 @@ function App() {
   const askKill = (e: ProcessEntry, force: boolean) => {
     setConfirm({
       pid: e.pid,
+      // 完整命令行（含脚本路径/参数）—— 毁灭性确认应让用户看清杀的到底是什么，
+      // lsof 短名 "node" 不足以辨认（评审发现）；退回短名仅当完整命令为空
+      command: e.full_command || e.command,
       ports: e.ports,
-      command: e.command,
       app_label: e.app_label,
       force,
       startUnix: e.start_unix,
@@ -353,7 +366,7 @@ function App() {
   };
 
   const handleToggleWhitelist = async (e: ProcessEntry) => {
-    const key = e.exe_path || e.command;
+    const key = whitelistKey(e);
     try {
       if (e.is_whitelisted) {
         await invoke("remove_whitelist", { key });
