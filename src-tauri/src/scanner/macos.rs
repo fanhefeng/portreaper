@@ -296,7 +296,12 @@ fn parse_lsof(text: &str) -> Vec<Listener> {
             continue;
         }
         let tag = line.as_bytes()[0];
-        let rest = &line[1..];
+        // get(1..) 而非 [1..]：后者是字节切片，若行首是多字节 UTF-8 字符会 panic。
+        // lsof -F 每行以 ASCII tag 开头、实践中不会触发，但本文件其余解析器全用
+        // 边界安全 API（strip_prefix/split_whitespace），不留这个孤点（评审发现）。
+        let Some(rest) = line.get(1..) else {
+            continue;
+        };
         match tag {
             b'p' => {
                 if let Ok(pid) = rest.parse::<u32>() {
@@ -494,6 +499,17 @@ mod tests {
         assert_eq!(ls[0].command, "node");
         assert_eq!(ls[0].ports, vec![5173, 5174]);
         assert_eq!(ls[1].ports, vec![5432]);
+    }
+
+    /// 回归（评审发现）：行首是多字节 UTF-8 字符时不得 panic ——
+    /// 旧实现 `&line[1..]` 按字节切片，切在续字节上直接崩掉整次扫描。
+    /// lsof -F 实践中行首恒为 ASCII tag，此处守住的是「解析器不信任输入」底线。
+    #[test]
+    fn lsof_multibyte_leading_line_is_skipped_not_panicking() {
+        let text = "p123\ncnode\n中文噪声行\nn*:5173\n";
+        let ls = parse_lsof(text);
+        assert_eq!(ls.len(), 1);
+        assert_eq!(ls[0].ports, vec![5173]);
     }
 
     /// 生产真实形态的 ps 行（无 sess 列；state 的 's' 标志 = 会话首进程，
