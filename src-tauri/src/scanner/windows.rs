@@ -8,7 +8,7 @@ use std::collections::HashMap;
 use std::ffi::c_void;
 use std::sync::{Mutex, OnceLock};
 
-use sysinfo::{Pid, ProcessesToUpdate, System, Users};
+use sysinfo::{Pid, ProcessRefreshKind, ProcessesToUpdate, System, Users};
 use windows::Win32::Foundation::{ERROR_INSUFFICIENT_BUFFER, NO_ERROR};
 use windows::Win32::NetworkManagement::IpHelper::{
     GetExtendedTcpTable, MIB_TCP6TABLE_OWNER_PID, MIB_TCPTABLE_OWNER_PID,
@@ -374,7 +374,19 @@ pub(crate) fn collect() -> Collected {
     let ports_by_pid = tcp_listeners();
 
     let mut sys = system().lock().unwrap();
-    sys.refresh_processes(ProcessesToUpdate::All, true);
+    // 必须用 _specifics + everything()（评审发现的 Windows 核心失效）：便捷的
+    // refresh_processes(All, true) 内部固定为 nothing().with_memory().with_cpu()
+    // .with_disk_usage().with_exe(OnlyIfNotSet) —— 不含 cmd/cwd/user。Windows 上
+    // 这三项受 refresh_kind 门控并提前 return，导致 proc_.cmd() 恒空、cwd() 恒 None、
+    // user_id() 恒 None：full_command 退化为纯 exe（无参数）⇒ extract_script_arg /
+    // extract_module_arg 拿不到脚本/模块 ⇒ `node.exe vite.js`、`python.exe -m
+    // http.server` 永远走不到 dev-script、被路径阶梯当 installed-app 豁免，
+    // CLAUDE.md 的核心检测目标在 Windows 上整体失效；cwd 缺失还让重复检测哑火。
+    sys.refresh_processes_specifics(
+        ProcessesToUpdate::All,
+        true,
+        ProcessRefreshKind::everything(),
+    );
     let users = Users::new_with_refreshed_list();
 
     let mut procs: HashMap<u32, ProcMeta> = HashMap::new();
