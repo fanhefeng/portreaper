@@ -13,7 +13,7 @@
 //   5. 每个 Confidence（除 none）：verdict.* 必须 zh+en 双语齐全（行内判定前缀）。
 //
 // 用法：node scripts/check-reason-parity.mjs   （exit 1 = 不一致）
-// 自测：node --test scripts/                    （check-reason-parity.test.mjs）
+// 自测：node --test scripts/*.test.mjs          （check-reason-parity.test.mjs）
 
 import { readFileSync } from "node:fs";
 import { dirname, join } from "node:path";

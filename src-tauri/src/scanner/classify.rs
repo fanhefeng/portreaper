@@ -494,7 +494,7 @@ mod tests {
                 name: "20 孤儿 python -m http.server（brew 解释器）：身份是模块，必须检出",
                 snap: ProcessSnapshot {
                     direct_orphan: Some(Ppid1Orphan),
-                    dev_keyword: true,        // "python" 命中 DEV_SERVER_PATTERNS
+                    dev_keyword: true,        // "python" 命中 DEV_SERVER_TOKENS
                     dev_category: true,       // identify_app `-m 模块` → dev-script
                     brew_service_path: false, // brew_service_exemption 按模块身份判为不豁免
                     ..snap()

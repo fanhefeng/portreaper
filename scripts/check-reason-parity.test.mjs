@@ -1,4 +1,4 @@
-// check-reason-parity.mjs 的自测（node --test scripts/）。
+// check-reason-parity.mjs 的自测（node --test scripts/*.test.mjs）。
 // 守卫脚本自己也是代码：每条校验规则用「真实源码 + 定向突变」验证
 // 能抓住对应的回归 —— 否则守卫静默放行比没有守卫更危险（评审发现：
 // 旧版脚本校验的 confidence.* 是死键，真正渲染的 story.*/verdict.* 无守卫）。

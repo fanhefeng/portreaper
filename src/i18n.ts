@@ -1,7 +1,7 @@
 // 轻量类型安全 i18n —— 不引库：
 // - key 类型从 zh 字典推导，en 用 Record<Key, string> 约束 → 缺/多 key 都是 tsc 编译错误
-// - reason.* / reasonTip.* / confidence.* 键与 Rust 端 ReasonCode/Confidence 的 serde 名
-//   一一对应，CI 的 scripts/check-reason-parity.mjs 做机械校验
+// - reason.* / reasonTip.* / story.* / verdict.* 四个键族与 Rust 端 ReasonCode/
+//   Confidence 的 serde 名一一对应，CI 的 scripts/check-reason-parity.mjs 做机械校验
 // - story.* 是产品层文案：把主判定码翻译成一句人话结论（行内展示）；
 //   reason.*（短标签）+ reasonTip.*（完整解释）用于展开的详情面板
 import { useSyncExternalStore } from "react";
