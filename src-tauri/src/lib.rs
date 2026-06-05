@@ -126,17 +126,30 @@ pub fn run() {
         .expect("error while building tauri application")
         .run(|app, event| {
             #[cfg(target_os = "macos")]
-            if let tauri::RunEvent::Reopen {
-                has_visible_windows,
-                ..
-            } = event
-            {
-                if !has_visible_windows {
-                    if let Some(w) = app.get_webview_window("main") {
-                        let _ = w.show();
-                        let _ = w.set_focus();
+            match event {
+                tauri::RunEvent::Reopen {
+                    has_visible_windows,
+                    ..
+                } => {
+                    if !has_visible_windows {
+                        if let Some(w) = app.get_webview_window("main") {
+                            let _ = w.show();
+                            let _ = w.set_focus();
+                        }
                     }
                 }
+                // 「仅托盘退出」不变量（CLAUDE.md / TESTING-WINDOWS.md 验收项）：
+                // 托盘菜单 Quit 走 app.exit(0)，携带 code=Some(0) ⇒ 放行真正退出；
+                // ⌘Q / App 菜单 Quit 触发的 ExitRequested code=None ⇒ 改为隐藏到
+                // 托盘并 prevent_exit，与窗口关闭按钮行为一致（评审发现：此前 ⌘Q
+                // 会绕过托盘直接整体退出，扫描与计数全部消失）。
+                tauri::RunEvent::ExitRequested { code, api, .. } if code.is_none() => {
+                    if let Some(w) = app.get_webview_window("main") {
+                        let _ = w.hide();
+                    }
+                    api.prevent_exit();
+                }
+                _ => {}
             }
             #[cfg(not(target_os = "macos"))]
             {
