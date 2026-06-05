@@ -1,5 +1,6 @@
 use serde::Serialize;
 
+use super::identify::{basename, strip_exe};
 use super::model::ProcessSnapshot;
 
 /// 僵尸判定原因 —— 机器码，serde 蛇形小写输出，前端按 `reason.<code>` 做 i18n。
@@ -71,30 +72,20 @@ impl Verdict {
     }
 }
 
-/// dev-server 命令行关键字（小写子串匹配，双平台共用：node.exe 同样包含 "node"）。
-pub(crate) const DEV_SERVER_PATTERNS: &[&str] = &[
-    "node",
+/// dev-server 长关键字：足够独特，整行小写子串匹配（双平台共用）——
+/// 出现在脚本路径片段里（node_modules/vite/bin/vite.js）同样是真实 dev 证据。
+pub(crate) const DEV_SERVER_SUBSTRINGS: &[&str] = &[
     "vite",
-    "next",
-    "nest",
     "remix",
     "nuxt",
     "astro",
     "svelte",
-    "python",
     "uvicorn",
     "gunicorn",
     "flask",
     "fastapi",
     "django",
     "hypercorn",
-    "ruby",
-    "rails",
-    "puma",
-    "unicorn",
-    "deno",
-    "bun",
-    "tsx",
     "ts-node",
     "esbuild",
     "webpack",
@@ -105,30 +96,53 @@ pub(crate) const DEV_SERVER_PATTERNS: &[&str] = &[
     "snowpack",
     "tauri",
     "electron",
-    "java",
     "tomcat",
     "jetty",
     "go run",
-    "air ",
     "cargo run",
     "cargo-watch",
-    "php",
     "artisan",
     "http.server",
     "live-server",
     "browser-sync",
-    "serve",
     "http-server",
     "ngrok",
     "cloudflared",
     "streamlit",
     "gradio",
     "jupyter",
+    "next dev",
+    "next-server",
+    "next start",
 ];
+
+/// dev-server 短关键字：常见词，裸子串会大面积误伤（评审实锤的 Confirmed 误升级：
+/// "serve"⊂redis-server/myserver/observer、"node"⊂prometheus-node-exporter、
+/// "java"⊂javascript-engine、"bun"⊂ubuntu-report）。只按「token 基名 == 关键字」
+/// 匹配，容忍数字/点版本后缀与 .exe：/opt/homebrew/bin/node、python3.12、
+/// java.exe 命中；redis-server、javascript-engine、guardrails 不命中。
+/// 误伤面收紧的代价（npx serve 等包装丢失 token）由 dev_category 兜底 ——
+/// classify 的 dev_like = keyword || category 本就是双保险。
+pub(crate) const DEV_SERVER_TOKENS: &[&str] = &[
+    "node", "next", "nest", "python", "ruby", "rails", "puma", "unicorn", "deno", "bun", "bunx",
+    "tsx", "java", "php", "serve", "air",
+];
+
+/// token 基名（去路径、去 .exe）等于关键字，或仅余数字/点版本后缀（python3 / node18 / python3.12）。
+fn token_is(token: &str, pat: &str) -> bool {
+    strip_exe(basename(token))
+        .strip_prefix(pat)
+        .is_some_and(|rest| rest.chars().all(|c| c.is_ascii_digit() || c == '.'))
+}
 
 pub(crate) fn is_dev_server(cmd: &str) -> bool {
     let lower = cmd.to_lowercase();
-    DEV_SERVER_PATTERNS.iter().any(|p| lower.contains(p))
+    if DEV_SERVER_SUBSTRINGS.iter().any(|p| lower.contains(p)) {
+        return true;
+    }
+    lower
+        .split_whitespace()
+        .any(|tok| DEV_SERVER_TOKENS.iter().any(|p| token_is(tok, p)))
 }
 
 /// 启动后的宽限期（秒）：刚被收养/刚重启的进程降级为 Possible，防闪报、防误扫。
@@ -539,6 +553,45 @@ mod tests {
         ));
         assert!(is_dev_server("vite"));
         assert!(!is_dev_server("C:\\Windows\\System32\\svchost.exe"));
+    }
+
+    /// 回归（评审实锤的误升级面）：短关键字不得因路径/名字里的偶然子串命中。
+    /// 曾经的后果：nohup 脱离的 /usr/local/bin/redis-server（手装非 brew）因
+    /// "serve" 子串获得 dev_keyword，从 Likely 误升 Confirmed；Windows 上裸
+    /// ParentExited 的 myserver.exe 绕过 weak_parent_exited 降级直入清扫。
+    #[test]
+    fn dev_keyword_short_words_require_exact_command_token() {
+        // 误伤面：全部必须不命中
+        for fp in [
+            "/usr/local/bin/redis-server --port 6379",
+            "/Users/x/bin/myserver --listen 8080",
+            "/Users/x/bin/observer-daemon",
+            "/Users/x/bin/javascript-engine --port 9000",
+            "/usr/local/bin/prometheus-node-exporter",
+            "/Users/x/.cargo/bin/unicorn-tool",
+            "/opt/guardrails/bin/guardrails",
+            "/usr/local/bin/ubuntu-report",
+            "C:\\Users\\x\\tools\\myserver.exe --port 8080",
+            "/Users/x/bin/conserver",
+        ] {
+            assert!(!is_dev_server(fp), "误伤: {fp}");
+        }
+        // 真阳性：全部必须保持命中
+        for tp in [
+            "node",                                        // lsof 短命令名
+            "node.exe server.js",                          // Windows 运行时
+            "/opt/homebrew/bin/node /Users/x/p/server.js", // exe 全路径 token
+            "python3 -m http.server 8000",                 // 版本后缀 + 模块子串
+            "Python3.12 app.py",                           // 多级版本后缀
+            "java -jar app.jar",
+            "serve -s build", // 真·serve CLI
+            "air",            // 裸 air（旧 "air " 带尾空格时漏报）
+            "bunx vite dev",
+            "/Users/x/p/node_modules/.bin/vite --port 5173", // 长词子串路径证据
+            "next-server (v14.2.3)",
+        ] {
+            assert!(is_dev_server(tp), "漏报: {tp}");
+        }
     }
 
     #[test]
