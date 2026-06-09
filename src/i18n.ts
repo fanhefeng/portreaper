@@ -37,6 +37,7 @@ const zh = {
   "error.processGone": "进程已不存在（可能刚刚退出）",
   "error.identityUnknown": "缺少进程身份信息，已取消终止，请刷新后重试",
   "error.whitelistFailed": "收藏保存失败（本次更改未持久化）: {err}",
+  "error.scanTimeout": "扫描超时（后端无响应），正在自动重试…",
 
   // ---- row ----
   "port.tip": "在浏览器打开 http://localhost:{port}",
@@ -211,6 +212,7 @@ const en: Record<I18nKey, string> = {
   "error.identityUnknown":
     "Missing process identity token — kill aborted, refresh and retry",
   "error.whitelistFailed": "Whitelist update failed (change not persisted): {err}",
+  "error.scanTimeout": "Scan timed out (no response from backend); retrying…",
 
   "port.tip": "Open http://localhost:{port} in browser",
   "row.expand.tip": "Show details",

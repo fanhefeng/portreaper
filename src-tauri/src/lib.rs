@@ -66,7 +66,6 @@ pub fn run() {
             commands::remove_whitelist,
             commands::update_tray_title,
             commands::set_tray_language,
-            commands::show_main_window,
         ]);
 
     // 「仅托盘退出」不变量的真正实现（评审 + 实测推翻了旧的 ExitRequested 拦截）：

@@ -247,6 +247,28 @@ function localizeKillError(
   return err;
 }
 
+/** scan_ports 无取消机制：后端子进程（lsof/launchctl）若卡死，invoke 会永不
+ *  settle，inFlight 永久占用 → 之后每次轮询都早返回，UI 静默冻结在旧数据且无
+ *  错误提示（评审发现）。用超时把它转成可见的 scanError + 下一轮自动重试。 */
+const SCAN_TIMEOUT_MS = 10_000;
+
+function withTimeout<T>(p: Promise<T>, ms: number, marker: string): Promise<T> {
+  let timer: ReturnType<typeof setTimeout> | undefined;
+  const timeout = new Promise<never>((_, reject) => {
+    timer = setTimeout(() => reject(new Error(marker)), ms);
+  });
+  return Promise.race([p, timeout]).finally(() => clearTimeout(timer));
+}
+
+/** 扫描超时 sentinel → 本地化；其余（OS 原文）透传 */
+function localizeScanError(
+  err: string,
+  t: (k: I18nKey, p?: Record<string, string | number>) => string,
+): string {
+  if (err.includes("ERR_SCAN_TIMEOUT")) return t("error.scanTimeout");
+  return err;
+}
+
 function App() {
   const { t, lang, setLang } = useI18n();
   const [os, setOs] = useState<Os>("macos");
@@ -258,7 +280,7 @@ function App() {
   // 否则 2s 轮询会在用户看清之前把失败原因静默冲掉。
   const [scanError, setScanError] = useState<string | null>(null);
   const [actionError, setActionError] = useState<string | null>(null);
-  const error = actionError ?? scanError;
+  const error = actionError ?? (scanError ? localizeScanError(scanError, t) : null);
   const [killingPid, setKillingPid] = useState<number | null>(null);
   const [confirm, setConfirm] = useState<ConfirmState>(null);
   const [batchConfirm, setBatchConfirm] = useState<ProcessEntry[] | null>(null);
@@ -274,7 +296,11 @@ function App() {
 
   const runScan = useCallback(async () => {
     try {
-      const data = await invoke<ProcessEntry[]>("scan_ports");
+      const data = await withTimeout(
+        invoke<ProcessEntry[]>("scan_ports"),
+        SCAN_TIMEOUT_MS,
+        "ERR_SCAN_TIMEOUT",
+      );
       setEntries(data);
       setScanError(null);
       // 托盘只计入会被清扫的层级（Confirmed + Likely），避免宽限期内的闪烁。

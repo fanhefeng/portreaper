@@ -108,13 +108,3 @@ pub fn set_tray_language(app: tauri::AppHandle, lang: String) -> Result<(), Stri
     }
     Ok(())
 }
-
-#[tauri::command]
-pub fn show_main_window(app: tauri::AppHandle) -> Result<(), String> {
-    use tauri::Manager;
-    if let Some(w) = app.get_webview_window("main") {
-        w.show().map_err(|e| e.to_string())?;
-        w.set_focus().map_err(|e| e.to_string())?;
-    }
-    Ok(())
-}
