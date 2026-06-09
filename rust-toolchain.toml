@@ -1,0 +1,11 @@
+# 钉死 Rust 工具链版本，避免 rustfmt 的换行启发式随 stable 升级悄悄漂移、
+# 导致 CI 的 `cargo fmt --check` 与手动格式反复打架（见 commit 419520a 的来回换行）。
+#
+# rustup 会从仓库任意子目录向上发现此文件，自动切换/下载这里指定的版本，
+# 因此它同时约束：本机开发、CI（dtolnay/rust-toolchain）、release.yml 的 tauri-action。
+#
+# 升级流程：本机 `rustup update` → 把 channel 改成新版号 → `cargo fmt && cargo clippy`
+#          → 同步更新 .github/workflows/ci.yml 里的 `dtolnay/rust-toolchain@<version>` → 提交。
+[toolchain]
+channel = "1.96.0"
+components = ["rustfmt", "clippy"]

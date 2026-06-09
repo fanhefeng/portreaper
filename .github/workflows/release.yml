@@ -148,8 +148,10 @@ jobs:
 
       # On Windows the matrix target is empty (host = x86_64-pc-windows-msvc),
       # so we pass an empty `targets:` and let rustup use the default host.
+      # Pinned to match `rust-toolchain.toml` / ci.yml — release builds use the
+      # same compiler the gate ran against. Bump all three together.
       - name: Install Rust toolchain
-        uses: dtolnay/rust-toolchain@stable
+        uses: dtolnay/rust-toolchain@1.96.0
         with:
           targets: ${{ matrix.target }}
 

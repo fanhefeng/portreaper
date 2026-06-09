@@ -245,8 +245,8 @@ fn build_entry(
     // 同时核对 v0.4.0 旧键以兼容升级（见 legacy_whitelist_key）。
     let wl_key = whitelist_key(&exe_path, &full_command, &command);
     let legacy_key = legacy_whitelist_key(&exe_path, &command);
-    let is_whitelisted = whitelist.contains(&wl_key)
-        || (legacy_key != wl_key && whitelist.contains(&legacy_key));
+    let is_whitelisted =
+        whitelist.contains(&wl_key) || (legacy_key != wl_key && whitelist.contains(&legacy_key));
 
     ports.sort_unstable();
 

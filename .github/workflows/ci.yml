@@ -47,8 +47,11 @@ jobs:
           node-version: 20
           cache: pnpm
 
+      # Pinned (not @stable) so rustfmt's line-wrapping heuristics can't drift
+      # under us and break `cargo fmt --check`. Keep this version byte-identical
+      # to `rust-toolchain.toml` at the repo root — bump both together.
       - name: Install Rust toolchain
-        uses: dtolnay/rust-toolchain@stable
+        uses: dtolnay/rust-toolchain@1.96.0
         with:
           components: rustfmt, clippy
 
