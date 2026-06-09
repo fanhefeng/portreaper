@@ -238,20 +238,21 @@ pub(crate) fn classify(s: &ProcessSnapshot) -> Verdict {
         && !dev_like
         && !chain_orphan
         && !s.tty_orphaned;
-    let confidence =
-        if (direct_orphan && (dev_like || s.tty_orphaned)) || (chain_orphan && dev_like) {
-            // 孤儿 × dev 特征 / 孤儿 × 会话已死 —— 多信号互证
-            Confidence::Confirmed
-        } else if weak_parent_exited {
-            Confidence::Possible
-        } else if direct_orphan || chain_orphan {
-            // 孤儿但意图不可证（如 nohup 的非 dev 二进制）；
-            // macOS 的 PPID=1 与 Windows 的槽位复用都是强证据，保持 Likely
-            Confidence::Likely
-        } else {
-            // 仅 tty_orphaned：父进程关系尚可解释，单独的会话信号只到存疑
-            Confidence::Possible
-        };
+    let confidence = if (direct_orphan || chain_orphan) && (dev_like || s.tty_orphaned) {
+        // 孤儿（直接 PPID=1/槽位复用，或链终止于 init）× （dev 特征 / 会话已死）
+        // —— 多信号互证。直接孤儿与链孤儿对称享受 tty 佐证（CLAUDE.md：
+        // 「orphan × dead-session → Confirmed」），不再厚此薄彼。
+        Confidence::Confirmed
+    } else if weak_parent_exited {
+        Confidence::Possible
+    } else if direct_orphan || chain_orphan {
+        // 孤儿但意图不可证（如 nohup 的非 dev 二进制）；
+        // macOS 的 PPID=1 与 Windows 的槽位复用都是强证据，保持 Likely
+        Confidence::Likely
+    } else {
+        // 仅 tty_orphaned：父进程关系尚可解释，单独的会话信号只到存疑
+        Confidence::Possible
+    };
 
     Verdict {
         is_suspect: true,
@@ -459,6 +460,23 @@ mod tests {
                 want_suspect: true,
                 want_conf: Possible,
                 want_reasons: &[OrphanedSession],
+            },
+            Case {
+                // #2 对称性修复：chain_orphan 此前不享受 tty 佐证，使「链孤儿 ×
+                // 会话已死」（非 dev）只判 Likely，与 CLAUDE.md「orphan × dead-session
+                // → Confirmed」不符。对称后升 Confirmed。对比 case 15（仅 tty、无孤儿
+                // 信号 → 仍 Possible）：这里多了链孤儿这条独立证据。
+                name:
+                    "22 链孤儿 × 会话已死（非 dev）：dead-session 佐证对直接/链孤儿对称 → Confirmed",
+                snap: ProcessSnapshot {
+                    chain_terminates_at_init: true,
+                    chain_has_orphan_shell: true, // 非 dev，靠孤儿 shell 祖先成链
+                    tty_orphaned: true,
+                    ..snap()
+                },
+                want_suspect: true,
+                want_conf: Confirmed,
+                want_reasons: &[OrphanedChain, OrphanedSession, NonstandardPath],
             },
             // ============ Windows 语义 ============
             Case {
