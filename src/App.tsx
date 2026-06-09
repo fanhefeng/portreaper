@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useRef, useState, type KeyboardEvent as ReactKeyboardEvent } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState, type KeyboardEvent as ReactKeyboardEvent } from "react";
 import { invoke } from "@tauri-apps/api/core";
 import { openUrl } from "@tauri-apps/plugin-opener";
 import { useI18n, type I18nKey, type Lang } from "./i18n";
@@ -897,7 +897,12 @@ function Row({
   // app_label 形如 "dev-server.js · node" —— 主名 + 次级说明
   const { name, sub: nameSub } = splitLabel(e.app_label);
 
-  const known = describeEntry(e, lang);
+  // describeEntry 跑 ~50 条正则；Row 每 2s 随轮询重渲染。依赖实际输入字段（而非
+  // e 引用 —— 每次 poll 都是新对象），值不变即命中缓存（评审 E5）。
+  const known = useMemo(
+    () => describeEntry(e, lang),
+    [e.app_label, e.command, e.full_command, e.exe_path, lang],
+  );
   const desc = known ?? t(DESC_KEYS[e.app_category] ?? "desc.unknown");
 
   // 来源：谁启动的 / 谁在托管
