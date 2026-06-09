@@ -19,7 +19,9 @@ pub(crate) fn basename(path: &str) -> &str {
 /// 双改，且 Windows 无人工 QA —— 漏改即静默回归。新增片段只改这一处。
 pub(crate) fn is_dev_build_artifact(path: &str) -> bool {
     let norm = path.replace('\\', "/").to_lowercase();
-    norm.contains("/target/debug/") || norm.contains("/target/release/") || norm.contains("/go-build")
+    norm.contains("/target/debug/")
+        || norm.contains("/target/release/")
+        || norm.contains("/go-build")
 }
 
 /// 去掉 Windows 可执行后缀：node.exe → node（大小写不敏感）
