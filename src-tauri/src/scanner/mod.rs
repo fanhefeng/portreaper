@@ -15,7 +15,7 @@ mod windows;
 #[cfg(windows)]
 use windows as platform_impl;
 
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 
 pub use model::ProcessEntry;
 
@@ -29,7 +29,7 @@ pub(crate) use macos::system_bin;
 
 use classify::{classify, is_dev_server, Confidence, ReasonCode};
 use identify::basename;
-use model::{ParentRef, ProcMeta, ProcessSnapshot};
+use model::{Collected, ParentRef, ProcMeta, ProcessSnapshot};
 
 /// 父链回溯的同时收集的孤儿信号。
 #[derive(Default)]
@@ -93,6 +93,9 @@ pub fn scan(whitelist: &[String]) -> Vec<ProcessEntry> {
     let procs = &collected.procs;
 
     let mut entries = Vec::new();
+    let mut seen: HashSet<u32> = HashSet::with_capacity(collected.listeners.len());
+
+    // —— 主路径：监听端口的进程（lsof / 端口表）——
     for l in &collected.listeners {
         // lsof/端口表 与 进程表 是两次独立快照：拿不到元数据说明进程正在
         // 消失或刚出现 —— 丢弃该行（下个 2s 周期会补上）。这同时保证
@@ -100,93 +103,70 @@ pub fn scan(whitelist: &[String]) -> Vec<ProcessEntry> {
         let Some(meta) = procs.get(&l.pid) else {
             continue;
         };
-        let ppid = meta.ppid;
-        let exe_path = meta.exe_path.clone();
-        let full_command = if meta.full_command.is_empty() {
-            l.command.clone()
-        } else {
-            meta.full_command.clone()
-        };
-
-        let (app_label, app_category) =
-            platform_impl::identify_app(&full_command, &l.command, &exe_path);
-
-        let (parent_chain, chain_flags) = build_parent_chain(l.pid, procs);
-        let launcher_label = parent_chain
-            .last()
-            .map(|p| p.label.clone())
-            .unwrap_or_else(|| "?".to_string());
-
-        // —— 豁免规则：installed-app/system 类别豁免；exe 在标准路径也豁免，
-        //    但 dev-script 例外 —— 脚本运行时的身份是脚本，不能因解释器
-        //    装在系统目录（/usr/bin/python3、Program Files\nodejs）而漏报。
-        let exe_is_standard_install = app_category == "installed-app"
-            || app_category == "system"
-            || (platform_impl::is_standard_install_path(&exe_path) && app_category != "dev-script");
-        let brew_service_path = brew_service_exemption(&app_category, &full_command, &exe_path);
-
-        let snapshot = ProcessSnapshot {
-            state: meta.state.clone(),
-            elapsed_secs: meta.elapsed_secs,
-            direct_orphan: platform_impl::direct_orphan(ppid, meta, procs),
-            chain_terminates_at_init: chain_flags.terminates_at_init,
-            chain_has_orphan_shell: chain_flags.has_orphan_shell,
-            launchd_managed: collected.launchd_pids.contains(&l.pid),
-            brew_service_path,
-            pm2_managed: chain_flags.pm2 || is_pm2_container(&full_command),
-            tty_orphaned: meta.tty_orphaned,
-            exe_is_standard_install,
-            dev_keyword: is_dev_server(&full_command) || is_dev_server(&l.command),
-            dev_category: app_category == "dev-script",
-        };
-        let verdict = classify(&snapshot);
-
-        // 白名单 key（前端 App.tsx handleToggleWhitelist 必须用同一优先级）。
-        // 同时核对 v0.4.0 旧键以兼容升级（见 legacy_whitelist_key）。
-        let wl_key = whitelist_key(&exe_path, &full_command, &l.command);
-        let legacy_key = legacy_whitelist_key(&exe_path, &l.command);
-        let is_whitelisted = whitelist.contains(&wl_key)
-            || (legacy_key != wl_key && whitelist.contains(&legacy_key));
-
-        let mut ports = l.ports.clone();
-        ports.sort_unstable();
-
+        seen.insert(l.pid);
+        // 监听者的 user 优先取 lsof L 字段；缺失时回退进程表（macOS 进程表 user 恒空）。
         let user = if !l.user.is_empty() {
             l.user.clone()
         } else {
             meta.user.clone()
         };
-
-        entries.push(ProcessEntry {
-            pid: l.pid,
-            ppid,
-            ports,
-            command: l.command.clone(),
-            full_command,
-            exe_path,
-            app_label,
-            app_category,
-            parent_chain,
-            launcher_label,
+        let (entry, _) = build_entry(
+            l.pid,
+            meta,
+            procs,
+            &collected,
+            whitelist,
+            l.ports.clone(),
+            l.command.clone(),
             user,
-            tty: meta.tty.clone().unwrap_or_default(),
-            elapsed_secs: meta.elapsed_secs,
-            start_unix: meta.start_unix,
-            cpu_percent: meta.cpu_percent,
-            mem_mb: meta.rss_kb as f32 / 1024.0,
-            state: meta.state.clone().unwrap_or_default(),
-            is_zombie_suspect: verdict.is_suspect && !is_whitelisted,
-            confidence: verdict.confidence,
-            zombie_reasons: verdict.reasons,
-            is_whitelisted,
-            duplicate_of: None,
-        });
+        );
+        entries.push(entry);
+    }
+
+    // —— 第二路径：不占端口、但已脱离父进程的孤儿 dev 进程 ——
+    //    数据源是同一份全进程表（macOS=ps -A / Windows=sysinfo），无额外系统调用：
+    //    监听者只覆盖占端口的进程，被杀掉父进程的 dev 残留（如 electron-vite 中
+    //    父 node 被杀、Electron 主进程被 launchd 收养成孤儿）既不占端口也就此漏网。
+    //
+    //    纳入门槛刻意比监听者更严：端口缺席时，dev-like 是「值得关注」的替代证据
+    //    —— 否则全进程表里几十个正常的 ppid==1 系统 daemon 会全部涌入。classify
+    //    的硬豁免（launchd / 标准路径 / brew / pm2）继续兜底防误报。
+    for (&pid, meta) in procs {
+        if seen.contains(&pid) {
+            continue;
+        }
+        let command = basename(&meta.exe_path).to_string();
+        // 廉价预闸（不回溯父链）：dev-like 是孤儿纳入的硬门槛，非 dev 进程直接跳过，
+        // 避免对全进程表（数百个）逐个做 build_parent_chain 的父链回溯。
+        let dev_like = is_dev_server(&meta.full_command)
+            || is_dev_server(&command)
+            || platform_impl::identify_app(&meta.full_command, &command, &meta.exe_path).1
+                == "dev-script";
+        if !dev_like {
+            continue;
+        }
+        let (entry, raw_suspect) = build_entry(
+            pid,
+            meta,
+            procs,
+            &collected,
+            whitelist,
+            Vec::new(),
+            command,
+            meta.user.clone(),
+        );
+        // 只纳入「判为嫌疑」的孤儿。白名单命中的孤儿（raw_suspect 为真但
+        // is_zombie_suspect 已被扣为假）仍纳入，以便用户在列表里取消收藏；
+        // 非嫌疑的健康 dev 进程（活终端里的 vite 等）不占端口、无残留意义，不进列表。
+        if raw_suspect {
+            entries.push(entry);
+        }
     }
 
     // 跨条目后处理：同项目重复 dev server（classify 是单进程纯函数看不到全局）
     mark_duplicates(&mut entries, &collected.cwds);
 
-    // 排序：嫌疑优先 → 置信度高优先 → 端口号
+    // 排序：嫌疑优先 → 置信度高优先 → 端口号（孤儿无端口，端口键为 0 排在最前）
     entries.sort_by(|a, b| {
         b.is_zombie_suspect
             .cmp(&a.is_zombie_suspect)
@@ -201,6 +181,100 @@ pub fn scan(whitelist: &[String]) -> Vec<ProcessEntry> {
     });
 
     entries
+}
+
+/// 从进程元数据构造一行 entry 及其判定 —— 监听者与孤儿进程共用，确保两条路径
+/// 的孤儿判定零分叉。监听者传 lsof 的 ports / command（短名）/ user；孤儿进程
+/// 传空 ports、exe basename 作命令、ProcMeta 的 user。
+///
+/// 返回 `(entry, raw_suspect)`：raw_suspect 是**未扣白名单**的 verdict.is_suspect
+/// —— 孤儿循环据此决定是否纳入，使白名单命中的孤儿仍能显示以便取消收藏。
+#[allow(clippy::too_many_arguments)]
+fn build_entry(
+    pid: u32,
+    meta: &ProcMeta,
+    procs: &HashMap<u32, ProcMeta>,
+    collected: &Collected,
+    whitelist: &[String],
+    mut ports: Vec<u16>,
+    command: String,
+    user: String,
+) -> (ProcessEntry, bool) {
+    let ppid = meta.ppid;
+    let exe_path = meta.exe_path.clone();
+    let full_command = if meta.full_command.is_empty() {
+        command.clone()
+    } else {
+        meta.full_command.clone()
+    };
+
+    let (app_label, app_category) = platform_impl::identify_app(&full_command, &command, &exe_path);
+
+    let (parent_chain, chain_flags) = build_parent_chain(pid, procs);
+    let launcher_label = parent_chain
+        .last()
+        .map(|p| p.label.clone())
+        .unwrap_or_else(|| "?".to_string());
+
+    // —— 豁免规则：installed-app/system 类别豁免；exe 在标准路径也豁免，
+    //    但 dev-script 例外 —— 脚本运行时的身份是脚本，不能因解释器
+    //    装在系统目录（/usr/bin/python3、Program Files\nodejs）而漏报。
+    let exe_is_standard_install = app_category == "installed-app"
+        || app_category == "system"
+        || (platform_impl::is_standard_install_path(&exe_path) && app_category != "dev-script");
+    let brew_service_path = brew_service_exemption(&app_category, &full_command, &exe_path);
+
+    let snapshot = ProcessSnapshot {
+        state: meta.state.clone(),
+        elapsed_secs: meta.elapsed_secs,
+        direct_orphan: platform_impl::direct_orphan(ppid, meta, procs),
+        chain_terminates_at_init: chain_flags.terminates_at_init,
+        chain_has_orphan_shell: chain_flags.has_orphan_shell,
+        launchd_managed: collected.launchd_pids.contains(&pid),
+        brew_service_path,
+        pm2_managed: chain_flags.pm2 || is_pm2_container(&full_command),
+        tty_orphaned: meta.tty_orphaned,
+        exe_is_standard_install,
+        dev_keyword: is_dev_server(&full_command) || is_dev_server(&command),
+        dev_category: app_category == "dev-script",
+    };
+    let verdict = classify(&snapshot);
+    let raw_suspect = verdict.is_suspect;
+
+    // 白名单 key（前端 App.tsx handleToggleWhitelist 必须用同一优先级）。
+    // 同时核对 v0.4.0 旧键以兼容升级（见 legacy_whitelist_key）。
+    let wl_key = whitelist_key(&exe_path, &full_command, &command);
+    let legacy_key = legacy_whitelist_key(&exe_path, &command);
+    let is_whitelisted = whitelist.contains(&wl_key)
+        || (legacy_key != wl_key && whitelist.contains(&legacy_key));
+
+    ports.sort_unstable();
+
+    let entry = ProcessEntry {
+        pid,
+        ppid,
+        ports,
+        command,
+        full_command,
+        exe_path,
+        app_label,
+        app_category,
+        parent_chain,
+        launcher_label,
+        user,
+        tty: meta.tty.clone().unwrap_or_default(),
+        elapsed_secs: meta.elapsed_secs,
+        start_unix: meta.start_unix,
+        cpu_percent: meta.cpu_percent,
+        mem_mb: meta.rss_kb as f32 / 1024.0,
+        state: meta.state.clone().unwrap_or_default(),
+        is_zombie_suspect: verdict.is_suspect && !is_whitelisted,
+        confidence: verdict.confidence,
+        zombie_reasons: verdict.reasons,
+        is_whitelisted,
+        duplicate_of: None,
+    };
+    (entry, raw_suspect)
 }
 
 /// 同项目重复 dev server 检测（跨条目后处理）。覆盖两类真实场景：
@@ -770,6 +844,115 @@ mod dup_tests {
             .contains(&ReasonCode::DuplicateDevServer));
         assert_eq!(es[0].duplicate_of, Some(200));
         assert_eq!(es[1].confidence, Confidence::Possible);
+    }
+}
+
+#[cfg(all(test, target_os = "macos"))] // 端到端依赖 macOS 的 identify_app / direct_orphan
+mod orphan_tests {
+    use super::*;
+
+    fn meta(ppid: u32, exe: &str, cmd: &str) -> ProcMeta {
+        ProcMeta {
+            ppid,
+            exe_path: exe.to_string(),
+            full_command: cmd.to_string(),
+            user: String::new(),
+            start_unix: Some(1000),
+            elapsed_secs: 3600,
+            cpu_percent: 0.0,
+            rss_kb: 0,
+            tty: None,
+            state: None,
+            tty_orphaned: false,
+        }
+    }
+
+    // ProcMeta 非 Clone：Collected 直接 move 持有 procs，build_entry 借 col.procs。
+    fn col_of(procs: HashMap<u32, ProcMeta>) -> Collected {
+        Collected {
+            listeners: vec![],
+            procs,
+            launchd_pids: HashSet::new(),
+            cwds: HashMap::new(),
+        }
+    }
+
+    /// 头号目标场景：electron-vite dev 中父 node 被杀，Electron 主进程被 launchd
+    /// 收养成孤儿（ppid=1），不占任何端口、住在 node_modules 下。必须检出为
+    /// Confirmed —— 这正是 portreaper「端口收割」盲区里最该清理的 dev 残留。
+    #[test]
+    fn orphan_electron_in_node_modules_is_confirmed() {
+        let exe = "/Users/x/proj/node_modules/.pnpm/electron@33.4.11/node_modules/electron/dist/Electron.app/Contents/MacOS/Electron";
+        let mut procs = HashMap::new();
+        procs.insert(900, meta(1, exe, &format!("{exe} .")));
+        let col = col_of(procs);
+        let m = col.procs.get(&900).unwrap();
+        let (entry, raw_suspect) = build_entry(
+            900,
+            m,
+            &col.procs,
+            &col,
+            &[],
+            Vec::new(),
+            "Electron".to_string(),
+            String::new(),
+        );
+        assert!(raw_suspect, "孤儿 Electron 必须判为嫌疑");
+        assert!(entry.is_zombie_suspect);
+        assert_eq!(entry.confidence, Confidence::Confirmed);
+        assert_eq!(entry.app_category, "dev-script");
+        assert!(entry.ports.is_empty(), "孤儿进程无端口");
+        assert!(entry.zombie_reasons.contains(&ReasonCode::Ppid1Orphan));
+        assert!(entry.zombie_reasons.contains(&ReasonCode::DevServerKeyword));
+    }
+
+    /// 对照（防误杀）：/Applications 里的 VS Code（也是 Electron）即便 ppid=1
+    /// 也必须被 installed-app 豁免 —— node_modules 信号不得波及真安装的应用。
+    #[test]
+    fn installed_electron_app_in_applications_is_exempt() {
+        let exe = "/Applications/Visual Studio Code.app/Contents/MacOS/Electron";
+        let mut procs = HashMap::new();
+        procs.insert(901, meta(1, exe, &format!("{exe} --type=renderer")));
+        let col = col_of(procs);
+        let m = col.procs.get(&901).unwrap();
+        let (entry, raw_suspect) = build_entry(
+            901,
+            m,
+            &col.procs,
+            &col,
+            &[],
+            Vec::new(),
+            "Electron".to_string(),
+            String::new(),
+        );
+        assert!(!raw_suspect, "已安装应用即便 ppid=1 也不是孤儿嫌疑");
+        assert!(!entry.is_zombie_suspect);
+        assert_eq!(entry.app_category, "installed-app");
+    }
+
+    /// 白名单命中的孤儿仍返回 raw_suspect=true（以便纳入列表供用户取消收藏），
+    /// 但 is_zombie_suspect 被扣为 false（不计入清扫 / 托盘）。
+    #[test]
+    fn whitelisted_orphan_still_surfaces_but_not_flagged() {
+        let exe = "/Users/x/proj/node_modules/electron/dist/Electron.app/Contents/MacOS/Electron";
+        let mut procs = HashMap::new();
+        procs.insert(902, meta(1, exe, &format!("{exe} .")));
+        let col = col_of(procs);
+        let m = col.procs.get(&902).unwrap();
+        let wl = vec![exe.to_string()]; // 绝对路径 exe → whitelist_key 即 exe_path
+        let (entry, raw_suspect) = build_entry(
+            902,
+            m,
+            &col.procs,
+            &col,
+            &wl,
+            Vec::new(),
+            "Electron".to_string(),
+            String::new(),
+        );
+        assert!(raw_suspect, "白名单孤儿仍需纳入列表");
+        assert!(entry.is_whitelisted);
+        assert!(!entry.is_zombie_suspect, "白名单命中后不标记嫌疑");
     }
 }
 

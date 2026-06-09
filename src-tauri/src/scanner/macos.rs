@@ -125,6 +125,14 @@ pub(crate) fn identify_app(
         let before = &exe[..idx];
         if let Some(slash) = before.rfind('/') {
             let app_name = &before[slash + 1..];
+            // node_modules 下的 .app 是项目本地的开发 runtime —— electron / electron-vite
+            // 把 Electron.app 装在 node_modules/electron/dist 下，形态与 /Applications 里的
+            // 真应用一模一样。它不是用户安装的应用，不能享受 installed-app 豁免，否则被杀掉
+            // 父进程的孤儿 Electron（dev 残留）会因「长得像已安装应用」永远漏网。
+            // 用户安装的应用绝不会住在 node_modules 里，故此信号零误伤。
+            if exe.contains("/node_modules/") {
+                return (app_name.to_string(), "dev-script".to_string());
+            }
             let category = if exe.starts_with("/System/") || exe.starts_with("/Library/") {
                 "system"
             } else {
@@ -581,6 +589,17 @@ mod tests {
         );
         assert_eq!(label, "Visual Studio Code");
         assert_eq!(cat, "installed-app");
+
+        // node_modules 下的 Electron.app（electron / electron-vite 的 dev runtime）：
+        // 形态与 /Applications 的真应用相同，但必须归 dev-script 才不会被 installed-app
+        // 豁免吞掉 —— 否则孤儿 Electron（dev 残留）永远检测不到。
+        let (label, cat) = identify_app(
+            "/Users/x/proj/node_modules/.pnpm/electron@33.4.11/node_modules/electron/dist/Electron.app/Contents/MacOS/Electron .",
+            "Electron",
+            "/Users/x/proj/node_modules/.pnpm/electron@33.4.11/node_modules/electron/dist/Electron.app/Contents/MacOS/Electron",
+        );
+        assert_eq!(label, "Electron");
+        assert_eq!(cat, "dev-script");
 
         // 系统组件
         let (label, cat) = identify_app("/usr/sbin/cupsd -l", "cupsd", "/usr/sbin/cupsd");

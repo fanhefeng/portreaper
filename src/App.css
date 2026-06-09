@@ -490,6 +490,17 @@ button {
   padding-left: 2px;
 }
 
+/* 孤儿进程的「无端口」徽标：弱化的描边胶囊，与端口号视觉区分 */
+.port-none {
+  font-size: 10px;
+  color: var(--text-dim);
+  background: var(--bg-elev);
+  border: 1px solid var(--border);
+  border-radius: 4px;
+  padding: 1px 5px;
+  white-space: nowrap;
+}
+
 .row-desc {
   font-size: 12px;
   color: var(--text-muted);

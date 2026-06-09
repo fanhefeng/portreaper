@@ -20,7 +20,7 @@ const zh = {
   // ---- sections ----
   // 注意三层词汇不撞车：标签页「可疑」› 分区「可疑进程」› 行内判定「确认僵尸/疑似僵尸/存疑」
   "section.suspects": "可疑进程",
-  "section.suspects.sub": "来源已退出或同项目重复启动，正占用端口",
+  "section.suspects.sub": "来源已退出、同项目重复启动，或已脱离父进程的残留进程",
   "section.healthy": "正常监听",
   "section.starred": "已收藏",
   "allclear": "未发现僵尸进程，一切正常",
@@ -41,6 +41,8 @@ const zh = {
   // ---- row ----
   "port.tip": "在浏览器打开 http://localhost:{port}",
   "row.expand.tip": "查看详情",
+  "row.noPort": "无端口",
+  "row.noPort.tip": "该进程不监听任何端口，因脱离父进程成为孤儿而被检出",
 
   // ---- uptime（粗粒度，精确值在详情）----
   "uptime.now": "刚刚",
@@ -192,7 +194,7 @@ const en: Record<I18nKey, string> = {
 
   "section.suspects": "Suspects",
   "section.suspects.sub":
-    "Launchers exited, or duplicates of the same project — still holding ports",
+    "Launcher exited, a duplicate instance, or detached from its parent",
   "section.healthy": "Healthy listeners",
   "section.starred": "Starred",
   "allclear": "No zombies. All clear",
@@ -212,6 +214,8 @@ const en: Record<I18nKey, string> = {
 
   "port.tip": "Open http://localhost:{port} in browser",
   "row.expand.tip": "Show details",
+  "row.noPort": "no port",
+  "row.noPort.tip": "Listens on no port — surfaced because it was orphaned from its parent",
 
   "uptime.now": "now",
   "uptime.min": "{n} min",

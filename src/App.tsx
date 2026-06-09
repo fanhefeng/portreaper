@@ -913,26 +913,35 @@ function Row({
             <span className="row-name">{name}</span>
             {nameSub && <span className="row-name-sub">{nameSub}</span>}
             <span className="row-ports mono">
-              {shownPorts.map((p) => (
-                <button
-                  key={p}
-                  className="port-link"
-                  onClick={(ev) => {
-                    ev.stopPropagation();
-                    onOpenPort(p);
-                  }}
-                  title={t("port.tip", { port: p })}
-                >
-                  :{p}
-                </button>
-              ))}
-              {morePorts > 0 && (
-                <span
-                  className="port-more"
-                  title={e.ports.map((p) => `:${p}`).join(" ")}
-                >
-                  +{morePorts}
+              {e.ports.length === 0 ? (
+                // 孤儿进程不监听端口：用徽标占位，避免端口列空白让人误以为数据缺失
+                <span className="port-none" title={t("row.noPort.tip")}>
+                  {t("row.noPort")}
                 </span>
+              ) : (
+                <>
+                  {shownPorts.map((p) => (
+                    <button
+                      key={p}
+                      className="port-link"
+                      onClick={(ev) => {
+                        ev.stopPropagation();
+                        onOpenPort(p);
+                      }}
+                      title={t("port.tip", { port: p })}
+                    >
+                      :{p}
+                    </button>
+                  ))}
+                  {morePorts > 0 && (
+                    <span
+                      className="port-more"
+                      title={e.ports.map((p) => `:${p}`).join(" ")}
+                    >
+                      +{morePorts}
+                    </span>
+                  )}
+                </>
               )}
             </span>
           </div>
@@ -1054,7 +1063,7 @@ function Detail({ e, os, id }: { e: ProcessEntry; os: Os; id: string }) {
 
         <span className="detail-label">{t("detail.ports")}</span>
         <span className="detail-value mono">
-          {e.ports.map((p) => `:${p}`).join("  ")}
+          {e.ports.length > 0 ? e.ports.map((p) => `:${p}`).join("  ") : "—"}
         </span>
 
         <span className="detail-label">{t("detail.pid")}</span>
