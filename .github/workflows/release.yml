@@ -143,7 +143,7 @@ jobs:
       - name: Setup Node
         uses: actions/setup-node@v6
         with:
-          node-version: 24
+          node-version-file: .node-version
           cache: pnpm
 
       # On Windows the matrix target is empty (host = x86_64-pc-windows-msvc),
