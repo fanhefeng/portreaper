@@ -511,21 +511,6 @@ fn tcp_listeners() -> HashMap<u32, Vec<u16>> {
     let mut map: HashMap<u32, Vec<u16>> = HashMap::new();
 
     unsafe {
-        // IPv4/IPv6 两张表布局同构（dwNumEntries + 变长 table[]），行也都暴露
-        // dwOwningPid/dwLocalPort —— 局部宏对两种 table 类型生成同一段解析，消除
-        // 逐字节重复的 unsafe 行循环（评审 E6）。
-        macro_rules! collect_rows {
-            ($table_ty:ty) => {{
-                let table = &*(buf.as_ptr() as *const $table_ty);
-                let rows =
-                    std::slice::from_raw_parts(table.table.as_ptr(), table.dwNumEntries as usize);
-                for row in rows {
-                    map.entry(row.dwOwningPid)
-                        .or_default()
-                        .push(decode_port(row.dwLocalPort));
-                }
-            }};
-        }
         for af in [u32::from(AF_INET.0), u32::from(AF_INET6.0)] {
             let mut size: u32 = 0;
             let _ =
@@ -558,9 +543,27 @@ fn tcp_listeners() -> HashMap<u32, Vec<u16>> {
                     break;
                 }
                 if af == u32::from(AF_INET.0) {
-                    collect_rows!(MIB_TCPTABLE_OWNER_PID);
+                    let table = &*(buf.as_ptr() as *const MIB_TCPTABLE_OWNER_PID);
+                    let rows = std::slice::from_raw_parts(
+                        table.table.as_ptr(),
+                        table.dwNumEntries as usize,
+                    );
+                    for row in rows {
+                        map.entry(row.dwOwningPid)
+                            .or_default()
+                            .push(decode_port(row.dwLocalPort));
+                    }
                 } else {
-                    collect_rows!(MIB_TCP6TABLE_OWNER_PID);
+                    let table = &*(buf.as_ptr() as *const MIB_TCP6TABLE_OWNER_PID);
+                    let rows = std::slice::from_raw_parts(
+                        table.table.as_ptr(),
+                        table.dwNumEntries as usize,
+                    );
+                    for row in rows {
+                        map.entry(row.dwOwningPid)
+                            .or_default()
+                            .push(decode_port(row.dwLocalPort));
+                    }
                 }
                 break;
             }
