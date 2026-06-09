@@ -35,6 +35,7 @@ const zh = {
   "error.batchFailed": "{failed}/{total} 个进程终止失败：",
   "error.pidReused": "进程身份已变化（PID 被复用），已取消终止，请重新扫描",
   "error.processGone": "进程已不存在（可能刚刚退出）",
+  "error.accessDenied": "无权终止该进程（可能是受保护的系统进程）",
   "error.identityUnknown": "缺少进程身份信息，已取消终止，请刷新后重试",
   "error.whitelistFailed": "收藏保存失败（本次更改未持久化）: {err}",
   "error.scanTimeout": "扫描超时（后端无响应），正在自动重试…",
@@ -209,6 +210,7 @@ const en: Record<I18nKey, string> = {
   "error.pidReused":
     "Process identity changed (PID was reused) — kill aborted, please rescan",
   "error.processGone": "Process no longer exists (it may have just exited)",
+  "error.accessDenied": "Not permitted to terminate this process (it may be protected)",
   "error.identityUnknown":
     "Missing process identity token — kill aborted, refresh and retry",
   "error.whitelistFailed": "Whitelist update failed (change not persisted): {err}",

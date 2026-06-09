@@ -14,7 +14,7 @@
 // Zero dependencies. Requires Node >= 18 (ESM, fs/promises).
 
 import { readFile, writeFile } from 'node:fs/promises';
-import { fileURLToPath } from 'node:url';
+import { fileURLToPath, pathToFileURL } from 'node:url';
 import { dirname, join } from 'node:path';
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
@@ -26,7 +26,10 @@ const CARGO_TOML = join(ROOT, 'src-tauri', 'Cargo.toml');
 const CARGO_LOCK = join(ROOT, 'src-tauri', 'Cargo.lock');
 
 // semver-ish: major.minor.patch with an optional pre-release/build suffix.
-const SEMVER_RE = /^\d+\.\d+\.\d+(?:-[0-9A-Za-z.-]+)?(?:\+[0-9A-Za-z.-]+)?$/;
+// 每个数字段禁前导零（0 | [1-9]\d*），与 cargo 一致 —— 否则 01.2.3 能写进 JSON
+// 清单，却被 cargo 拒绝，造成跨清单半应用的 bump（评审 D1）。
+export const SEMVER_RE =
+  /^(?:0|[1-9]\d*)\.(?:0|[1-9]\d*)\.(?:0|[1-9]\d*)(?:-[0-9A-Za-z.-]+)?(?:\+[0-9A-Za-z.-]+)?$/;
 
 const CRATE_NAME = 'portreaper';
 
@@ -79,7 +82,7 @@ async function writeJsonVersion(path, version) {
 // We scope the search to the [package] table so a `version = "..."` in some
 // other table (e.g. a dependency) is never matched.
 
-function findCargoTomlVersion(raw) {
+export function findCargoTomlVersion(raw) {
   const pkg = sliceTomlSection(raw, 'package');
   const m = pkg.match(/^\s*version\s*=\s*"([^"]*)"/m);
   return m ? m[1] : undefined;
@@ -96,7 +99,7 @@ function sliceTomlSection(raw, section) {
   return next === -1 ? after : after.slice(0, next);
 }
 
-function setCargoTomlVersion(raw, version) {
+export function setCargoTomlVersion(raw, version) {
   const header = /^\[package\]\s*$/m;
   const start = raw.search(header);
   if (start === -1) fail('could not find [package] section in Cargo.toml');
@@ -119,7 +122,7 @@ function setCargoTomlVersion(raw, version) {
 
 // --- Cargo.lock: rewrite the version of the `portreaper` [[package]] block. -
 
-function findCargoLockVersion(raw) {
+export function findCargoLockVersion(raw) {
   const block = findCargoLockBlock(raw);
   if (!block) return undefined;
   const m = block.text.match(/^version\s*=\s*"([^"]*)"/m);
@@ -139,7 +142,7 @@ function findCargoLockBlock(raw) {
   return null;
 }
 
-function setCargoLockVersion(raw, version) {
+export function setCargoLockVersion(raw, version) {
   const block = findCargoLockBlock(raw);
   if (!block) {
     fail(`could not find [[package]] name = "${CRATE_NAME}" block in Cargo.lock`);
@@ -209,6 +212,9 @@ async function main() {
   else await runBump(version);
 }
 
-main().catch((err) => {
-  fail(err?.stack || String(err));
-});
+// 仅在作为脚本直接运行时执行（被 *.test.mjs import 时不触发，便于单元测试）。
+if (process.argv[1] && import.meta.url === pathToFileURL(process.argv[1]).href) {
+  main().catch((err) => {
+    fail(err?.stack || String(err));
+  });
+}

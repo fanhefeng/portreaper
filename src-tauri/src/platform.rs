@@ -102,10 +102,15 @@ pub fn kill(pid: u32, _force: bool, expected_start: Option<u64>) -> Result<(), S
             pid,
         )
         .map_err(|e| {
-            // ERROR_INVALID_PARAMETER (87) = PID 已不存在 → 映射为语义错误供前端 i18n；
-            // 其余（如 5 access denied = 被策略/EDR 拒绝）透传 Win32 原文
-            if e.code() == windows::Win32::Foundation::ERROR_INVALID_PARAMETER.to_hresult() {
+            use windows::Win32::Foundation::{ERROR_ACCESS_DENIED, ERROR_INVALID_PARAMETER};
+            // ERROR_INVALID_PARAMETER (87) = PID 已不存在 → 进程已消失。
+            // ERROR_ACCESS_DENIED (5) = 进程仍在、但被策略/EDR/受保护进程拒绝 —— 绝不能
+            // 谎称「已消失/身份已变」误导用户，给出语义准确的本地化「无权终止」。
+            // 两者都映射为 ERR_ 语义码供前端 i18n；其余透传 Win32 原文。
+            if e.code() == ERROR_INVALID_PARAMETER.to_hresult() {
                 "ERR_PROCESS_GONE: process no longer exists".to_string()
+            } else if e.code() == ERROR_ACCESS_DENIED.to_hresult() {
+                "ERR_ACCESS_DENIED: not permitted to terminate (protected process?)".to_string()
             } else {
                 format!("OpenProcess({pid}) failed: {e}")
             }

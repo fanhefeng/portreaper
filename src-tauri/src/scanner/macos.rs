@@ -11,9 +11,11 @@ use super::classify::ReasonCode;
 use super::identify::{basename, is_script_runtime, project_binary_label, script_runtime_label};
 use super::model::{Collected, Listener, ParentRef, ProcMeta};
 
-// 标准安装路径前缀 —— 这些位置的可执行文件视为「正规 app / 系统组件」，永不自动标记
-const SYSTEM_PATH_PREFIXES: &[&str] = &[
-    "/Applications/",
+// 系统组件路径前缀 —— /System、/Library、/usr 等下的可执行文件视为系统组件。
+// identify_app 的「系统组件」归类（step 2c）与 is_standard_install_path 的豁免共用
+// 这一份，避免两处列表 drift（评审 E2）。/Applications/ 与 /private/var/folders/
+// 不在此列：前者归 installed-app（step 2a），后者要让 dev-build 产物先被 step 5 接住。
+const SYSTEM_COMPONENT_PREFIXES: &[&str] = &[
     "/System/",
     "/Library/",
     "/usr/libexec/",
@@ -21,7 +23,6 @@ const SYSTEM_PATH_PREFIXES: &[&str] = &[
     "/usr/bin/",
     "/sbin/",
     "/bin/",
-    "/private/var/folders/",
 ];
 
 /// Homebrew 服务路径 —— brew services 启动的守护（postgres/redis/...）的兜底豁免。
@@ -36,7 +37,12 @@ const BREW_SERVICE_PREFIXES: &[&str] = &[
 const SHELLS: &[&str] = &["zsh", "bash", "sh", "fish", "dash", "csh", "tcsh"];
 
 pub(crate) fn is_standard_install_path(exe_path: &str) -> bool {
-    SYSTEM_PATH_PREFIXES.iter().any(|p| exe_path.starts_with(p))
+    // 豁免全集 = 系统组件 + /Applications/（installed-app）+ App Translocation 临时目录
+    exe_path.starts_with("/Applications/")
+        || exe_path.starts_with("/private/var/folders/")
+        || SYSTEM_COMPONENT_PREFIXES
+            .iter()
+            .any(|p| exe_path.starts_with(p))
 }
 
 pub(crate) fn is_brew_service_path(exe_path: &str) -> bool {
@@ -114,7 +120,7 @@ pub(crate) fn identify_app(
         // `-m 模块` 调用：身份是模块（python -m http.server）
         if let Some(module) = super::identify::extract_module_arg(full_command) {
             return (
-                format!("{} · {}", module, short_command.to_lowercase()),
+                format!("{} · {}", module, short_command),
                 "dev-script".to_string(),
             );
         }
@@ -147,15 +153,8 @@ pub(crate) fn identify_app(
         return (basename(exe).to_string(), "installed-app".to_string());
     }
 
-    // 2c. 系统组件
-    if exe.starts_with("/System/")
-        || exe.starts_with("/Library/")
-        || exe.starts_with("/usr/libexec/")
-        || exe.starts_with("/usr/sbin/")
-        || exe.starts_with("/sbin/")
-        || exe.starts_with("/usr/bin/")
-        || exe.starts_with("/bin/")
-    {
+    // 2c. 系统组件（与 is_standard_install_path 共用 SYSTEM_COMPONENT_PREFIXES）
+    if SYSTEM_COMPONENT_PREFIXES.iter().any(|p| exe.starts_with(p)) {
         return (basename(exe).to_string(), "system".to_string());
     }
 
@@ -652,7 +651,7 @@ mod tests {
             "Python",
             "/opt/homebrew/Cellar/python@3.14/3.14.5/Frameworks/Python.framework/Versions/3.14/Resources/Python.app/Contents/MacOS/Python",
         );
-        assert_eq!(label, "http.server · python");
+        assert_eq!(label, "http.server · Python");
         assert_eq!(cat, "dev-script");
 
         // 同形态跑用户脚本：身份是脚本，.app 包装不豁免

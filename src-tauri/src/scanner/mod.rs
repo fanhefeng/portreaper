@@ -178,6 +178,9 @@ pub fn scan(whitelist: &[String]) -> Vec<ProcessEntry> {
                     .unwrap_or(0)
                     .cmp(&b.ports.first().copied().unwrap_or(0)),
             )
+            // 端口相同（尤其无端口孤儿端口键全为 0）时按 pid 兜底，确保跨 poll 顺序确定 ——
+            // 否则孤儿遍历 HashMap 的随机序会渗入行序与 duplicate_of peer 选取（评审 E1）。
+            .then(a.pid.cmp(&b.pid))
     });
 
     entries

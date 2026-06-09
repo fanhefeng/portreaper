@@ -177,6 +177,14 @@ function legacyWhitelistKey(e: ProcessEntry): string {
   return e.exe_path || e.command;
 }
 
+/** app_label 形如 "dev-server.js · node"：拆主名 + 次级说明（Row 与 Detail 共用） */
+function splitLabel(appLabel: string): { name: string; sub: string | null } {
+  const i = appLabel.indexOf(" · ");
+  return i >= 0
+    ? { name: appLabel.slice(0, i), sub: appLabel.slice(i + 3) }
+    : { name: appLabel, sub: null };
+}
+
 /** 「这是什么」：知识库命中 → 友好名；未命中 → 类别描述兜底 */
 function describeEntry(e: ProcessEntry, lang: Lang): string | null {
   // 品牌/关键字型模式按进程的「身份字段」匹配，不含 exe_path / 完整路径：否则项目
@@ -243,6 +251,7 @@ function localizeKillError(
 ): string {
   if (err.includes("ERR_PID_REUSED")) return t("error.pidReused");
   if (err.includes("ERR_PROCESS_GONE")) return t("error.processGone");
+  if (err.includes("ERR_ACCESS_DENIED")) return t("error.accessDenied");
   if (err.includes("ERR_IDENTITY_UNKNOWN")) return t("error.identityUnknown");
   return err;
 }
@@ -637,21 +646,15 @@ function App() {
         ) : (
           <>
             {filter !== "whitelist" && suspects.length > 0 && (
-              <section>
-                <div className="section-head section-head-danger">
-                  <span className="section-title">{t("section.suspects")}</span>
-                  <span className="section-count">{suspects.length}</span>
-                  <span className="section-sub">{t("section.suspects.sub")}</span>
-                </div>
-                {suspects.map((e) => (
-                  <Row
-                    key={e.pid}
-                    e={e}
-                    expanded={expandedPid === e.pid}
-                    {...rowProps}
-                  />
-                ))}
-              </section>
+              <Section
+                title={t("section.suspects")}
+                count={suspects.length}
+                sub={t("section.suspects.sub")}
+                danger
+                entries={suspects}
+                expandedPid={expandedPid}
+                rowProps={rowProps}
+              />
             )}
 
             {filter !== "whitelist" && suspects.length === 0 && (
@@ -673,37 +676,23 @@ function App() {
             )}
 
             {filter === "all" && healthy.length > 0 && (
-              <section>
-                <div className="section-head">
-                  <span className="section-title">{t("section.healthy")}</span>
-                  <span className="section-count">{healthy.length}</span>
-                </div>
-                {healthy.map((e) => (
-                  <Row
-                    key={e.pid}
-                    e={e}
-                    expanded={expandedPid === e.pid}
-                    {...rowProps}
-                  />
-                ))}
-              </section>
+              <Section
+                title={t("section.healthy")}
+                count={healthy.length}
+                entries={healthy}
+                expandedPid={expandedPid}
+                rowProps={rowProps}
+              />
             )}
 
             {filter === "whitelist" && (
-              <section>
-                <div className="section-head">
-                  <span className="section-title">{t("section.starred")}</span>
-                  <span className="section-count">{filtered.length}</span>
-                </div>
-                {filtered.map((e) => (
-                  <Row
-                    key={e.pid}
-                    e={e}
-                    expanded={expandedPid === e.pid}
-                    {...rowProps}
-                  />
-                ))}
-              </section>
+              <Section
+                title={t("section.starred")}
+                count={filtered.length}
+                entries={filtered}
+                expandedPid={expandedPid}
+                rowProps={rowProps}
+              />
             )}
           </>
         )}
@@ -857,6 +846,40 @@ type RowProps = {
   onToggleExpand: (pid: number) => void;
 };
 
+type SectionProps = {
+  title: string;
+  count: number;
+  sub?: string;
+  danger?: boolean;
+  entries: ProcessEntry[];
+  expandedPid: number | null;
+  rowProps: Omit<RowProps, "e" | "expanded">;
+};
+
+/** 嫌疑 / 健康 / 收藏三个分区共用：section-head + 行列表（评审 E4 去重） */
+function Section({
+  title,
+  count,
+  sub,
+  danger,
+  entries,
+  expandedPid,
+  rowProps,
+}: SectionProps) {
+  return (
+    <section>
+      <div className={danger ? "section-head section-head-danger" : "section-head"}>
+        <span className="section-title">{title}</span>
+        <span className="section-count">{count}</span>
+        {sub && <span className="section-sub">{sub}</span>}
+      </div>
+      {entries.map((e) => (
+        <Row key={e.pid} e={e} expanded={expandedPid === e.pid} {...rowProps} />
+      ))}
+    </section>
+  );
+}
+
 function Row({
   e,
   expanded,
@@ -872,9 +895,7 @@ function Row({
   const { t } = useI18n();
 
   // app_label 形如 "dev-server.js · node" —— 主名 + 次级说明
-  const sep = e.app_label.indexOf(" · ");
-  const name = sep >= 0 ? e.app_label.slice(0, sep) : e.app_label;
-  const nameSub = sep >= 0 ? e.app_label.slice(sep + 3) : null;
+  const { name, sub: nameSub } = splitLabel(e.app_label);
 
   const known = describeEntry(e, lang);
   const desc = known ?? t(DESC_KEYS[e.app_category] ?? "desc.unknown");
@@ -1062,8 +1083,7 @@ function Detail({ e, os, id }: { e: ProcessEntry; os: Os; id: string }) {
   const { t } = useI18n();
 
   // 链末节点用主名（app_label 可能带 " · node" 次级说明，链里不需要）
-  const sepIdx = e.app_label.indexOf(" · ");
-  const selfName = sepIdx >= 0 ? e.app_label.slice(0, sepIdx) : e.app_label;
+  const selfName = splitLabel(e.app_label).name;
 
   const catKey = (
     ["installed-app", "system", "dev-script", "user-binary"].includes(e.app_category)
