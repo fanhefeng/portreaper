@@ -23,6 +23,10 @@ pub use model::ProcessEntry;
 #[cfg(target_os = "macos")]
 pub(crate) use macos::parse_etime as parse_etime_secs;
 
+/// 供 platform::kill 复用同一份系统二进制绝对路径映射（kill/ps）—— 加固集中一处。
+#[cfg(target_os = "macos")]
+pub(crate) use macos::system_bin;
+
 use classify::{classify, is_dev_server, Confidence, ReasonCode};
 use identify::basename;
 use model::{ParentRef, ProcMeta, ProcessSnapshot};
@@ -64,6 +68,21 @@ pub(crate) fn whitelist_key(exe_path: &str, full_command: &str, command: &str) -
         exe_path.to_string()
     } else if !full_command.is_empty() {
         full_command.to_string()
+    } else {
+        command.to_string()
+    }
+}
+
+/// v0.4.0 的旧键（exe_path 非空即用、否则 lsof 短名）。升级兼容用：v0.4.0 给
+/// shebang / PATH 解析的脚本（exe_path==裸 "node"）存的就是这个裸键，新算法已改用
+/// 完整命令行，旧键不再被任何进程命中 —— 若不兼容匹配，用户在 v0.4.0 加白的进程
+/// 会在升级后重新变嫌疑、可能被「一键清扫」误杀（评审发现：无迁移的静默数据损失）。
+/// 故 is_whitelisted 同时核对新旧键。旧裸键沿用 v0.4.0 的塌缩语义（命中全机同名
+/// 监听者）—— 对一个 kill 工具，过度信任是安全方向，且本就是该用户升级前的行为；
+/// 用户下次取消/重加该行即落为干净的新键。前端 App.tsx legacyWhitelistKey 是镜像。
+pub(crate) fn legacy_whitelist_key(exe_path: &str, command: &str) -> String {
+    if !exe_path.is_empty() {
+        exe_path.to_string()
     } else {
         command.to_string()
     }
@@ -122,9 +141,12 @@ pub fn scan(whitelist: &[String]) -> Vec<ProcessEntry> {
         };
         let verdict = classify(&snapshot);
 
-        // 白名单 key（前端 App.tsx handleToggleWhitelist 必须用同一优先级）
+        // 白名单 key（前端 App.tsx handleToggleWhitelist 必须用同一优先级）。
+        // 同时核对 v0.4.0 旧键以兼容升级（见 legacy_whitelist_key）。
         let wl_key = whitelist_key(&exe_path, &full_command, &l.command);
-        let is_whitelisted = whitelist.contains(&wl_key);
+        let legacy_key = legacy_whitelist_key(&exe_path, &l.command);
+        let is_whitelisted =
+            whitelist.contains(&wl_key) || (legacy_key != wl_key && whitelist.contains(&legacy_key));
 
         let mut ports = l.ports.clone();
         ports.sort_unstable();
@@ -457,6 +479,35 @@ mod helper_tests {
         );
         // 裸名且命令行也空：退回 lsof 短名
         assert_eq!(whitelist_key("node", "", "node"), "node");
+    }
+
+    /// 升级兼容（评审发现）：v0.4.0 给 shebang/PATH 解析脚本存的是裸 exe 键，
+    /// 新算法改用完整命令行 —— legacy_whitelist_key 必须复原旧键，is_whitelisted
+    /// 才能继续命中、避免升级后已加白进程重新变嫌疑被误扫。
+    #[test]
+    fn legacy_whitelist_key_reproduces_v040_key() {
+        // v0.4.0：exe_path 非空即用（裸 "node" 即旧键）
+        assert_eq!(legacy_whitelist_key("node", "node"), "node");
+        // 绝对路径：新旧键一致（无兼容负担）
+        assert_eq!(
+            legacy_whitelist_key("/opt/homebrew/bin/node", "node"),
+            "/opt/homebrew/bin/node"
+        );
+        // exe 为空：退回 lsof 短名（与 v0.4.0 一致）
+        assert_eq!(legacy_whitelist_key("", "node"), "node");
+
+        // 端到端：用户在 v0.4.0 加白裸键 "node"，升级后仍应被识别为已加白
+        let exe = "node";
+        let full = "node /Users/x/proj/server.js";
+        let new_key = whitelist_key(exe, full, "node");
+        let legacy_key = legacy_whitelist_key(exe, "node");
+        assert_ne!(new_key, legacy_key, "正是需要兼容匹配的场景");
+        let v040_whitelist = ["node".to_string()];
+        assert!(
+            v040_whitelist.contains(&new_key)
+                || (legacy_key != new_key && v040_whitelist.contains(&legacy_key)),
+            "v0.4.0 的裸键必须仍被 is_whitelisted 命中"
+        );
     }
 
     #[test]

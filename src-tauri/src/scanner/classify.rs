@@ -114,6 +114,10 @@ pub(crate) const DEV_SERVER_SUBSTRINGS: &[&str] = &[
     "next dev",
     "next-server",
     "next start",
+    // 运行时名内嵌异词 / 无版本号连字符后缀，token_is 的「数字开头」闸挡不住又确为
+    // dev 工具的，在此显式收录（评审发现的回归：旧 "node"/"php" 裸子串曾命中它们）。
+    "nodemon",
+    "php-fpm",
 ];
 
 /// dev-server 短关键字：常见词，裸子串会大面积误伤（评审实锤的 Confirmed 误升级：
@@ -128,11 +132,23 @@ pub(crate) const DEV_SERVER_TOKENS: &[&str] = &[
     "tsx", "java", "php", "serve", "air",
 ];
 
-/// token 基名（去路径、去 .exe）等于关键字，或仅余数字/点版本后缀（python3 / node18 / python3.12）。
+/// token 基名（去路径、去 .exe）等于关键字，或其后仅是「版本/构建/架构」装饰：
+/// 必须以数字（版本号）开头，之后才放行字母数字 / 点 / 连字符 —— node18、python3.12、
+/// python3.13t（自由线程构建）、node20.11.0-arm64 命中。
+/// 「数字开头」是关键防误伤闸：关键字后直接接异词的 node-exporter、unicorn-tool、
+/// javascript（→ "-exporter"/"-tool"/"script-engine" 非数字开头）不命中 ——
+/// 真·dev 工具里有此形态的（nodemon、php-fpm）改由 DEV_SERVER_SUBSTRINGS 显式收录。
 fn token_is(token: &str, pat: &str) -> bool {
-    strip_exe(basename(token))
-        .strip_prefix(pat)
-        .is_some_and(|rest| rest.chars().all(|c| c.is_ascii_digit() || c == '.'))
+    match strip_exe(basename(token)).strip_prefix(pat) {
+        Some("") => true,
+        Some(rest) => {
+            rest.starts_with(|c: char| c.is_ascii_digit())
+                && rest
+                    .chars()
+                    .all(|c| c.is_ascii_alphanumeric() || c == '.' || c == '-')
+        }
+        None => false,
+    }
 }
 
 pub(crate) fn is_dev_server(cmd: &str) -> bool {
@@ -146,7 +162,10 @@ pub(crate) fn is_dev_server(cmd: &str) -> bool {
 }
 
 /// 启动后的宽限期（秒）：刚被收养/刚重启的进程降级为 Possible，防闪报、防误扫。
-const GRACE_SECS: u64 = 10;
+/// pub(crate)：Windows 采集层净化未知创建时间时复用此阈值（见 windows.rs sanitize_times）——
+/// 创建时间读不到 ≠「刚启动」，elapsed 必须落在宽限期之外，否则受保护的孤儿 dev server
+/// 会被永久钉在 Possible、永不入清扫/计数（评审发现）。
+pub(crate) const GRACE_SECS: u64 = 10;
 
 /// v2 分类器 —— 纯函数：输入信号快照，输出判定。
 /// 不变量：标准安装路径 / launchd 托管 ⇒ 永不自动标记（白名单逻辑在 scan() 外层，不在此处）。
@@ -589,6 +608,13 @@ mod tests {
             "bunx vite dev",
             "/Users/x/p/node_modules/.bin/vite --port 5173", // 长词子串路径证据
             "next-server (v14.2.3)",
+            // 评审实锤的收紧回归：版本/架构装饰（数字开头）必须仍命中
+            "/usr/local/bin/node20.11.0-arm64 server.js",
+            "python3.13t app.py", // 自由线程 CPython 构建（t 后缀）
+            "php8.2-fpm",         // 版本号 + -fpm
+            // 内嵌异词形态由 DEV_SERVER_SUBSTRINGS 兜底
+            "nodemon server.js",
+            "/usr/sbin/php-fpm",
         ] {
             assert!(is_dev_server(tp), "漏报: {tp}");
         }

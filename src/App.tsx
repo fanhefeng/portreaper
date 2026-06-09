@@ -86,7 +86,12 @@ function primaryReason(reasons: string[]): string | null {
  * 顺序即优先级（具体的在前，node/python 等泛化的在后）；
  * 未命中时退回 desc.<category> 的类别描述。
  */
-const KNOWN_PROCESSES: ReadonlyArray<readonly [RegExp, string, string]> = [
+// 第 4 元 "path"：该模式匹配含完整命令行 / exe 路径的宽 haystack（其余只匹配身份字段）。
+// 仅给「路径结构型」模式（target/debug、code helper）—— 它们不会被项目目录名误触；
+// 品牌/关键字型模式留在身份字段，避免 ~/code/spotify-clone 被误描述（评审发现）。
+const KNOWN_PROCESSES: ReadonlyArray<
+  readonly [RegExp, string, string] | readonly [RegExp, string, string, "path"]
+> = [
   // —— 开发服务器 / 框架（先于泛化的 node/python）——
   [/vite/, "Vite 前端开发服务器", "Vite frontend dev server"],
   [/webpack/, "Webpack 前端开发服务", "Webpack dev server"],
@@ -123,7 +128,8 @@ const KNOWN_PROCESSES: ReadonlyArray<readonly [RegExp, string, string]> = [
   [/onedrive/, "OneDrive 网盘同步", "OneDrive sync"],
   [/dropbox/, "Dropbox 网盘同步", "Dropbox sync"],
   [/baidunetdisk/, "百度网盘", "Baidu Netdisk"],
-  [/code helper|visual studio code/, "VS Code 代码编辑器", "VS Code editor"],
+  // "code helper" 只出现在 exe 路径（VS Code 渲染/扩展子进程）—— 走宽 haystack
+  [/code helper|visual studio code/, "VS Code 代码编辑器", "VS Code editor", "path"],
   [/\bcursor\b/, "Cursor 代码编辑器", "Cursor editor"],
   [/iterm/, "iTerm 终端", "iTerm terminal"],
   [/\bwarp\b/, "Warp 终端", "Warp terminal"],
@@ -133,7 +139,9 @@ const KNOWN_PROCESSES: ReadonlyArray<readonly [RegExp, string, string]> = [
   [/sharingd/, "macOS 共享服务", "macOS sharing service"],
   [/airplay/, "隔空播放服务", "AirPlay service"],
   // —— 泛化运行时（永远放最后；\b 词界防止把无关二进制误标）——
-  [/cargo|target\/(debug|release)/, "Rust 开发程序", "Rust dev program"],
+  // cargo / target/(debug|release) 只出现在 exe 路径或完整命令行 —— 走宽 haystack。
+  // 分隔符两路都匹配（Windows 是 target\debug），与后端 is_dev_build_artifact 对齐。
+  [/cargo|target[\\/](debug|release)/, "Rust 开发程序", "Rust dev program", "path"],
   [/\bnode\b|\bnpm\b|\bpnpm\b|\byarn\b|\bbun\b/, "Node.js 程序", "Node.js program"],
   [/\bpython/, "Python 程序", "Python program"],
   [/\bjava\b|gradle|tomcat/, "Java 程序", "Java program"],
@@ -160,13 +168,27 @@ function whitelistKey(e: ProcessEntry): string {
   return e.full_command || e.command;
 }
 
+/**
+ * v0.4.0 旧键（exe_path 非空即用，否则短名）—— 后端 scanner::mod::legacy_whitelist_key
+ * 的逐字镜像。升级兼容：取消加白时需连旧键一并删除，否则 v0.4.0 存的裸键仍会命中、
+ * 星标取消不掉（评审发现）。
+ */
+function legacyWhitelistKey(e: ProcessEntry): string {
+  return e.exe_path || e.command;
+}
+
 /** 「这是什么」：知识库命中 → 友好名；未命中 → 类别描述兜底 */
 function describeEntry(e: ProcessEntry, lang: Lang): string | null {
-  // 知识库的品牌词（spotify/steam/...）按进程的「身份字段」匹配，不含 exe_path /
-  // 完整路径：否则项目目录名恰含品牌词（~/code/spotify-clone/server.js）会被
-  // 误描述成该品牌（评审发现）。app_label 已含脚本/项目身份，command 是运行时短名。
-  const hay = `${e.app_label} ${e.command}`.toLowerCase();
-  for (const [re, zh, enText] of KNOWN_PROCESSES) {
+  // 品牌/关键字型模式按进程的「身份字段」匹配，不含 exe_path / 完整路径：否则项目
+  // 目录名恰含品牌词（~/code/spotify-clone/server.js）会被误描述成该品牌（评审发现）。
+  // app_label 已含脚本/项目身份，command 是运行时短名。
+  const identityHay = `${e.app_label} ${e.command}`.toLowerCase();
+  // 路径结构型模式（target/debug、code helper，标 "path"）才用含完整命令行 + exe 路径的
+  // 宽 haystack —— 这类身份只存在于路径里，且不会被项目目录名误触（评审发现：窄化后
+  // Rust 产物 / VS Code 子进程的友好描述整体丢失）。
+  const pathHay = `${identityHay} ${e.full_command} ${e.exe_path}`.toLowerCase();
+  for (const [re, zh, enText, scope] of KNOWN_PROCESSES) {
+    const hay = scope === "path" ? pathHay : identityHay;
     if (re.test(hay)) return lang === "zh" ? zh : enText;
   }
   return null;
@@ -346,19 +368,35 @@ function App() {
     });
   };
 
+  // 统一「动作成功 → 清除残留失败横幅；失败 → 设置本次文案」语义。集中一处，
+  // 避免每个动作处理器各自手抄 setActionError(null) 而新增的漏写（评审发现：原先 4 处）。
+  // work 抛出的内容经 toErrorMsg 转成横幅文案；work 内吞掉的部分失败（批量清扫）
+  // 自行 throw 已组装好的消息。
+  const runAction = async (
+    work: () => Promise<void>,
+    toErrorMsg: (err: unknown) => string,
+  ) => {
+    try {
+      await work();
+      setActionError(null);
+    } catch (err) {
+      setActionError(toErrorMsg(err));
+    }
+  };
+
   const doKill = async () => {
     if (!confirm) return;
     const { pid, force, startUnix } = confirm;
     setKillingPid(pid);
     setConfirm(null);
     try {
-      await invoke("kill_process", { pid, force, startUnix });
-      setActionError(null); // 横幅反映最近一次操作的结果：本次成功 → 清除残留失败
-      await new Promise((r) => setTimeout(r, 250));
-      await freshScan();
-    } catch (err) {
-      setActionError(
-        t("error.killFailed", { err: localizeKillError(String(err), t) }),
+      await runAction(
+        async () => {
+          await invoke("kill_process", { pid, force, startUnix });
+          await new Promise((r) => setTimeout(r, 250));
+          await freshScan();
+        },
+        (err) => t("error.killFailed", { err: localizeKillError(String(err), t) }),
       );
     } finally {
       setKillingPid(null);
@@ -367,29 +405,32 @@ function App() {
 
   const handleToggleWhitelist = async (e: ProcessEntry) => {
     const key = whitelistKey(e);
-    try {
-      if (e.is_whitelisted) {
-        await invoke("remove_whitelist", { key });
-      } else {
-        await invoke("add_whitelist", { key });
-      }
-      setActionError(null); // 最近一次操作成功 → 清除残留失败横幅
-      // freshScan 而非 refresh：2s 轮询大概率正有一次扫描在飞行中，它读到的是
-      // 白名单落盘**之前**的数据；refresh 会复用该 Promise，星标/嫌疑态/清扫
-      // 计数要到下一轮才更新（评审发现）。kill 路径同理，早已用 freshScan。
-      await freshScan();
-    } catch (err) {
-      setActionError(t("error.whitelistFailed", { err: String(err) }));
-    }
+    await runAction(
+      async () => {
+        if (e.is_whitelisted) {
+          await invoke("remove_whitelist", { key });
+          // v0.4.0 旧键也清掉，否则升级用户的裸键仍命中、星标取消不掉（评审发现）
+          const legacy = legacyWhitelistKey(e);
+          if (legacy !== key) await invoke("remove_whitelist", { key: legacy });
+        } else {
+          await invoke("add_whitelist", { key });
+        }
+        // freshScan 而非 refresh：2s 轮询大概率正有一次扫描在飞行中，它读到的是
+        // 白名单落盘**之前**的数据；refresh 会复用该 Promise，星标/嫌疑态/清扫
+        // 计数要到下一轮才更新（评审发现）。kill 路径同理，早已用 freshScan。
+        await freshScan();
+      },
+      (err) => t("error.whitelistFailed", { err: String(err) }),
+    );
   };
 
   const handleOpen = async (port: number) => {
-    try {
-      await openUrl(`http://localhost:${port}`);
-      setActionError(null); // 最近一次操作成功 → 清除残留失败横幅
-    } catch (err) {
-      setActionError(t("error.openBrowser", { err: String(err) }));
-    }
+    await runAction(
+      async () => {
+        await openUrl(`http://localhost:${port}`);
+      },
+      (err) => t("error.openBrowser", { err: String(err) }),
+    );
   };
 
   const askKillAllSuspects = () => {
@@ -404,36 +445,43 @@ function App() {
     setSweeping(true);
     // Windows 无 SIGTERM：单一 TerminateProcess 语义（force）
     const force = os === "windows";
-    const failures: { pid: number; label: string; err: string }[] = [];
-    for (const s of suspects) {
-      try {
-        await invoke("kill_process", {
-          pid: s.pid,
-          force,
-          startUnix: s.start_unix,
-        });
-      } catch (err) {
-        failures.push({
-          pid: s.pid,
-          label: s.app_label,
-          err: localizeKillError(String(err), t),
-        });
-      }
-    }
-    await new Promise((r) => setTimeout(r, 700));
-    await freshScan(); // 等掉撞车的轮询再扫一次，结果必然包含 kill 之后的状态
-    setSweeping(false);
-    if (failures.length > 0) {
-      setActionError(
-        t("error.batchFailed", {
-          failed: failures.length,
-          total: suspects.length,
-        }) +
-          // 分隔符语言无关（评审发现：全角「；」会出现在英文界面）
-          failures.map((f) => `PID ${f.pid} ${f.label} (${f.err})`).join("; "),
+    try {
+      await runAction(
+        async () => {
+          const failures: { pid: number; label: string; err: string }[] = [];
+          for (const s of suspects) {
+            try {
+              await invoke("kill_process", {
+                pid: s.pid,
+                force,
+                startUnix: s.start_unix,
+              });
+            } catch (err) {
+              failures.push({
+                pid: s.pid,
+                label: s.app_label,
+                err: localizeKillError(String(err), t),
+              });
+            }
+          }
+          await new Promise((r) => setTimeout(r, 700));
+          await freshScan(); // 等掉撞车的轮询再扫一次，结果必然包含 kill 之后的状态
+          // 部分失败：抛出已组装好的横幅文案，由 runAction 统一落地（成功则自动清横幅）
+          if (failures.length > 0) {
+            throw (
+              t("error.batchFailed", {
+                failed: failures.length,
+                total: suspects.length,
+              }) +
+              // 分隔符语言无关（评审发现：全角「；」会出现在英文界面）
+              failures.map((f) => `PID ${f.pid} ${f.label} (${f.err})`).join("; ")
+            );
+          }
+        },
+        (msg) => String(msg),
       );
-    } else {
-      setActionError(null); // 全部成功 → 清除残留失败横幅
+    } finally {
+      setSweeping(false);
     }
   };
 

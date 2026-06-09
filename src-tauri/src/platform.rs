@@ -31,8 +31,9 @@ pub fn kill(pid: u32, force: bool, expected_start: Option<u64>) -> Result<(), St
 
     let signal = if force { "-9" } else { "-15" };
     // 固定绝对路径（纵深防御）：不经 $PATH 解析，避免被劫持的 `kill` 二进制
-    // 在用户每次点「终止」时执行任意代码（评审发现）。
-    let output = Command::new("/bin/kill")
+    // 在用户每次点「终止」时执行任意代码（评审发现）。映射与 scanner 同源，
+    // 避免两处各写绝对路径而漂移（crate::scanner::system_bin）。
+    let output = Command::new(crate::scanner::system_bin("kill"))
         .args([signal, &pid.to_string()])
         .output()
         .map_err(|e| e.to_string())?;
@@ -48,7 +49,7 @@ fn current_start_unix(pid: u32) -> Option<u64> {
     use std::process::Command;
     use std::time::{SystemTime, UNIX_EPOCH};
 
-    let output = Command::new("/bin/ps")
+    let output = Command::new(crate::scanner::system_bin("ps"))
         .args(["-o", "etime=", "-p", &pid.to_string()])
         .env("LANG", "en_US.UTF-8")
         .env("LC_ALL", "en_US.UTF-8")

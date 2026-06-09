@@ -8,7 +8,7 @@ use std::collections::HashMap;
 use std::ffi::c_void;
 use std::sync::{Mutex, OnceLock};
 
-use sysinfo::{Pid, ProcessRefreshKind, ProcessesToUpdate, System, Users};
+use sysinfo::{Pid, ProcessRefreshKind, ProcessesToUpdate, System, UpdateKind, Users};
 use windows::Win32::Foundation::{ERROR_INSUFFICIENT_BUFFER, NO_ERROR};
 use windows::Win32::NetworkManagement::IpHelper::{
     GetExtendedTcpTable, MIB_TCP6TABLE_OWNER_PID, MIB_TCPTABLE_OWNER_PID,
@@ -294,11 +294,9 @@ fn identify_app_with(
     }
 
     // 6. Cargo 产物；go run 的临时编译产物（%TEMP%\go-build*\...）同理 ——
-    //    与 macOS 侧对齐：dev 编译产物必须拿到 dev-script 身份
-    if p.contains("\\target\\debug\\")
-        || p.contains("\\target\\release\\")
-        || p.contains("\\go-build")
-    {
+    //    与 macOS 侧共用 identify::is_dev_build_artifact（分隔符/大小写归一），
+    //    避免两平台各维护一份片段列表而漂移。
+    if super::identify::is_dev_build_artifact(exe_path) {
         return (project_binary_label(exe_path), "dev-script".to_string());
     }
 
@@ -360,13 +358,16 @@ fn system() -> &'static Mutex<System> {
 }
 
 /// 创建时间 / 运行时长的净化：start_time()==0 表示读取失败（句柄受限），
-/// 此时两个值都不可信 —— start 置 None（kill 走 fail-closed 的
-/// ERR_IDENTITY_UNKNOWN），elapsed 置 0（宽限期对这类路径豁免行无副作用）。
+/// 此时两个值都不可信 —— start 置 None（kill 走 fail-closed 的 ERR_IDENTITY_UNKNOWN）。
+/// elapsed 不能置 0：那等价于宣称「刚启动」，会让 classify 的宽限期恒命中、把一个
+/// exe/cmd 可读但创建时间读不到的孤儿 dev server 永久钉在 Possible、永不入清扫/计数
+///（评审发现）。创建时间未知 ≠ 刚启动 —— 置为宽限期阈值（10），既不触发宽限降级、
+/// 也不伪造一个荒谬的运行时长。
 fn sanitize_times(start: u64, run: u64) -> (Option<u64>, u64) {
     if start > 0 {
         (Some(start), run)
     } else {
-        (None, 0)
+        (None, super::classify::GRACE_SECS)
     }
 }
 
@@ -374,7 +375,7 @@ pub(crate) fn collect() -> Collected {
     let ports_by_pid = tcp_listeners();
 
     let mut sys = system().lock().unwrap();
-    // 必须用 _specifics + everything()（评审发现的 Windows 核心失效）：便捷的
+    // 必须用 _specifics + 显式 refresh_kind（评审发现的 Windows 核心失效）：便捷的
     // refresh_processes(All, true) 内部固定为 nothing().with_memory().with_cpu()
     // .with_disk_usage().with_exe(OnlyIfNotSet) —— 不含 cmd/cwd/user。Windows 上
     // 这三项受 refresh_kind 门控并提前 return，导致 proc_.cmd() 恒空、cwd() 恒 None、
@@ -382,10 +383,20 @@ pub(crate) fn collect() -> Collected {
     // extract_module_arg 拿不到脚本/模块 ⇒ `node.exe vite.js`、`python.exe -m
     // http.server` 永远走不到 dev-script、被路径阶梯当 installed-app 豁免，
     // CLAUDE.md 的核心检测目标在 Windows 上整体失效；cwd 缺失还让重复检测哑火。
+    //
+    // 只勾选实际读取的字段（cmd/cwd/exe/user/memory/cpu），不用 everything()：后者
+    // 每 2s 还会为全机进程拉取磁盘 IO 计数器、线程列表、完整 environ 块 —— 全部即取即弃
+    // （评审发现的浪费）。start_time/run_time/ppid/name 随基础进程信息返回，无需开关。
     sys.refresh_processes_specifics(
         ProcessesToUpdate::All,
         true,
-        ProcessRefreshKind::everything(),
+        ProcessRefreshKind::nothing()
+            .with_cmd(UpdateKind::Always)
+            .with_cwd(UpdateKind::Always)
+            .with_exe(UpdateKind::OnlyIfNotSet)
+            .with_user(UpdateKind::OnlyIfNotSet)
+            .with_memory()
+            .with_cpu(),
     );
     let users = Users::new_with_refreshed_list();
 
@@ -823,10 +834,16 @@ mod tests {
 
     /// 回归（评审发现）：句柄受限进程 start_time()==0 时必须净化 ——
     /// 否则 kill 校验恒报 ERR_PID_REUSED（应为 ERR_IDENTITY_UNKNOWN）、
-    /// UI 显示 ~56 年运行时长。
+    /// UI 显示 ~56 年运行时长。elapsed 净化为宽限期阈值（非 0）：未知创建时间
+    /// 不得被当作「刚启动」而触发宽限降级、令受保护孤儿永不入清扫（评审发现）。
     #[test]
     fn unreadable_start_time_sanitized() {
-        assert_eq!(sanitize_times(0, 1_770_000_000), (None, 0));
+        let (start, elapsed) = sanitize_times(0, 1_770_000_000);
+        assert_eq!(start, None);
+        assert!(
+            elapsed >= super::super::classify::GRACE_SECS,
+            "净化后的 elapsed ({elapsed}) 不得落入宽限期 (< GRACE_SECS)，否则受保护孤儿永不入清扫"
+        );
         assert_eq!(
             sanitize_times(1_700_000_000, 3600),
             (Some(1_700_000_000), 3600)

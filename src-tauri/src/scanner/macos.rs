@@ -167,15 +167,11 @@ pub(crate) fn identify_app(
         return (basename(exe).to_string(), "user-binary".to_string());
     }
 
-    // 5. /target/{debug,release}/ → Rust / Cargo 产物；`go run` 的临时编译产物
-    //    （/private/var/folders/.../go-build*/exe/main）同理是 dev 进程 ——
-    //    必须先于路径豁免给出 dev-script 身份，否则 /private/var/folders/ 的
-    //    标准路径前缀会把孤儿 go run 服务整体豁免（评审发现的真实漏报；该前缀
-    //    本为 App Translocation 设，而那些路径含 .app/ 早被阶梯 1 接住）。
-    if exe.contains("/target/debug/")
-        || exe.contains("/target/release/")
-        || exe.contains("/go-build")
-    {
+    // 5. Rust/Cargo 产物、`go run` 临时编译产物（/private/var/folders/.../go-build*/exe/main）——
+    //    必须先于路径豁免给出 dev-script 身份，否则 /private/var/folders/ 的标准路径前缀会把
+    //    孤儿 go run 服务整体豁免（评审发现的真实漏报；该前缀本为 App Translocation 设，
+    //    而那些路径含 .app/ 早被阶梯 1 接住）。判定片段集中在 identify::is_dev_build_artifact。
+    if super::identify::is_dev_build_artifact(exe) {
         return (project_binary_label(exe), "dev-script".to_string());
     }
 
@@ -203,7 +199,9 @@ pub(crate) fn identify_app(
 /// 系统工具固定绝对路径调用（纵深防御）：不经继承的 $PATH 解析，避免被排在
 /// /bin 之前的可写目录里的同名二进制劫持。对一个会代用户做破坏性操作（kill）
 /// 的工具，钉死系统二进制位置是零成本加固（评审发现）。未知名回退裸名。
-fn system_bin(program: &str) -> &str {
+/// pub(crate)：kill 路径（platform.rs）共用同一份映射，避免 "kill"/"ps" 的绝对
+/// 路径在两处各写一遍而漂移 —— 一处加固、另一处仍可被劫持（评审发现）。
+pub(crate) fn system_bin(program: &str) -> &str {
     match program {
         "lsof" => "/usr/sbin/lsof",
         "ps" => "/bin/ps",

@@ -11,6 +11,17 @@ pub(crate) fn basename(path: &str) -> &str {
     path.rsplit(['/', '\\']).next().unwrap_or(path)
 }
 
+/// 编译期 dev 产物的路径片段（cargo target、`go run` 临时目录）—— 分隔符与大小写
+/// 归一后双平台共用一份。这些是「路径结构」而非项目名关键字（前导 `/` 已锚定，
+/// 不会被 ~/code/my-go-build-tools/ 这类用户目录名误触），必须先于路径豁免拿到
+/// dev-script 身份，否则孤儿 `go run` / cargo 产物会被标准路径前缀整体放行。
+/// 评审发现：原先 macos.rs / windows.rs 各维护一份、仅分隔符不同，工具链新增需
+/// 双改，且 Windows 无人工 QA —— 漏改即静默回归。新增片段只改这一处。
+pub(crate) fn is_dev_build_artifact(path: &str) -> bool {
+    let norm = path.replace('\\', "/").to_lowercase();
+    norm.contains("/target/debug/") || norm.contains("/target/release/") || norm.contains("/go-build")
+}
+
 /// 去掉 Windows 可执行后缀：node.exe → node（大小写不敏感）
 pub(crate) fn strip_exe(name: &str) -> &str {
     let lower = name.to_lowercase();
@@ -21,11 +32,18 @@ pub(crate) fn strip_exe(name: &str) -> &str {
     }
 }
 
-/// 「分离值」可能本身是脚本路径的预加载/注册类选项 —— 它们的值不是进程入口
+/// 「分离值」本身可能是脚本/配置路径、但都不是进程入口的带值选项 —— 必须跳过其值
 ///（评审实锤：`node --import ./reg.js server.mjs` 曾把 OpenTelemetry/tsx 的注入
 /// 脚本当入口，标签、重复配对、brew 豁免三处全部用错身份）。粘连形
 /// `--import=./x.js` 整个 token 以 `-` 开头，由通用选项跳过规则天然覆盖。
 /// 与 extract_module_arg 处理 `-W ignore` 分离值是同一类问题的镜像。
+///
+/// `--config` 也在列且必须保留：`node --config app.config.js server.mjs` 里
+/// app.config.js 是配置不是入口，不跳过它就会被当成入口脚本（评审复核：移除
+/// `--config` 才是真正的回归）。它与预加载类的区别仅在「非运行时程序」上有意义
+/// （如 `vite --config vite.config.ts` 取不到入口、回退到 short_command/项目名）——
+/// 但 vite 不是 SCRIPT_RUNTIMES，标签不走此路径，重复检测也有 full_command / cwd
+/// 兜底，故无可观察损失。新增带值选项时一并补回归用例（见下方测试）。
 const SCRIPT_VALUE_FLAGS: &[&str] = &[
     "-r",
     "--require",
@@ -176,6 +194,25 @@ mod tests {
     }
 
     #[test]
+    fn dev_build_artifact_both_separators() {
+        // cargo 产物 + go run 临时目录，双平台分隔符/大小写
+        assert!(is_dev_build_artifact("/Users/x/p/target/debug/server"));
+        assert!(is_dev_build_artifact("/Users/x/p/target/release/server"));
+        assert!(is_dev_build_artifact(
+            "/private/var/folders/dx/T/go-build123/b001/exe/main"
+        ));
+        assert!(is_dev_build_artifact(
+            "C:\\Users\\x\\proj\\target\\debug\\server.exe"
+        ));
+        assert!(is_dev_build_artifact(
+            "C:\\Users\\x\\AppData\\Local\\Temp\\go-build123\\b001\\exe\\server.exe"
+        ));
+        // 前导分隔符锚定：用户目录名内嵌 "go-build" 不误触
+        assert!(!is_dev_build_artifact("/Users/x/my-go-build-tools/bin/app"));
+        assert!(!is_dev_build_artifact("/Users/x/code/myproj/server"));
+    }
+
+    #[test]
     fn strip_exe_case_insensitive() {
         assert_eq!(strip_exe("node.exe"), "node");
         assert_eq!(strip_exe("Node.EXE"), "Node");
@@ -242,6 +279,14 @@ mod tests {
             extract_script_arg("node --import ./reg.js dist/server"),
             None
         );
+        // --config 的分离值是配置不是入口：必须跳过它、取后面的真入口
+        //（评审复核：移除 --config 才会把 app.config.js 误当入口 —— 锁死正确行为）
+        assert_eq!(
+            extract_script_arg("node --config app.config.js server.mjs"),
+            Some("server.mjs")
+        );
+        // 非运行时程序仅给配置、无独立入口：取不到入口（身份回退到程序/项目名，无损）
+        assert_eq!(extract_script_arg("vite --config vite.config.ts"), None);
         // 普通选项不受影响
         assert_eq!(
             extract_script_arg("python -W ignore app.py"),
