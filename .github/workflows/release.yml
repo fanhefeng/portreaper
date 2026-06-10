@@ -21,12 +21,25 @@ jobs:
   verify-version:
     name: Verify version matches tag
     runs-on: ubuntu-latest
+    timeout-minutes: 10
     steps:
       - name: Checkout
-        uses: actions/checkout@v6
+        uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6
+
+      # Same pinned Node as ci.yml/build (runner default drifts independently)
+      - name: Setup Node
+        uses: actions/setup-node@48b55a011bda9f5d6aeb4c2d9c7362e8dae4041e # v6
+        with:
+          node-version-file: .node-version
 
       - name: Check version files match tag
         run: node scripts/bump-version.mjs --check "${GITHUB_REF_NAME#v}"
+
+      # Stable asset names are hardcoded in three places (publish job below,
+      # website download links, README) — fail the release before building if
+      # they ever drift apart.
+      - name: Release asset name parity check
+        run: node scripts/check-release-assets.mjs
 
   # --------------------------------------------------------------------------
   # 2. Create the draft release ONCE, before the build matrix.
@@ -39,6 +52,7 @@ jobs:
     name: Create draft release
     needs: verify-version
     runs-on: ubuntu-latest
+    timeout-minutes: 10
     outputs:
       release_id: ${{ steps.create.outputs.id }}
     env:
@@ -118,6 +132,7 @@ jobs:
     name: Build (${{ matrix.target || matrix.os }})
     needs: [verify-version, create-release]
     runs-on: ${{ matrix.os }}
+    timeout-minutes: 90
     strategy:
       fail-fast: false
       matrix:
@@ -133,30 +148,32 @@ jobs:
             bundles: nsis
     steps:
       - name: Checkout
-        uses: actions/checkout@v6
+        uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6
 
       - name: Install pnpm
-        uses: pnpm/action-setup@v6
+        uses: pnpm/action-setup@0e279bb959325dab635dd2c09392533439d90093 # v6
         with:
           version: 9
 
       - name: Setup Node
-        uses: actions/setup-node@v6
+        uses: actions/setup-node@48b55a011bda9f5d6aeb4c2d9c7362e8dae4041e # v6
         with:
           node-version-file: .node-version
           cache: pnpm
 
       # On Windows the matrix target is empty (host = x86_64-pc-windows-msvc),
       # so we pass an empty `targets:` and let rustup use the default host.
-      # Pinned to match `rust-toolchain.toml` / ci.yml — release builds use the
-      # same compiler the gate ran against. Bump all three together.
+      # Toolchain pinned to match `rust-toolchain.toml` / ci.yml — release
+      # builds use the same compiler the gate ran against. Bump all three
+      # together. (Action pinned by SHA; version moved to the `toolchain` input.)
       - name: Install Rust toolchain
-        uses: dtolnay/rust-toolchain@1.96.0
+        uses: dtolnay/rust-toolchain@3c5f7ea28cd621ae0bf5283f0e981fb97b8a7af9 # master
         with:
+          toolchain: 1.96.0
           targets: ${{ matrix.target }}
 
       - name: Cache Rust
-        uses: Swatinem/rust-cache@v2
+        uses: Swatinem/rust-cache@e18b497796c12c097a38f9edb9d0641fb99eee32 # v2
         with:
           workspaces: 'src-tauri -> target'
 
@@ -164,7 +181,7 @@ jobs:
         run: pnpm install --frozen-lockfile
 
       - name: Build and upload bundle
-        uses: tauri-apps/tauri-action@v0
+        uses: tauri-apps/tauri-action@84b9d35b5fc46c1e45415bdb6144030364f7ebc5 # v0
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           # ----------------------------------------------------------------
@@ -213,6 +230,7 @@ jobs:
     name: Verify, rename assets, and publish
     needs: build
     runs-on: ubuntu-latest
+    timeout-minutes: 15
     env:
       GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
       GH_REPO: ${{ github.repository }}

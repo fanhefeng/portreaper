@@ -96,7 +96,9 @@ The macOS group (`APPLE_*`) enables Developer ID signing + notarization for the 
 
 ## Checklist
 
-- [ ] `bump-version.mjs X.Y.Z` run; all four files updated.
+- [ ] `bump-version.mjs X.Y.Z` run; all four files updated. (The four writes
+      are not atomic — if the script dies midway, run `--check X.Y.Z` to see
+      which files were left behind, then re-run the bump.)
 - [ ] `cargo build` clean; `Cargo.lock` committed.
 - [ ] Commit `chore(release): vX.Y.Z` + tag `vX.Y.Z` pushed.
 - [ ] `verify-version` passed.

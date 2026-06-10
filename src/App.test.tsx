@@ -15,6 +15,7 @@ vi.mock("@tauri-apps/plugin-opener", () => ({
 }));
 
 import { invoke } from "@tauri-apps/api/core";
+import { SCAN_TIMEOUT_MS } from "./model";
 import App from "./App";
 
 const mockInvoke = vi.mocked(invoke);
@@ -334,5 +335,147 @@ describe("error channels", () => {
 
     killGate.resolve?.();
     await advance(800);
+  });
+
+  it("取消收藏时连 v0.4.0 旧键一并删除（回归：裸键残留导致星标取消不掉）", async () => {
+    const removed: string[] = [];
+    route({
+      get_platform: () => "macos",
+      // exe_path 是裸名（PATH/shebang 启动）：新键=完整命令行，旧键=裸 "node"
+      scan_ports: () => [
+        suspectEntry({
+          exe_path: "node",
+          full_command: "node /Users/x/proj/server.js",
+          is_whitelisted: true,
+          is_zombie_suspect: false,
+          confidence: "none",
+        }),
+      ],
+      remove_whitelist: (args) => {
+        removed.push((args as { key: string }).key);
+      },
+    });
+    render(<App />);
+    await advance(0);
+
+    fireEvent.click(screen.getByText("★")); // 取消收藏
+    await advance(0);
+
+    // 必须按「新键 → 旧键」顺序各调一次 remove_whitelist
+    expect(removed).toEqual(["node /Users/x/proj/server.js", "node"]);
+  });
+
+  it("扫描超时转可见错误（自愈语义）：后端恢复后下一轮自动清除", async () => {
+    let hang = true;
+    route({
+      get_platform: () => "macos",
+      scan_ports: () =>
+        hang ? new Promise(() => {}) : ([suspectEntry()] as unknown),
+    });
+    render(<App />);
+    await advance(0);
+
+    // 超时阈值后：挂死的 invoke 被转成本地化的扫描错误横幅
+    await advance(SCAN_TIMEOUT_MS + 100);
+    expect(screen.getByText(/Scan timed out/)).toBeTruthy();
+
+    // 后端恢复。注意超时那一刻轮询已立即用仍挂死的后端开了第二次扫描 ——
+    // 它还要再等一个完整超时周期；其后的下一轮 2s 轮询才能成功并自愈
+    hang = false;
+    await advance(SCAN_TIMEOUT_MS + 2100);
+    expect(screen.queryByText(/Scan timed out/)).toBeNull();
+  });
+
+  it("Windows 平台行内是单一 Terminate 按钮（无 SIGTERM/强杀双按钮）", async () => {
+    route({
+      get_platform: () => "windows",
+      scan_ports: () => [suspectEntry()],
+    });
+    render(<App />);
+    await advance(0);
+
+    expect(screen.getAllByText("Terminate").length).toBe(1);
+    expect(screen.queryByText("Kill")).toBeNull();
+    expect(screen.queryByText("Force")).toBeNull();
+  });
+
+  it("并发 kill：先完成的一次不得清掉仍在飞行那次的 killing 标记（评审发现）", async () => {
+    const gates: Record<number, () => void> = {};
+    route({
+      get_platform: () => "macos",
+      scan_ports: () => [
+        suspectEntry(),
+        suspectEntry({ pid: 5151, ports: [5174] }),
+      ],
+      kill_process: (args) =>
+        new Promise<void>((r) => {
+          gates[(args as { pid: number }).pid] = r;
+        }),
+    });
+    render(<App />);
+    await advance(0);
+
+    // kill 4242（挂起中）
+    fireEvent.click(screen.getAllByText("Kill")[0]);
+    fireEvent.click(screen.getByText("Terminate"));
+    await advance(0);
+
+    // kill 5151（也挂起）—— killingPid 现在是 5151
+    fireEvent.click(screen.getAllByText("Kill")[1]);
+    fireEvent.click(screen.getByText("Terminate"));
+    await advance(0);
+
+    // 4242 先完成：函数式更新只清自己的标记，5151 的按钮必须仍处于禁用
+    gates[4242]?.();
+    await advance(400);
+    const killBtnB = screen.getAllByText("Kill")[1] as HTMLButtonElement;
+    expect(killBtnB.disabled).toBe(true);
+
+    gates[5151]?.();
+    await advance(400);
+  });
+
+  it("「可疑」标签页零嫌疑时显示一切正常，而非「没有匹配项」", async () => {
+    route({
+      get_platform: () => "macos",
+      scan_ports: () => [
+        suspectEntry({
+          is_zombie_suspect: false,
+          confidence: "none",
+          zombie_reasons: [],
+        }),
+      ],
+    });
+    render(<App />);
+    await advance(0);
+
+    fireEvent.click(screen.getByText("Zombies")); // 切到「可疑」tab
+    expect(screen.getByText(/All clear/)).toBeTruthy();
+    expect(screen.queryByText("No matches")).toBeNull();
+  });
+
+  it('端口搜索接受 ":5173" 形式（UI 展示格式可原样复制粘贴）', async () => {
+    route({
+      get_platform: () => "macos",
+      scan_ports: () => [
+        suspectEntry(),
+        suspectEntry({
+          pid: 1111,
+          ports: [8080],
+          command: "other",
+          full_command: "other server",
+          app_label: "other",
+        }),
+      ],
+    });
+    render(<App />);
+    await advance(0);
+
+    fireEvent.change(screen.getByPlaceholderText(/Search/), {
+      target: { value: ":5173" },
+    });
+    // 仅 :5173 的行保留
+    expect(screen.getByText("proj")).toBeTruthy();
+    expect(screen.queryByText("other")).toBeNull();
   });
 });

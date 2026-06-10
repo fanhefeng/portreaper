@@ -1,46 +1,33 @@
-import { useCallback, useEffect, useMemo, useRef, useState, type KeyboardEvent as ReactKeyboardEvent } from "react";
+import {
+  useCallback,
+  useEffect,
+  useMemo,
+  useRef,
+  useState,
+  type KeyboardEvent as ReactKeyboardEvent,
+} from "react";
 import { invoke } from "@tauri-apps/api/core";
 import { openUrl } from "@tauri-apps/plugin-opener";
 import { useI18n, type I18nKey, type Lang } from "./i18n";
+import {
+  EXEMPT_REASONS,
+  SCAN_TIMEOUT_MS,
+  SWEEPABLE,
+  formatDuration,
+  formatUptime,
+  legacyWhitelistKey,
+  localizeKillError,
+  localizeScanError,
+  primaryReason,
+  whitelistKey,
+  withTimeout,
+  type Filter,
+  type Os,
+  type ProcessEntry,
+  type Translator,
+} from "./model";
+import { DESC_KEYS, describeEntry, splitLabel } from "./describe";
 import "./App.css";
-
-type ParentRef = {
-  pid: number;
-  label: string;
-  category: string;
-  exe_path: string;
-};
-
-type Confidence = "none" | "possible" | "likely" | "confirmed";
-
-type ProcessEntry = {
-  pid: number;
-  ppid: number;
-  ports: number[];
-  command: string;
-  full_command: string;
-  exe_path: string;
-  app_label: string;
-  app_category: string;
-  parent_chain: ParentRef[];
-  launcher_label: string;
-  user: string;
-  tty: string;
-  elapsed_secs: number;
-  start_unix: number | null;
-  cpu_percent: number;
-  mem_mb: number;
-  state: string;
-  is_zombie_suspect: boolean;
-  confidence: Confidence;
-  zombie_reasons: string[];
-  is_whitelisted: boolean;
-  duplicate_of: number | null;
-};
-
-type Os = "macos" | "windows";
-
-type Filter = "all" | "suspect" | "whitelist";
 
 type ConfirmState = {
   pid: number;
@@ -51,178 +38,11 @@ type ConfirmState = {
   startUnix: number | null;
 } | null;
 
-/** 一键清理覆盖的置信层级（Possible 永不入清扫） */
-const SWEEPABLE: ReadonlySet<Confidence> = new Set(["confirmed", "likely"]);
+/** 操作错误存「渲染函数」而非成品文案：横幅挂着时切换语言要跟着重译 ——
+ *  与 scanError（存原始码、渲染时翻译）的语义对称（评审发现）。 */
+type ActionError = { render: (t: Translator) => string };
 
-/** 豁免类 reason code —— 非嫌疑行的详情里以「为什么不是僵尸」展示 */
-const EXEMPT_REASONS = new Set([
-  "launchd_managed",
-  "brew_service_path",
-  "installed_app",
-  "pm2_managed",
-]);
-
-/** 行内只讲一个最重要的原因（其余进详情面板），此为优先级 */
-const REASON_PRIORITY = [
-  "defunct",
-  "ppid1_orphan",
-  "orphaned_chain",
-  "parent_exited",
-  "pid_slot_reused",
-  "orphaned_session",
-  "duplicate_dev_server",
-  "just_reparented",
-  "nonstandard_path",
-  "dev_server_keyword",
-];
-
-function primaryReason(reasons: string[]): string | null {
-  for (const r of REASON_PRIORITY) if (reasons.includes(r)) return r;
-  return reasons[0] ?? null;
-}
-
-/**
- * 常见进程知识库：让非技术用户一眼知道「这是什么软件、干什么用的」。
- * 顺序即优先级（具体的在前，node/python 等泛化的在后）；
- * 未命中时退回 desc.<category> 的类别描述。
- */
-// 第 4 元 "path"：该模式匹配含完整命令行 / exe 路径的宽 haystack（其余只匹配身份字段）。
-// 仅给「路径结构型」模式（target/debug、code helper）—— 它们不会被项目目录名误触；
-// 品牌/关键字型模式留在身份字段，避免 ~/code/spotify-clone 被误描述（评审发现）。
-const KNOWN_PROCESSES: ReadonlyArray<
-  readonly [RegExp, string, string] | readonly [RegExp, string, string, "path"]
-> = [
-  // —— 开发服务器 / 框架（先于泛化的 node/python）——
-  [/vite/, "Vite 前端开发服务器", "Vite frontend dev server"],
-  [/webpack/, "Webpack 前端开发服务", "Webpack dev server"],
-  [/next dev|next-server|next start/, "Next.js 开发服务器", "Next.js dev server"],
-  [/nuxt/, "Nuxt 开发服务器", "Nuxt dev server"],
-  [/uvicorn|gunicorn|fastapi|flask|django/, "Python Web 服务", "Python web service"],
-  [/http\.server/, "Python 临时文件服务器", "Python ad-hoc file server"],
-  [/jupyter/, "Jupyter 笔记本服务", "Jupyter notebook server"],
-  [/storybook/, "Storybook 组件预览服务", "Storybook preview server"],
-  // —— 数据库 / 服务 ——
-  [/postgres/, "PostgreSQL 数据库", "PostgreSQL database"],
-  [/mysqld|mariadb/, "MySQL 数据库", "MySQL database"],
-  [/mongod/, "MongoDB 数据库", "MongoDB database"],
-  [/\bredis\b/, "Redis 数据库", "Redis database"],
-  [/nginx/, "Nginx Web 服务器", "Nginx web server"],
-  [/caddy/, "Caddy Web 服务器", "Caddy web server"],
-  [/docker|containerd/, "Docker 容器服务", "Docker container service"],
-  [/ollama/, "Ollama 本地 AI 模型服务", "Ollama local AI model server"],
-  // —— 常见桌面软件（带 \b 词界防止子串误匹配，如路径里恰好含 "php"）——
-  [/wechat|weixin/, "微信", "WeChat messenger"],
-  [/wxwork|wework/, "企业微信", "WeCom"],
-  [/qqmusic/, "QQ 音乐", "QQ Music"],
-  [/\bqq\b/, "QQ", "QQ messenger"],
-  [/dingtalk/, "钉钉", "DingTalk"],
-  [/feishu|\blark\b/, "飞书", "Lark / Feishu"],
-  [/cloudmusic|neteasemusic/, "网易云音乐", "NetEase Cloud Music"],
-  [/wemeet|tencentmeeting/, "腾讯会议", "Tencent Meeting"],
-  [/todesk/, "ToDesk 远程控制", "ToDesk remote desktop"],
-  [/clash|v2ray|xray|sing-box|shadowsocks|trojan/, "网络代理工具", "network proxy tool"],
-  [/raycast/, "Raycast 快捷启动工具", "Raycast launcher"],
-  [/alfred/, "Alfred 快捷启动工具", "Alfred launcher"],
-  [/\bspotify\b/, "Spotify 音乐", "Spotify music"],
-  [/\bsteam\b/, "Steam 游戏平台", "Steam gaming platform"],
-  [/onedrive/, "OneDrive 网盘同步", "OneDrive sync"],
-  [/dropbox/, "Dropbox 网盘同步", "Dropbox sync"],
-  [/baidunetdisk/, "百度网盘", "Baidu Netdisk"],
-  // "code helper" 只出现在 exe 路径（VS Code 渲染/扩展子进程）—— 走宽 haystack
-  [/code helper|visual studio code/, "VS Code 代码编辑器", "VS Code editor", "path"],
-  [/\bcursor\b/, "Cursor 代码编辑器", "Cursor editor"],
-  [/iterm/, "iTerm 终端", "iTerm terminal"],
-  [/\bwarp\b/, "Warp 终端", "Warp terminal"],
-  // —— macOS 系统组件 ——
-  [/controlcenter/, "macOS 控制中心（系统组件）", "macOS Control Center (system)"],
-  [/rapportd/, "苹果设备互联服务（接力 / 隔空）", "Apple continuity service"],
-  [/sharingd/, "macOS 共享服务", "macOS sharing service"],
-  [/airplay/, "隔空播放服务", "AirPlay service"],
-  // —— 泛化运行时（永远放最后；\b 词界防止把无关二进制误标）——
-  // cargo / target/(debug|release) 只出现在 exe 路径或完整命令行 —— 走宽 haystack。
-  // 分隔符两路都匹配（Windows 是 target\debug），与后端 is_dev_build_artifact 对齐。
-  [/cargo|target[\\/](debug|release)/, "Rust 开发程序", "Rust dev program", "path"],
-  [/\bnode\b|\bnpm\b|\bpnpm\b|\byarn\b|\bbun\b/, "Node.js 程序", "Node.js program"],
-  [/\bpython/, "Python 程序", "Python program"],
-  [/\bjava\b|gradle|tomcat/, "Java 程序", "Java program"],
-  [/\bruby\b|\brails\b/, "Ruby 程序", "Ruby program"],
-  [/\bphp\b/, "PHP 程序", "PHP program"],
-];
-
-/** 类别 → 兜底描述 key（知识库未命中时） */
-const DESC_KEYS: Record<string, I18nKey> = {
-  "installed-app": "desc.installed-app",
-  system: "desc.system",
-  "dev-script": "desc.dev-script",
-  "user-binary": "desc.user-binary",
-  unknown: "desc.unknown",
-};
-
-/**
- * 白名单键 —— 必须与后端 scanner::mod::whitelist_key 逐字一致（评审发现）：
- * exe_path 含路径分隔符（绝对路径）时用它；否则是 PATH 解析的裸解释器名
- * （"node"），单独加白会塌缩匹配全机同名监听者 —— 回退完整命令行。
- */
-function whitelistKey(e: ProcessEntry): string {
-  if (e.exe_path.includes("/") || e.exe_path.includes("\\")) return e.exe_path;
-  return e.full_command || e.command;
-}
-
-/**
- * v0.4.0 旧键（exe_path 非空即用，否则短名）—— 后端 scanner::mod::legacy_whitelist_key
- * 的逐字镜像。升级兼容：取消加白时需连旧键一并删除，否则 v0.4.0 存的裸键仍会命中、
- * 星标取消不掉（评审发现）。
- */
-function legacyWhitelistKey(e: ProcessEntry): string {
-  return e.exe_path || e.command;
-}
-
-/** app_label 形如 "dev-server.js · node"：拆主名 + 次级说明（Row 与 Detail 共用） */
-function splitLabel(appLabel: string): { name: string; sub: string | null } {
-  const i = appLabel.indexOf(" · ");
-  return i >= 0
-    ? { name: appLabel.slice(0, i), sub: appLabel.slice(i + 3) }
-    : { name: appLabel, sub: null };
-}
-
-/** 「这是什么」：知识库命中 → 友好名；未命中 → 类别描述兜底 */
-function describeEntry(e: ProcessEntry, lang: Lang): string | null {
-  // 品牌/关键字型模式按进程的「身份字段」匹配，不含 exe_path / 完整路径：否则项目
-  // 目录名恰含品牌词（~/code/spotify-clone/server.js）会被误描述成该品牌（评审发现）。
-  // app_label 已含脚本/项目身份，command 是运行时短名。
-  const identityHay = `${e.app_label} ${e.command}`.toLowerCase();
-  // 路径结构型模式（target/debug、code helper，标 "path"）才用含完整命令行 + exe 路径的
-  // 宽 haystack —— 这类身份只存在于路径里，且不会被项目目录名误触（评审发现：窄化后
-  // Rust 产物 / VS Code 子进程的友好描述整体丢失）。
-  const pathHay = `${identityHay} ${e.full_command} ${e.exe_path}`.toLowerCase();
-  for (const [re, zh, enText, scope] of KNOWN_PROCESSES) {
-    const hay = scope === "path" ? pathHay : identityHay;
-    if (re.test(hay)) return lang === "zh" ? zh : enText;
-  }
-  return null;
-}
-
-/** 粗粒度运行时长（精确值在详情面板） */
-function formatUptime(
-  secs: number,
-  t: (k: I18nKey, p?: Record<string, string | number>) => string,
-): string {
-  if (secs < 60) return t("uptime.now");
-  if (secs < 3600) return t("uptime.min", { n: Math.floor(secs / 60) });
-  if (secs < 86400) return t("uptime.hour", { n: Math.floor(secs / 3600) });
-  return t("uptime.day", { n: Math.floor(secs / 86400) });
-}
-
-function formatDuration(secs: number): string {
-  const d = Math.floor(secs / 86400);
-  const h = Math.floor((secs % 86400) / 3600);
-  const m = Math.floor((secs % 3600) / 60);
-  const s = secs % 60;
-  const pad = (n: number) => String(n).padStart(2, "0");
-  return d > 0
-    ? `${d}-${pad(h)}:${pad(m)}:${pad(s)}`
-    : `${pad(h)}:${pad(m)}:${pad(s)}`;
-}
+type BatchFailure = { pid: number; label: string; raw: string };
 
 /** 极简焦点圈定：Tab 在弹窗内的按钮间循环（毁灭性确认弹窗的键盘安全网） */
 function trapTab(ev: ReactKeyboardEvent<HTMLDivElement>) {
@@ -244,43 +64,12 @@ function trapTab(ev: ReactKeyboardEvent<HTMLDivElement>) {
   }
 }
 
-/** 后端语义错误（ERR_* 前缀）→ 本地化文案；其余透传 OS 原文 */
-function localizeKillError(
-  err: string,
-  t: (k: I18nKey, p?: Record<string, string | number>) => string,
-): string {
-  if (err.includes("ERR_PID_REUSED")) return t("error.pidReused");
-  if (err.includes("ERR_PROCESS_GONE")) return t("error.processGone");
-  if (err.includes("ERR_ACCESS_DENIED")) return t("error.accessDenied");
-  if (err.includes("ERR_IDENTITY_UNKNOWN")) return t("error.identityUnknown");
-  return err;
-}
-
-/** scan_ports 无取消机制：后端子进程（lsof/launchctl）若卡死，invoke 会永不
- *  settle，inFlight 永久占用 → 之后每次轮询都早返回，UI 静默冻结在旧数据且无
- *  错误提示（评审发现）。用超时把它转成可见的 scanError + 下一轮自动重试。 */
-const SCAN_TIMEOUT_MS = 10_000;
-
-function withTimeout<T>(p: Promise<T>, ms: number, marker: string): Promise<T> {
-  let timer: ReturnType<typeof setTimeout> | undefined;
-  const timeout = new Promise<never>((_, reject) => {
-    timer = setTimeout(() => reject(new Error(marker)), ms);
-  });
-  return Promise.race([p, timeout]).finally(() => clearTimeout(timer));
-}
-
-/** 扫描超时 sentinel → 本地化；其余（OS 原文）透传 */
-function localizeScanError(
-  err: string,
-  t: (k: I18nKey, p?: Record<string, string | number>) => string,
-): string {
-  if (err.includes("ERR_SCAN_TIMEOUT")) return t("error.scanTimeout");
-  return err;
-}
-
 function App() {
   const { t, lang, setLang } = useI18n();
-  const [os, setOs] = useState<Os>("macos");
+  // os 在 get_platform 落定前为 null：终止按钮的布局是平台分叉的（macOS 双按钮 /
+  // Windows 单按钮），落定前不渲染，避免 Windows 上首帧闪现 SIGTERM 双按钮（评审发现）。
+  // get_platform 失败时回退 macOS（保守：双按钮语义在 Windows 后端也安全 —— force 被忽略）。
+  const [os, setOs] = useState<Os | null>(null);
   const [entries, setEntries] = useState<ProcessEntry[]>([]);
   const [filter, setFilter] = useState<Filter>("all");
   const [search, setSearch] = useState("");
@@ -288,19 +77,25 @@ function App() {
   // 操作错误（kill / 清扫 / 收藏 / 打开浏览器）只能用户点击关闭 ——
   // 否则 2s 轮询会在用户看清之前把失败原因静默冲掉。
   const [scanError, setScanError] = useState<string | null>(null);
-  const [actionError, setActionError] = useState<string | null>(null);
-  const error = actionError ?? (scanError ? localizeScanError(scanError, t) : null);
+  const [actionError, setActionError] = useState<ActionError | null>(null);
+  const error = actionError
+    ? actionError.render(t)
+    : scanError
+      ? localizeScanError(scanError, t)
+      : null;
   const [killingPid, setKillingPid] = useState<number | null>(null);
   const [confirm, setConfirm] = useState<ConfirmState>(null);
   const [batchConfirm, setBatchConfirm] = useState<ProcessEntry[] | null>(null);
   const [sweeping, setSweeping] = useState(false);
   const [expandedPid, setExpandedPid] = useState<number | null>(null);
   const inFlight = useRef<Promise<void> | null>(null);
+  // 弹窗关闭后焦点还给触发按钮（a11y：键盘用户不丢上下文）
+  const modalTrigger = useRef<HTMLElement | null>(null);
 
   useEffect(() => {
     invoke<Os>("get_platform")
       .then(setOs)
-      .catch(() => {});
+      .catch(() => setOs("macos"));
   }, []);
 
   const runScan = useCallback(async () => {
@@ -363,6 +158,20 @@ function App() {
     return () => window.removeEventListener("keydown", onKey);
   }, [confirm, batchConfirm]);
 
+  // 弹窗（确认 / 批量）全部关闭后，焦点还给打开它的按钮
+  const anyModalOpen = confirm !== null || batchConfirm !== null;
+  useEffect(() => {
+    if (!anyModalOpen && modalTrigger.current) {
+      modalTrigger.current.focus();
+      modalTrigger.current = null;
+    }
+  }, [anyModalOpen]);
+
+  const rememberTrigger = () => {
+    modalTrigger.current =
+      document.activeElement instanceof HTMLElement ? document.activeElement : null;
+  };
+
   const suspectCount = entries.filter((e) => e.is_zombie_suspect).length;
   const sweepables = entries.filter(
     (e) => e.is_zombie_suspect && SWEEPABLE.has(e.confidence),
@@ -375,12 +184,14 @@ function App() {
     if (filter === "whitelist" && !e.is_whitelisted) return false;
     if (search) {
       const q = search.toLowerCase();
+      // UI 全程以 ":5173" 展示端口 —— 用户原样复制粘贴也要能搜到（评审发现）
+      const portQ = q.startsWith(":") ? q.slice(1) : q;
       return (
         e.command.toLowerCase().includes(q) ||
         e.full_command.toLowerCase().includes(q) ||
         e.app_label.toLowerCase().includes(q) ||
         e.launcher_label.toLowerCase().includes(q) ||
-        e.ports.some((p) => String(p).includes(q)) ||
+        (portQ !== "" && e.ports.some((p) => String(p).includes(portQ))) ||
         String(e.pid).includes(q)
       );
     }
@@ -391,6 +202,7 @@ function App() {
   const healthy = filtered.filter((e) => !e.is_zombie_suspect);
 
   const askKill = (e: ProcessEntry, force: boolean) => {
+    rememberTrigger();
     setConfirm({
       pid: e.pid,
       // 完整命令行（含脚本路径/参数）—— 毁灭性确认应让用户看清杀的到底是什么，
@@ -405,17 +217,16 @@ function App() {
 
   // 统一「动作成功 → 清除残留失败横幅；失败 → 设置本次文案」语义。集中一处，
   // 避免每个动作处理器各自手抄 setActionError(null) 而新增的漏写（评审发现：原先 4 处）。
-  // work 抛出的内容经 toErrorMsg 转成横幅文案；work 内吞掉的部分失败（批量清扫）
-  // 自行 throw 已组装好的消息。
+  // toErrorMsg 接受翻译器注入并在渲染时调用 —— 切换语言后横幅自动重译。
   const runAction = async (
     work: () => Promise<void>,
-    toErrorMsg: (err: unknown) => string,
+    toErrorMsg: (err: unknown, tr: Translator) => string,
   ) => {
     try {
       await work();
       setActionError(null);
     } catch (err) {
-      setActionError(toErrorMsg(err));
+      setActionError({ render: (tr) => toErrorMsg(err, tr) });
     }
   };
 
@@ -431,10 +242,13 @@ function App() {
           await new Promise((r) => setTimeout(r, 250));
           await freshScan();
         },
-        (err) => t("error.killFailed", { err: localizeKillError(String(err), t) }),
+        (err, tr) =>
+          tr("error.killFailed", { err: localizeKillError(String(err), tr) }),
       );
     } finally {
-      setKillingPid(null);
+      // 函数式更新（评审发现）：kill A 在飞行中用户又对 B 发起 kill 时，
+      // A 的收尾不能把 B 的 killing 标记清掉（B 的按钮会提前恢复可点）。
+      setKillingPid((cur) => (cur === pid ? null : cur));
     }
   };
 
@@ -455,7 +269,7 @@ function App() {
         // 计数要到下一轮才更新（评审发现）。kill 路径同理，早已用 freshScan。
         await freshScan();
       },
-      (err) => t("error.whitelistFailed", { err: String(err) }),
+      (err, tr) => tr("error.whitelistFailed", { err: String(err) }),
     );
   };
 
@@ -464,12 +278,13 @@ function App() {
       async () => {
         await openUrl(`http://localhost:${port}`);
       },
-      (err) => t("error.openBrowser", { err: String(err) }),
+      (err, tr) => tr("error.openBrowser", { err: String(err) }),
     );
   };
 
   const askKillAllSuspects = () => {
     if (sweepables.length === 0) return;
+    rememberTrigger();
     setBatchConfirm(sweepables);
   };
 
@@ -483,7 +298,7 @@ function App() {
     try {
       await runAction(
         async () => {
-          const failures: { pid: number; label: string; err: string }[] = [];
+          const failures: BatchFailure[] = [];
           for (const s of suspects) {
             try {
               await invoke("kill_process", {
@@ -492,28 +307,30 @@ function App() {
                 startUnix: s.start_unix,
               });
             } catch (err) {
-              failures.push({
-                pid: s.pid,
-                label: s.app_label,
-                err: localizeKillError(String(err), t),
-              });
+              failures.push({ pid: s.pid, label: s.app_label, raw: String(err) });
             }
           }
           await new Promise((r) => setTimeout(r, 700));
           await freshScan(); // 等掉撞车的轮询再扫一次，结果必然包含 kill 之后的状态
-          // 部分失败：抛出已组装好的横幅文案，由 runAction 统一落地（成功则自动清横幅）
-          if (failures.length > 0) {
-            throw (
-              t("error.batchFailed", {
-                failed: failures.length,
+          // 部分失败：抛出结构化失败列表，由 toErrorMsg 在渲染时组装并本地化
+          if (failures.length > 0) throw failures;
+        },
+        (msg, tr) => {
+          if (Array.isArray(msg)) {
+            const fails = msg as BatchFailure[];
+            return (
+              tr("error.batchFailed", {
+                failed: fails.length,
                 total: suspects.length,
               }) +
               // 分隔符语言无关（评审发现：全角「；」会出现在英文界面）
-              failures.map((f) => `PID ${f.pid} ${f.label} (${f.err})`).join("; ")
+              fails
+                .map((f) => `PID ${f.pid} ${f.label} (${localizeKillError(f.raw, tr)})`)
+                .join("; ")
             );
           }
+          return String(msg);
         },
-        (msg) => String(msg),
       );
     } finally {
       setSweeping(false);
@@ -539,7 +356,6 @@ function App() {
       <header className="header">
         <div className="brand">
           <svg
-            className="brand-icon"
             viewBox="0 0 24 24"
             width="20"
             height="20"
@@ -573,6 +389,7 @@ function App() {
           <input
             type="text"
             placeholder={t("search.placeholder")}
+            aria-label={t("search.placeholder")}
             value={search}
             onChange={(e) => setSearch(e.target.value)}
             className="search"
@@ -582,6 +399,7 @@ function App() {
         <div className="filter-tabs">
           <button
             className={filter === "all" ? "active" : ""}
+            aria-pressed={filter === "all"}
             onClick={() => setFilter("all")}
           >
             {t("filter.all")}
@@ -589,6 +407,7 @@ function App() {
           </button>
           <button
             className={`${filter === "suspect" ? "active" : ""} ${suspectCount > 0 ? "has-suspects" : ""}`}
+            aria-pressed={filter === "suspect"}
             onClick={() => setFilter("suspect")}
           >
             {t("filter.suspect")}
@@ -596,6 +415,7 @@ function App() {
           </button>
           <button
             className={filter === "whitelist" ? "active" : ""}
+            aria-pressed={filter === "whitelist"}
             onClick={() => setFilter("whitelist")}
           >
             {t("filter.whitelist")}
@@ -629,9 +449,18 @@ function App() {
       {error && (
         <div
           className="error"
+          role="button"
+          tabIndex={0}
           onClick={() => {
             setActionError(null);
             setScanError(null);
+          }}
+          onKeyDown={(ev) => {
+            if (ev.key === "Enter" || ev.key === " ") {
+              ev.preventDefault();
+              setActionError(null);
+              setScanError(null);
+            }
           }}
         >
           {error} {t("error.clickToClose")}
@@ -641,7 +470,9 @@ function App() {
       <main className="list">
         {entries.length === 0 ? (
           <div className="empty">{t("empty.none")}</div>
-        ) : filtered.length === 0 ? (
+        ) : filtered.length === 0 && !(filter === "suspect" && !search) ? (
+          // 「可疑」标签页下无搜索词且零嫌疑 ⇒ 不是「没有匹配项」而是「一切正常」，
+          // 落入下方分支由 allclear 呈现（评审发现）
           <div className="empty">{t("empty.noMatch")}</div>
         ) : (
           <>
@@ -719,7 +550,7 @@ function App() {
               <div className="modal-row">
                 <span className="modal-label">{t("batch.signal")}</span>
                 <span className="mono">
-                  {os === "macos" ? t("batch.signal.macos") : t("batch.signal.windows")}
+                  {os === "windows" ? t("batch.signal.windows") : t("batch.signal.macos")}
                 </span>
               </div>
               <div className="modal-row modal-row-top">
@@ -773,7 +604,7 @@ function App() {
             onKeyDown={trapTab}
           >
             <div className="modal-title" id="confirm-modal-title">
-              {confirm.force && os === "macos"
+              {confirm.force && os !== "windows"
                 ? t("confirm.title.force")
                 : t("confirm.title.kill")}
             </div>
@@ -819,7 +650,7 @@ function App() {
                 {t("confirm.cancel")}
               </button>
               <button className="btn-danger-solid" onClick={doKill}>
-                {confirm.force && os === "macos"
+                {confirm.force && os !== "windows"
                   ? t("confirm.force")
                   : t("confirm.kill")}
               </button>
@@ -836,7 +667,7 @@ function App() {
 type RowProps = {
   e: ProcessEntry;
   expanded: boolean;
-  os: Os;
+  os: Os | null;
   lang: Lang;
   killingPid: number | null;
   sweeping: boolean;
@@ -901,7 +732,8 @@ function Row({
   // e 引用 —— 每次 poll 都是新对象），值不变即命中缓存（评审 E5）。
   const known = useMemo(
     () => describeEntry(e, lang),
-    [e.app_label, e.command, e.full_command, e.exe_path, lang],
+    // eslint 缺席下的手工依赖收窄（评审知情）：describeEntry 只读这五个字段
+    [e.app_label, e.command, e.full_command, e.exe_path, e.app_category, lang],
   );
   const desc = known ?? t(DESC_KEYS[e.app_category] ?? "desc.unknown");
 
@@ -1040,7 +872,8 @@ function Row({
           className={`row-actions ${e.is_zombie_suspect ? "always" : ""}`}
           onClick={(ev) => ev.stopPropagation()}
         >
-          {os === "macos" ? (
+          {/* 终止按钮的布局是平台分叉的 —— get_platform 落定（os 非 null）后才渲染 */}
+          {os === "macos" && (
             <>
               <button
                 className={`btn-act btn-kill ${e.is_zombie_suspect ? "primary" : ""}`}
@@ -1059,7 +892,8 @@ function Row({
                 {t("kill.force.btn")}
               </button>
             </>
-          ) : (
+          )}
+          {os === "windows" && (
             <button
               className={`btn-act btn-kill ${e.is_zombie_suspect ? "primary" : ""}`}
               onClick={() => onAskKill(e, true)}
@@ -1084,7 +918,7 @@ function Row({
   );
 }
 
-function Detail({ e, os, id }: { e: ProcessEntry; os: Os; id: string }) {
+function Detail({ e, os, id }: { e: ProcessEntry; os: Os | null; id: string }) {
   const { t } = useI18n();
 
   // 链末节点用主名（app_label 可能带 " · node" 次级说明，链里不需要）
@@ -1124,6 +958,19 @@ function Detail({ e, os, id }: { e: ProcessEntry; os: Os; id: string }) {
           <span className="detail-dim">
             {t("detail.parent")} {e.ppid}
           </span>
+          {/* user / tty 是「会话已死」等判定的可读佐证，契约字段不再只收不显（评审发现） */}
+          {e.user && (
+            <>
+              <span className="detail-sep">·</span>
+              <span className="detail-dim">{e.user}</span>
+            </>
+          )}
+          {e.tty && e.tty !== "??" && (
+            <>
+              <span className="detail-sep">·</span>
+              <span className="detail-dim">{e.tty}</span>
+            </>
+          )}
           {os === "macos" && e.ppid === 1 && (
             <span className="detail-note">{t("detail.parent.launchdNote")}</span>
           )}

@@ -1,0 +1,18 @@
+# 三个生态的依赖更新提醒。github-actions 生态尤其关键：workflow 里的第三方
+# action 全部钉了 commit SHA（供应链加固），没有 Dependabot 就没人提醒升级。
+version: 2
+updates:
+  - package-ecosystem: github-actions
+    directory: /
+    schedule:
+      interval: weekly
+
+  - package-ecosystem: npm
+    directory: /
+    schedule:
+      interval: monthly
+
+  - package-ecosystem: cargo
+    directory: /src-tauri
+    schedule:
+      interval: monthly

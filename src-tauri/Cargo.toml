@@ -9,7 +9,9 @@ edition = "2021"
 
 [lib]
 name = "portreaper_lib"
-crate-type = ["staticlib", "cdylib", "rlib"]
+# 桌面端只需 rlib（main.rs 静态链接）。staticlib/cdylib 是 Tauri 移动端脚手架
+# 残留 —— 无移动端计划，留着只会拖慢链接、膨胀 target（评审发现）。
+crate-type = ["rlib"]
 
 [build-dependencies]
 tauri-build = { version = "2", features = [] }

@@ -219,12 +219,34 @@ pub(crate) fn system_bin(program: &str) -> &str {
 }
 
 fn cmd_output(program: &str, args: &[&str]) -> Option<String> {
-    let output = Command::new(system_bin(program))
+    let output = match Command::new(system_bin(program))
         .args(args)
         .env("LANG", "en_US.UTF-8")
         .env("LC_ALL", "en_US.UTF-8")
         .output()
-        .ok()?;
+    {
+        Ok(o) => o,
+        Err(e) => {
+            // 采集层失败不能静默退化为空输出（与 windows.rs 的留痕对齐）：
+            // ps 失败 ⇒ 表格凭空清空、launchctl 失败 ⇒ 托管豁免失效，
+            // 没有留痕时用户与开发者都拿不到任何线索（评审发现）。
+            eprintln!("{program} {args:?} failed to spawn: {e}; scan may be degraded");
+            return None;
+        }
+    };
+    // 留痕但不丢弃 stdout：lsof 在「零结果」与「-p 列表中个别 PID 已消失」时
+    // 都返回非零退出码，但 stdout 仍是可用的（部分）结果 —— 按非零整体丢弃
+    // 会把其余监听者的 cwd 一并清掉。只在 stderr 有实际内容时记录。
+    if !output.status.success() {
+        let stderr = String::from_utf8_lossy(&output.stderr);
+        let stderr = stderr.trim();
+        if !stderr.is_empty() {
+            eprintln!(
+                "{program} {args:?} exited with {}: {stderr}; scan may be degraded",
+                output.status
+            );
+        }
+    }
     Some(String::from_utf8_lossy(&output.stdout).into_owned())
 }
 
@@ -244,7 +266,7 @@ pub(crate) fn collect() -> Collected {
             &[
                 "-A",
                 "-o",
-                "pid=,ppid=,state=,tty=,etime=,pcpu=,rss=,command=",
+                "pid=,ppid=,state=,tty=,etime=,pcpu=,rss=,user=,command=",
             ],
         )
         .unwrap_or_default(),
@@ -281,6 +303,8 @@ fn parse_cwd(text: &str) -> HashMap<u32, String> {
     let mut cur: Option<u32> = None;
     for line in text.lines() {
         if let Some(rest) = line.strip_prefix('p') {
+            // parse 失败必须清空而非保留旧值：否则后续 n 行会归到上一个 PID
+            // 名下（cwd 张冠李戴）。实践中 p 行恒为数字，守的是解析器底线。
             cur = rest.parse().ok();
         } else if let Some(path) = line.strip_prefix('n') {
             if let Some(pid) = cur {
@@ -309,8 +333,11 @@ fn parse_lsof(text: &str) -> Vec<Listener> {
         };
         match tag {
             b'p' => {
-                if let Ok(pid) = rest.parse::<u32>() {
-                    current_pid = Some(pid);
+                // parse 失败清空而非保留旧值：否则后续 c/L/n 行会归到上一个
+                // 进程名下（端口/用户张冠李戴）。实践中 p 行恒为数字，
+                // 守的是「解析器不信任输入」底线（与多字节防御同标准）。
+                current_pid = rest.parse::<u32>().ok();
+                if let Some(pid) = current_pid {
                     by_pid.entry(pid).or_insert(Listener {
                         pid,
                         command: String::new(),
@@ -408,6 +435,9 @@ fn parse_ps(text: &str, comm_map: &HashMap<u32, String>, now: u64) -> HashMap<u3
         let elapsed_secs = parse_etime(iter.next().unwrap_or("0"));
         let cpu_percent: f32 = iter.next().and_then(|s| s.parse().ok()).unwrap_or(0.0);
         let rss_kb: u64 = iter.next().and_then(|s| s.parse().ok()).unwrap_or(0);
+        // macOS 账户短名不允许空格，单 token 安全；监听者仍优先用 lsof L 字段，
+        // 这一列主要补齐「无端口孤儿」行的 user（此前恒空，评审发现）。
+        let user = iter.next().unwrap_or("").to_string();
         let full_command: String = iter.collect::<Vec<_>>().join(" ");
 
         // exe 权威来源：comm（含空格完整）；退回命令行首 token
@@ -425,7 +455,7 @@ fn parse_ps(text: &str, comm_map: &HashMap<u32, String>, now: u64) -> HashMap<u3
                 ppid,
                 exe_path,
                 full_command,
-                user: String::new(), // 监听者的 user 来自 lsof L 字段
+                user,
                 start_unix: Some(now.saturating_sub(elapsed_secs)),
                 elapsed_secs,
                 cpu_percent,
@@ -517,6 +547,27 @@ mod tests {
         assert_eq!(ls[0].ports, vec![5173]);
     }
 
+    /// 回归（评审发现）：p 行解析失败必须清空 current_pid —— 否则其后的
+    /// c/L/n 行会归到上一个进程名下（端口/用户张冠李戴）。
+    #[test]
+    fn lsof_bad_pid_line_does_not_pollute_previous_process() {
+        let text = "p123\ncnode\nn*:5173\npGARBAGE\ncpostgres\nn127.0.0.1:5432\n";
+        let ls = parse_lsof(text);
+        assert_eq!(ls.len(), 1, "坏 p 行之后的字段必须被丢弃");
+        assert_eq!(ls[0].pid, 123);
+        assert_eq!(ls[0].command, "node", "不得被后续 c 行覆盖");
+        assert_eq!(ls[0].ports, vec![5173], "不得吸入后续 n 行端口");
+    }
+
+    #[test]
+    fn cwd_parse_and_bad_pid_containment() {
+        let text = "p100\nfcwd\nn/Users/x/proj\npBAD\nn/should/be/dropped\np200\nfcwd\nn/srv/app\n";
+        let map = parse_cwd(text);
+        assert_eq!(map.len(), 2);
+        assert_eq!(map.get(&100).unwrap(), "/Users/x/proj");
+        assert_eq!(map.get(&200).unwrap(), "/srv/app");
+    }
+
     /// 生产真实形态的 ps 行（无 sess 列；state 的 's' 标志 = 会话首进程，
     /// 与真机 `ps -ax -o stat=,tty=` 输出一致）。
     #[test]
@@ -526,17 +577,24 @@ mod tests {
             200u32,
             "/Applications/Visual Studio Code.app/Contents/MacOS/Electron".to_string(),
         );
-        // pid ppid state tty etime pcpu rss command...
+        // pid ppid state tty etime pcpu rss user command...
         let text = "\
-  100     1 Ss   ??       01:00:00  0.0   1024 /opt/homebrew/opt/postgresql@16/bin/postgres -D /opt/homebrew/var
-  200   150 S    ttys003  00:10:00  1.5  20480 /Applications/Visual Studio Code.app/Contents/MacOS/Electron --type=utility
-  300   200 S+   ttys007  00:05:00  0.2   5120 node /Users/x/proj/node_modules/.bin/vite
+  100     1 Ss   ??       01:00:00  0.0   1024 _postgres /opt/homebrew/opt/postgresql@16/bin/postgres -D /opt/homebrew/var
+  200   150 S    ttys003  00:10:00  1.5  20480 fhf /Applications/Visual Studio Code.app/Contents/MacOS/Electron --type=utility
+  300   200 S+   ttys007  00:05:00  0.2   5120 fhf node /Users/x/proj/node_modules/.bin/vite
 ";
         let procs = parse_ps(text, &comm, 1_000_000);
         let pg = procs.get(&100).unwrap();
         assert_eq!(pg.ppid, 1);
         assert_eq!(pg.elapsed_secs, 3600);
         assert_eq!(pg.start_unix, Some(1_000_000 - 3600));
+        // user 列补齐无端口孤儿行（监听者仍优先 lsof L 字段）
+        assert_eq!(pg.user, "_postgres");
+        assert_eq!(procs.get(&300).unwrap().user, "fhf");
+        assert_eq!(
+            procs.get(&300).unwrap().full_command,
+            "node /Users/x/proj/node_modules/.bin/vite"
+        );
         // postgres 在 ?? 上：tty 信号永远中性
         assert!(!pg.tty_orphaned);
         // comm 修复空格路径
@@ -556,9 +614,9 @@ mod tests {
     fn ps_healthy_terminal_never_tty_orphaned() {
         let comm = HashMap::new();
         let text = "\
-  500     1 Ss   ttys003  01:00:00  0.0   1024 -zsh
-  501   500 S+   ttys003  00:30:00  0.1   2048 node server.js
-  600     1 Ss+  ttys000  02:00:00  0.0   1024 -zsh
+  500     1 Ss   ttys003  01:00:00  0.0   1024 fhf -zsh
+  501   500 S+   ttys003  00:30:00  0.1   2048 fhf node server.js
+  600     1 Ss+  ttys000  02:00:00  0.0   1024 fhf -zsh
 ";
         let procs = parse_ps(text, &comm, 1_000_000);
         assert!(!procs.get(&500).unwrap().tty_orphaned);

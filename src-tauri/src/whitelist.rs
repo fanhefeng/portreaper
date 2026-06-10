@@ -72,6 +72,7 @@ pub fn remove(key: &str) -> Result<(), String> {
 }
 
 /// 原子持久化：写同目录 .tmp 再 rename（同卷 rename 在 macOS/Windows 均为原子替换）。
+/// 刻意不 fsync：断电窗口内最坏丢一次收藏修改（可重建数据），换每次星标零卡顿。
 fn save_locked(store: &WhitelistStore) -> Result<(), String> {
     let path_guard = WHITELIST_PATH.lock().unwrap();
     let Some(path) = path_guard.as_ref() else {

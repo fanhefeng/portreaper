@@ -67,6 +67,8 @@ A process is judged by **signals** (reasons it looks orphaned), **exemptions** (
 | Orphaned TTY session | Standard install paths (`/Applications`, `Program Files`, ...) |
 | Defunct (`Z` / zombie state) | Managed by `pm2` |
 | Dev-server keyword (`vite`, `node`, `cargo run`, ...) — extra reason, not required | |
+| **Port-less dev orphan** — a dev process holding *no* port (e.g. an orphaned `electron-vite` Electron main) is still surfaced, with a "no port" badge | |
+| **Duplicate dev server** — two instances of the same project (same command / same cwd + script identity); shown as `Possible`, never swept | |
 
 Processes started (or reparented) less than 10 seconds ago are **downgraded to Possible** — still flagged with a reason chip, but never swept.
 
@@ -113,7 +115,7 @@ src-tauri/src/
                       mod / model / classify / identify / macos / windows
   platform.rs         cross-platform kill with PID-reuse identity check
   whitelist.rs        JSON-persisted whitelist (收藏)
-scripts/              release tooling (bump-version)
+scripts/              release tooling (bump-version) + CI guards (reason parity, asset-name parity)
 .github/workflows/    CI + release pipelines
 website/              GitHub Pages download site
 docs/                 maintainer & QA docs
@@ -190,13 +192,15 @@ Portreaper **不是**通用的端口查看器。它常驻托盘，每隔两秒�
 | 孤儿 TTY 会话 | 标准安装路径（`/Applications`、`Program Files` 等） |
 | 已死（`Z` / defunct 状态） | 由 `pm2` 托管 |
 | 命中 dev-server 关键字（`vite`、`node`、`cargo run` 等）—— 额外理由，非必需 | |
+| **无端口的 dev 孤儿** —— 不占任何端口的孤儿 dev 进程（如 electron-vite 残留的 Electron 主进程）也会被检出，并带「无端口」徽标 | |
+| **同项目重复 dev server** —— 同一项目的两个实例（命令相同 / cwd + 脚本身份相同）；只标为「可能」，永不清扫 | |
 
 启动（或被收养）不足 10 秒的进程会被**降级为「可能」**——仍会标注原因，但永远不会进入清扫。
 
 | 置信度 | 含义 | 计入一键清扫？ |
 | --- | --- | --- |
 | **确认（confirmed）** | 已 defunct，或在非标准路径下的明确孤儿 | ✅ |
-| **很可能（likely）** | 强孤儿信号 + 开发服务器特征 | ✅ |
+| **疑似（likely）** | 强孤儿信号 + 开发服务器特征 | ✅ |
 | **可能（possible）** | 仅一个较弱的信号；会显示但谨慎对待 | ❌ |
 
 **一键清扫**只会终止 `confirmed` + `likely`。收藏（白名单）中的进程会被豁免于疑似判断、托盘计数和清扫 —— 它仍会出现在列表中，并带一个 ★ 标记。
@@ -236,7 +240,7 @@ src-tauri/src/
                       mod / model / classify / identify / macos / windows
   platform.rs         跨平台 kill，带 PID 复用身份校验
   whitelist.rs        JSON 持久化的收藏（白名单）
-scripts/              发布工具（版本号 bump）
+scripts/              发布工具（版本号 bump）+ CI 守卫（reason parity / 资产名一致性）
 .github/workflows/    CI 与发布流水线
 website/              GitHub Pages 下载站
 docs/                 维护者与 QA 文档

@@ -1,0 +1,8 @@
+# 统一 LF（评审发现：bump-version.mjs 等脚本按行解析 Cargo.lock，
+# Windows 上 autocrlf=true 的 CRLF 检出会破坏逐行正则；钉 LF 一劳永逸）。
+* text=auto eol=lf
+
+# 二进制资产不做行尾转换
+*.png binary
+*.icns binary
+*.ico binary

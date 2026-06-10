@@ -1,16 +1,26 @@
 use crate::{platform, scanner, whitelist};
 
+/// async + spawn_blocking（评审发现）：Tauri 2 的非 async 命令在主线程执行，
+/// scan() 每 2s shell 出 lsof + 两次 ps + launchctl（几十到几百毫秒）会周期性
+/// 阻塞事件循环（托盘/窗口事件卡顿）。挪到阻塞线程池，主线程零占用。
 #[tauri::command]
-pub fn scan_ports() -> Vec<scanner::ProcessEntry> {
-    let wl = whitelist::get_all();
-    scanner::scan(&wl)
+pub async fn scan_ports() -> Result<Vec<scanner::ProcessEntry>, String> {
+    tauri::async_runtime::spawn_blocking(|| {
+        let wl = whitelist::get_all();
+        scanner::scan(&wl)
+    })
+    .await
+    .map_err(|e| format!("scan task failed: {e}"))
 }
 
 /// 终止进程。`start_unix` 是扫描时捕获的创建时间 —— kill 前重新核对，
 /// 防止 scan 与点击之间 PID 被复用导致误杀（Windows 复用尤其激进）。
+/// async 理由同 scan_ports（macOS 分支 shell 出 ps + kill 两个子进程）。
 #[tauri::command]
-pub fn kill_process(pid: u32, force: bool, start_unix: Option<u64>) -> Result<(), String> {
-    platform::kill(pid, force, start_unix)
+pub async fn kill_process(pid: u32, force: bool, start_unix: Option<u64>) -> Result<(), String> {
+    tauri::async_runtime::spawn_blocking(move || platform::kill(pid, force, start_unix))
+        .await
+        .map_err(|e| format!("kill task failed: {e}"))?
 }
 
 /// 前端平台感知（驱动平台分叉的文案与按钮布局），不引入额外 JS 插件。
@@ -57,7 +67,6 @@ pub fn update_tray_title(
             };
             tray.set_title(Some(title.as_str()))
                 .map_err(|e| e.to_string())?;
-            let _ = app; // app 仅 Windows 分支读取语言状态
         }
         #[cfg(windows)]
         {

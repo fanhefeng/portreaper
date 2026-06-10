@@ -55,7 +55,7 @@ pub enum Confidence {
     Confirmed,
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug)]
 pub(crate) struct Verdict {
     pub is_suspect: bool,
     pub confidence: Confidence,
@@ -74,7 +74,7 @@ impl Verdict {
 
 /// dev-server 长关键字：足够独特，整行小写子串匹配（双平台共用）——
 /// 出现在脚本路径片段里（node_modules/vite/bin/vite.js）同样是真实 dev 证据。
-pub(crate) const DEV_SERVER_SUBSTRINGS: &[&str] = &[
+const DEV_SERVER_SUBSTRINGS: &[&str] = &[
     "vite",
     "remix",
     "nuxt",
@@ -127,7 +127,7 @@ pub(crate) const DEV_SERVER_SUBSTRINGS: &[&str] = &[
 /// java.exe 命中；redis-server、javascript-engine、guardrails 不命中。
 /// 误伤面收紧的代价（npx serve 等包装丢失 token）由 dev_category 兜底 ——
 /// classify 的 dev_like = keyword || category 本就是双保险。
-pub(crate) const DEV_SERVER_TOKENS: &[&str] = &[
+const DEV_SERVER_TOKENS: &[&str] = &[
     "node", "next", "nest", "python", "ruby", "rails", "puma", "unicorn", "deno", "bun", "bunx",
     "tsx", "java", "php", "serve", "air",
 ];

@@ -1,6 +1,7 @@
 /* Portreaper site — i18n dictionary. zh default, en toggle. */
 window.I18N = {
   zh: {
+    "meta.title": "Portreaper · 收割端口上的僵尸进程",
     "meta.description":
       "Portreaper —— 一个 macOS / Windows 桌面托盘工具，找出占用 TCP 端口的进程，精准识别并清扫孤儿 dev-server 僵尸进程。",
     "a11y.skip": "跳到主要内容",
@@ -79,6 +80,7 @@ window.I18N = {
   },
 
   en: {
+    "meta.title": "Portreaper · Reap zombie processes off your ports",
     "meta.description":
       "Portreaper — a macOS / Windows desktop tray app that finds processes holding TCP ports and precisely identifies and reaps orphaned dev-server zombies.",
     "a11y.skip": "Skip to main content",

@@ -62,7 +62,7 @@ fn is_pm2_container(cmd: &str) -> bool {
 /// 所有 node 监听者一并豁免、令真孤儿永久隐身（评审发现）。裸名时回退到
 /// 完整命令行（含脚本路径，足以区分不同 dev server）；命令行也空时退回 lsof 短名。
 ///
-/// ⚠️ 前端 App.tsx `whitelistKey()` 是本函数的逐字镜像，二者必须同步修改。
+/// ⚠️ 前端 src/model.ts `whitelistKey()` 是本函数的逐字镜像，二者必须同步修改。
 pub(crate) fn whitelist_key(exe_path: &str, full_command: &str, command: &str) -> String {
     if exe_path.contains('/') || exe_path.contains('\\') {
         exe_path.to_string()
@@ -79,7 +79,7 @@ pub(crate) fn whitelist_key(exe_path: &str, full_command: &str, command: &str) -
 /// 会在升级后重新变嫌疑、可能被「一键清扫」误杀（评审发现：无迁移的静默数据损失）。
 /// 故 is_whitelisted 同时核对新旧键。旧裸键沿用 v0.4.0 的塌缩语义（命中全机同名
 /// 监听者）—— 对一个 kill 工具，过度信任是安全方向，且本就是该用户升级前的行为；
-/// 用户下次取消/重加该行即落为干净的新键。前端 App.tsx legacyWhitelistKey 是镜像。
+/// 用户下次取消/重加该行即落为干净的新键。前端 src/model.ts legacyWhitelistKey 是镜像。
 pub(crate) fn legacy_whitelist_key(exe_path: &str, command: &str) -> String {
     if !exe_path.is_empty() {
         exe_path.to_string()
@@ -119,6 +119,7 @@ pub fn scan(whitelist: &[String]) -> Vec<ProcessEntry> {
             l.ports.clone(),
             l.command.clone(),
             user,
+            None,
         );
         entries.push(entry);
     }
@@ -138,13 +139,16 @@ pub fn scan(whitelist: &[String]) -> Vec<ProcessEntry> {
         let command = basename(&meta.exe_path).to_string();
         // 廉价预闸（不回溯父链）：dev-like 是孤儿纳入的硬门槛，非 dev 进程直接跳过，
         // 避免对全进程表（数百个）逐个做 build_parent_chain 的父链回溯。
+        // identify_app 结果传入 build_entry 复用，避免同一行算两遍路径阶梯；
+        // full_command 为空时 build_entry 会以 command 兜底重算，此处不传以保等价。
+        let identity = platform_impl::identify_app(&meta.full_command, &command, &meta.exe_path);
         let dev_like = is_dev_server(&meta.full_command)
             || is_dev_server(&command)
-            || platform_impl::identify_app(&meta.full_command, &command, &meta.exe_path).1
-                == "dev-script";
+            || identity.1 == "dev-script";
         if !dev_like {
             continue;
         }
+        let reusable_identity = (!meta.full_command.is_empty()).then_some(identity);
         let (entry, raw_suspect) = build_entry(
             pid,
             meta,
@@ -154,6 +158,7 @@ pub fn scan(whitelist: &[String]) -> Vec<ProcessEntry> {
             Vec::new(),
             command,
             meta.user.clone(),
+            reusable_identity,
         );
         // 只纳入「判为嫌疑」的孤儿。白名单命中的孤儿（raw_suspect 为真但
         // is_zombie_suspect 已被扣为假）仍纳入，以便用户在列表里取消收藏；
@@ -178,8 +183,9 @@ pub fn scan(whitelist: &[String]) -> Vec<ProcessEntry> {
                     .unwrap_or(0)
                     .cmp(&b.ports.first().copied().unwrap_or(0)),
             )
-            // 端口相同（尤其无端口孤儿端口键全为 0）时按 pid 兜底，确保跨 poll 顺序确定 ——
-            // 否则孤儿遍历 HashMap 的随机序会渗入行序与 duplicate_of peer 选取（评审 E1）。
+            // 端口相同（尤其无端口孤儿端口键全为 0）时按 pid 兜底，确保跨 poll 行序确定 ——
+            // 否则孤儿遍历 HashMap 的随机序会渗入行序（评审 E1）。duplicate_of 的 peer
+            // 选取由 mark_duplicates 内部的最小 PID 规则独立确定化，不依赖此排序。
             .then(a.pid.cmp(&b.pid))
     });
 
@@ -189,6 +195,9 @@ pub fn scan(whitelist: &[String]) -> Vec<ProcessEntry> {
 /// 从进程元数据构造一行 entry 及其判定 —— 监听者与孤儿进程共用，确保两条路径
 /// 的孤儿判定零分叉。监听者传 lsof 的 ports / command（短名）/ user；孤儿进程
 /// 传空 ports、exe basename 作命令、ProcMeta 的 user。
+///
+/// `identity`：调用方已算好的 identify_app 结果（孤儿预闸顺手产出，传入复用）；
+/// None 时在此处计算（监听者路径）。
 ///
 /// 返回 `(entry, raw_suspect)`：raw_suspect 是**未扣白名单**的 verdict.is_suspect
 /// —— 孤儿循环据此决定是否纳入，使白名单命中的孤儿仍能显示以便取消收藏。
@@ -202,6 +211,7 @@ fn build_entry(
     mut ports: Vec<u16>,
     command: String,
     user: String,
+    identity: Option<(String, String)>,
 ) -> (ProcessEntry, bool) {
     let ppid = meta.ppid;
     let exe_path = meta.exe_path.clone();
@@ -211,7 +221,8 @@ fn build_entry(
         meta.full_command.clone()
     };
 
-    let (app_label, app_category) = platform_impl::identify_app(&full_command, &command, &exe_path);
+    let (app_label, app_category) =
+        identity.unwrap_or_else(|| platform_impl::identify_app(&full_command, &command, &exe_path));
 
     let (parent_chain, chain_flags) = build_parent_chain(pid, procs);
     let launcher_label = parent_chain
@@ -244,7 +255,7 @@ fn build_entry(
     let verdict = classify(&snapshot);
     let raw_suspect = verdict.is_suspect;
 
-    // 白名单 key（前端 App.tsx handleToggleWhitelist 必须用同一优先级）。
+    // 白名单 key（前端 src/model.ts whitelistKey 必须用同一优先级）。
     // 同时核对 v0.4.0 旧键以兼容升级（见 legacy_whitelist_key）。
     let wl_key = whitelist_key(&exe_path, &full_command, &command);
     let legacy_key = legacy_whitelist_key(&exe_path, &command);
@@ -298,14 +309,17 @@ fn build_entry(
 ///     父是 shell 或已死（合成 init 根）则照常比对 —— 同一终端重复跑两次、
 ///     双双被收养的孤儿对，正是要抓的场景（评审发现）；
 ///   - 共同祖父且祖父是存活的非 shell 编排器（turbo 经 shell 包装的堂兄弟）。
+///     编排器证据**排除用户可见 App**（is_chain_stopper）：同一个 Terminal/iTerm
+///     的两个 tab 各起一个 vite，共同祖父是终端 App 进程 —— 终端不是编排器，
+///     tab 是独立会话，这正是要抓的重复（评审发现：终端祖父曾被误当 turbo 豁免）。
 ///
 /// 不变量：重复信号只到 Possible，永不入清扫 —— 机器无法判断用户正在用哪个实例。
 fn mark_duplicates(entries: &mut [ProcessEntry], cwds: &HashMap<u32, String>) {
     fn eligible(e: &ProcessEntry) -> bool {
         e.app_category == "dev-script"
             && !e.is_whitelisted
-            // 被硬豁免的条目（launchd/brew/pm2/标准路径）不参与
-            && !(!e.is_zombie_suspect && !e.zombie_reasons.is_empty())
+            // 被硬豁免的条目不参与：非嫌疑但带豁免原因（launchd/brew/pm2/标准路径）
+            && (e.is_zombie_suspect || e.zombie_reasons.is_empty())
     }
     /// 脚本/模块身份：vite.js / http.server（b 档比对的一半）
     fn script_identity(e: &ProcessEntry) -> Option<String> {
@@ -320,10 +334,22 @@ fn mark_duplicates(entries: &mut [ProcessEntry], cwds: &HashMap<u32, String>) {
             script_identity(e)?,
         ))
     }
-    fn chain_node(e: &ProcessEntry, depth: usize) -> Option<(u32, bool)> {
-        e.parent_chain
-            .get(depth)
-            .map(|p| (p.pid, platform_impl::is_shell(&p.exe_path)))
+    /// (pid, is_shell, is_user_visible_app)：后两者都排除「编排器」资格 ——
+    /// shell 只是包装、用户可见 App（终端/IDE）不是编排器。
+    fn chain_node(e: &ProcessEntry, depth: usize) -> Option<(u32, bool, bool)> {
+        e.parent_chain.get(depth).map(|p| {
+            (
+                p.pid,
+                platform_impl::is_shell(&p.exe_path),
+                platform_impl::is_chain_stopper(&p.exe_path, &p.category),
+            )
+        })
+    }
+    /// peer 选取确定化（评审 E1 补全）：mark_duplicates 跑在 HashMap 迭代序上，
+    /// ≥3 个重复实例时 get_or_insert 的「第一个匹配」会随轮询随机翻转，前端
+    /// 「与 PID X 重复」闪变 —— 恒取最小 PID peer，与遍历顺序无关。
+    fn assign_min(slot: &mut Option<u32>, pid: u32) {
+        *slot = Some(slot.map_or(pid, |cur| cur.min(pid)));
     }
 
     let n = entries.len();
@@ -349,21 +375,26 @@ fn mark_duplicates(entries: &mut [ProcessEntry], cwds: &HashMap<u32, String>) {
                     continue;
                 }
             }
-            // 真实存活的同一非 shell 父 ⇒ 编排器拉起的有意多实例；
-            // 父是 shell / 已死（合成根 pid≤1）/ 链缺失 ⇒ 照常比对。
+            // 真实存活的同一非 shell、非用户可见 App 父 ⇒ 编排器拉起的有意多实例；
+            // 父是 shell / 用户可见 App / 已死（合成根 pid≤1）/ 链缺失 ⇒ 照常比对。
             // 两侧链都须独立印证该父（评审发现：只验 a 一侧、默认 b 链一致 ——
             // b 链缺失/形态不同时会被静默当作同编排器而漏标；收紧到双侧印证）。
             if a.ppid == b.ppid {
-                if let (Some((pa, pa_sh)), Some((pb, _))) = (chain_node(a, 0), chain_node(b, 0)) {
-                    if pa == a.ppid && pb == b.ppid && pa > 1 && !pa_sh {
+                if let (Some((pa, pa_sh, pa_app)), Some((pb, _, _))) =
+                    (chain_node(a, 0), chain_node(b, 0))
+                {
+                    if pa == a.ppid && pb == b.ppid && pa > 1 && !pa_sh && !pa_app {
                         continue;
                     }
                 }
             }
             // 共同祖父的堂兄弟：祖父是存活的非 shell 编排器（turbo 经 shell 包装）。
-            // 两侧 is_shell 都须为假（pid 相等时本是同进程、冗余但语义自证）。
-            if let (Some((ga, ga_sh)), Some((gb, gb_sh))) = (chain_node(a, 1), chain_node(b, 1)) {
-                if ga == gb && ga > 1 && !ga_sh && !gb_sh {
+            // 两侧 is_shell 都须为假（pid 相等时本是同进程、冗余但语义自证）；
+            // 祖父是用户可见 App（同一终端两个 tab）不构成编排证据，照常比对。
+            if let (Some((ga, ga_sh, ga_app)), Some((gb, gb_sh, _))) =
+                (chain_node(a, 1), chain_node(b, 1))
+            {
+                if ga == gb && ga > 1 && !ga_sh && !gb_sh && !ga_app {
                     continue;
                 }
             }
@@ -379,8 +410,8 @@ fn mark_duplicates(entries: &mut [ProcessEntry], cwds: &HashMap<u32, String>) {
                     (Some(x), Some(y)) if x == y
                 );
             if same_cmd || same_project || same_cwd_identity {
-                peer[i].get_or_insert(b.pid);
-                peer[j].get_or_insert(a.pid);
+                assign_min(&mut peer[i], b.pid);
+                assign_min(&mut peer[j], a.pid);
             }
         }
     }
@@ -784,6 +815,56 @@ mod dup_tests {
     }
 
     #[test]
+    fn terminal_app_grandparent_does_not_exempt() {
+        // 评审发现：同一个 Terminal.app 的两个 tab 各直接 exec 了一遍 vite ——
+        // 共同祖父是终端 App 进程（存活、非 shell），但终端不是编排器，
+        // tab 是独立会话，必须照常标重复。用户可见 App（is_chain_stopper）
+        // 不构成编排证据。category 用 installed-app 使双平台判定一致。
+        fn term_parent(pid: u32) -> ParentRef {
+            ParentRef {
+                pid,
+                label: "iTerm2".into(),
+                category: "installed-app".into(),
+                exe_path: "/Applications/iTerm.app/Contents/MacOS/iTerm2".into(),
+            }
+        }
+        let mut a = entry(100, 501, &[5173], VITE_A);
+        a.parent_chain = vec![parent(501, "/bin/zsh"), term_parent(900)];
+        let mut b = entry(200, 502, &[5174], VITE_A);
+        b.parent_chain = vec![parent(502, "/bin/zsh"), term_parent(900)];
+        let mut es = vec![a, b];
+        mark_duplicates(&mut es, &no_cwd());
+        assert!(
+            es[0].is_zombie_suspect && es[1].is_zombie_suspect,
+            "终端 App 祖父不得被当作编排器豁免"
+        );
+        assert_eq!(es[0].confidence, Confidence::Possible);
+    }
+
+    #[test]
+    fn peer_selection_deterministic_with_three_instances() {
+        // 评审 E1 补全：≥3 个重复实例时 peer 必须与遍历顺序无关 ——
+        // 恒为「除自己外的最小 PID」。两种入参顺序断言同一结果。
+        for order in [[300u32, 100, 200], [100, 200, 300]] {
+            let mut es: Vec<ProcessEntry> = order
+                .iter()
+                .map(|&pid| entry(pid, pid + 1000, &[(pid / 100) as u16 + 3000], VITE_A))
+                .collect();
+            mark_duplicates(&mut es, &no_cwd());
+            for e in &es {
+                let want = if e.pid == 100 { 200 } else { 100 };
+                assert_eq!(
+                    e.duplicate_of,
+                    Some(want),
+                    "pid {} 的 peer 应恒为最小对端（入参顺序 {:?}）",
+                    e.pid,
+                    order
+                );
+            }
+        }
+    }
+
+    #[test]
     fn shared_port_workers_not_flagged() {
         // SO_REUSEPORT 多 worker 共享端口
         let a = entry(100, 10, &[3000], VITE_A);
@@ -899,6 +980,7 @@ mod orphan_tests {
             Vec::new(),
             "Electron".to_string(),
             String::new(),
+            None,
         );
         assert!(raw_suspect, "孤儿 Electron 必须判为嫌疑");
         assert!(entry.is_zombie_suspect);
@@ -927,6 +1009,7 @@ mod orphan_tests {
             Vec::new(),
             "Electron".to_string(),
             String::new(),
+            None,
         );
         assert!(!raw_suspect, "已安装应用即便 ppid=1 也不是孤儿嫌疑");
         assert!(!entry.is_zombie_suspect);
@@ -952,6 +1035,7 @@ mod orphan_tests {
             Vec::new(),
             "Electron".to_string(),
             String::new(),
+            None,
         );
         assert!(raw_suspect, "白名单孤儿仍需纳入列表");
         assert!(entry.is_whitelisted);

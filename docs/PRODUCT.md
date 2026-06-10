@@ -8,7 +8,11 @@ Portreaper is a macOS + Windows tray utility that finds processes listening on
 TCP ports and tells the developer **which ones are orphaned dev-server
 "zombies"** (a `vite` / `node` / `cargo run` whose launching shell died), so
 they can be killed with confidence. It is not a generic port viewer: the
-verdict is the product.
+verdict is the product. Two further detections round out the core: **orphaned
+dev processes that hold no port at all** (an `electron-vite` Electron main left
+behind when its parent dies — invisible to a port scan) and **duplicate dev
+servers of the same project** (a forgotten earlier launch holding the port
+hostage; flagged `Possible`, never swept).
 
 ## Users
 

@@ -86,8 +86,34 @@ fn normalize_prefix(p: &str) -> String {
 }
 
 /// 比较用归一化（不加尾斜杠）。
-pub(crate) fn normalize_path(p: &str) -> String {
+fn normalize_path(p: &str) -> String {
     p.to_lowercase().replace('/', "\\")
+}
+
+/// 失败留痕（评审发现）：release 构建是 GUI 子系统（`windows_subsystem = "windows"`，
+/// 无控制台），eprintln 写入虚空 —— 而 Windows 恰是无真机 QA、唯一靠用户报障
+/// 的平台。stderr 照写（dev 下可见），同时追加到 %TEMP%\portreaper.log；
+/// 超过 1 MiB 截断重写，防持续性故障刷满磁盘。
+fn log_failure(msg: &str) {
+    eprintln!("{msg}");
+    let path = std::env::temp_dir().join("portreaper.log");
+    let too_big = std::fs::metadata(&path)
+        .map(|m| m.len() > 1_000_000)
+        .unwrap_or(false);
+    let file = std::fs::OpenOptions::new()
+        .create(true)
+        .append(!too_big)
+        .write(too_big)
+        .truncate(too_big)
+        .open(&path);
+    if let Ok(mut f) = file {
+        use std::io::Write;
+        let ts = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map(|d| d.as_secs())
+            .unwrap_or(0);
+        let _ = writeln!(f, "[{ts}] {msg}");
+    }
 }
 
 fn paths() -> &'static KnownPaths {
@@ -374,7 +400,11 @@ fn sanitize_times(start: u64, run: u64) -> (Option<u64>, u64) {
 pub(crate) fn collect() -> Collected {
     let ports_by_pid = tcp_listeners();
 
-    let mut sys = system().lock().unwrap();
+    // 毒化恢复：scan 中途 panic 一次不应让后续每轮轮询永久 panic
+    //（前端表现为永远 ERR_SCAN_TIMEOUT）。System 只是缓存，半更新状态可安全续用。
+    let mut sys = system()
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner);
     // 必须用 _specifics + 显式 refresh_kind（评审发现的 Windows 核心失效）：便捷的
     // refresh_processes(All, true) 内部固定为 nothing().with_memory().with_cpu()
     // .with_disk_usage().with_exe(OnlyIfNotSet) —— 不含 cmd/cwd/user。Windows 上
@@ -536,10 +566,10 @@ fn tcp_listeners() -> HashMap<u32, Vec<u16>> {
                 if ret != NO_ERROR.0 {
                     // 无真机可调试的平台：失败必须留痕，否则表现为「端口列表
                     // 凭空变空」且无任何线索（评审发现，曾静默吞掉错误码）。
-                    eprintln!(
+                    log_failure(&format!(
                         "GetExtendedTcpTable(af={af}) failed with code {ret}; \
                          port list may be incomplete"
-                    );
+                    ));
                     break;
                 }
                 if af == u32::from(AF_INET.0) {
@@ -568,10 +598,10 @@ fn tcp_listeners() -> HashMap<u32, Vec<u16>> {
                 break;
             }
             if !settled {
-                eprintln!(
+                log_failure(&format!(
                     "GetExtendedTcpTable(af={af}) kept reporting ERROR_INSUFFICIENT_BUFFER \
                      after 4 retries; port list may be incomplete"
-                );
+                ));
             }
         }
     }

@@ -15,7 +15,9 @@ const zh = {
   "filter.whitelist": "收藏",
   "sweep.button": "一键清理",
   "sweep.sweeping": "清理中…",
-  "sweep.title": "批量终止「确认 + 很可能」级别的疑似僵尸（「存疑」不会被清扫）",
+  // 层级用词与行内 verdict.* 标签严格一致（确认僵尸/疑似僵尸/存疑）——
+  // 用户在弹窗里读到的层级名必须能在列表里找到（评审发现：曾写「很可能」）
+  "sweep.title": "批量终止「确认僵尸」与「疑似僵尸」级别（「存疑」不会被清扫）",
 
   // ---- sections ----
   // 注意三层词汇不撞车：标签页「可疑」› 分区「可疑进程」› 行内判定「确认僵尸/疑似僵尸/存疑」
@@ -161,7 +163,7 @@ const zh = {
   "batch.signal.windows": "TerminateProcess（强制终止）",
   "batch.procs": "进程",
   "batch.more": "… 还有 {n} 个",
-  "batch.scope.note": "仅清扫「确认」与「很可能」级别；「存疑」需逐个手动处理",
+  "batch.scope.note": "仅清扫「确认僵尸」与「疑似僵尸」级别；「存疑」需逐个手动处理",
   "batch.cancel": "取消",
   "batch.confirm": "全部终止",
 
@@ -192,7 +194,7 @@ const en: Record<I18nKey, string> = {
   "sweep.button": "Clean up",
   "sweep.sweeping": "Cleaning…",
   "sweep.title":
-    "Batch-terminate Confirmed + Likely suspects (Possible is never swept)",
+    "Batch-terminate 'Zombie' and 'Likely zombie' rows ('Possible' is never swept)",
 
   "section.suspects": "Suspects",
   "section.suspects.sub":
@@ -336,7 +338,7 @@ const en: Record<I18nKey, string> = {
   "batch.procs": "Processes",
   "batch.more": "… and {n} more",
   "batch.scope.note":
-    "Only Confirmed and Likely tiers are swept; handle Possible entries individually",
+    "Only 'Zombie' and 'Likely zombie' rows are swept; handle 'Possible' entries individually",
   "batch.cancel": "Cancel",
   "batch.confirm": "Terminate all",
 
@@ -375,6 +377,15 @@ function initialLang(): Lang {
 let current: Lang = initialLang();
 const listeners = new Set<() => void>();
 
+/** <html lang> 跟随界面语言（读屏发音 / 断词依赖它；index.html 的静态值只是占位） */
+function syncDocumentLang(lang: Lang) {
+  try {
+    document.documentElement.lang = lang === "zh" ? "zh-CN" : "en";
+  } catch {
+    /* 非 DOM 环境忽略 */
+  }
+}
+
 export function setLang(lang: Lang) {
   if (lang === current) return;
   current = lang;
@@ -383,6 +394,7 @@ export function setLang(lang: Lang) {
   } catch {
     /* 忽略持久化失败 */
   }
+  syncDocumentLang(lang);
   // 同步托盘菜单 / tooltip 语言（失败静默：托盘不可用不影响主界面）
   invoke("set_tray_language", { lang }).catch(() => {});
   listeners.forEach((fn) => fn());
@@ -422,5 +434,6 @@ export function useI18n() {
   return { t, lang, setLang };
 }
 
-// 应用启动时把系统检测到的语言同步给托盘（与前端保持一致）
+// 应用启动时把检测到的语言同步给托盘与 <html lang>（与前端保持一致）
+syncDocumentLang(current);
 invoke("set_tray_language", { lang: current }).catch(() => {});

@@ -131,7 +131,9 @@ export function findCargoLockVersion(raw) {
 
 function findCargoLockBlock(raw) {
   // Each entry is `[[package]]\nname = "..."\nversion = "..."\n...`.
-  const re = /\[\[package\]\]\n([\s\S]*?)(?=\n\[\[package\]\]|\n*$)/g;
+  // \r?\n：.gitattributes 已钉 LF，但 Windows 上 autocrlf=true 的旧检出
+  // 仍可能是 CRLF —— 容忍它，避免脚本在那种环境响亮失败（评审发现）。
+  const re = /\[\[package\]\]\r?\n([\s\S]*?)(?=\r?\n\[\[package\]\]|(?:\r?\n)*$)/g;
   let m;
   while ((m = re.exec(raw)) !== null) {
     const body = m[1];

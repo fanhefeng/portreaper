@@ -4,6 +4,13 @@ name: CI
 # Do NOT mark "CI / Check" as a *required* status check in branch protection —
 # a docs-only PR would wait forever for a status that never reports.
 # Keep CI advisory, or replace paths-ignore with an in-job path filter first.
+# website/** changes are NOT unchecked: pages.yml runs the website guards
+# (syntax + asset-name parity) before every deploy.
+#
+# All third-party actions are pinned to full commit SHAs (supply chain): the
+# release pipeline ships unsigned binaries via stable `latest` URLs, so a
+# hijacked action tag could inject code straight into user downloads.
+# Dependabot (.github/dependabot.yml) keeps the pins fresh.
 on:
   push:
     branches: [main]
@@ -25,38 +32,46 @@ jobs:
   check:
     name: Check (${{ matrix.os }})
     runs-on: ${{ matrix.os }}
+    timeout-minutes: 40
     strategy:
       fail-fast: false
       matrix:
         os: [macos-latest, windows-latest]
     steps:
       - name: Checkout
-        uses: actions/checkout@v6
+        uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6
 
       # pnpm/action-setup must run BEFORE setup-node so that `cache: pnpm` can
       # locate the pnpm binary. This repo has no `packageManager` field in
       # package.json, and pnpm-lock.yaml is lockfileVersion 9, so we pin pnpm 9.
       - name: Install pnpm
-        uses: pnpm/action-setup@v6
+        uses: pnpm/action-setup@0e279bb959325dab635dd2c09392533439d90093 # v6
         with:
           version: 9
 
       - name: Setup Node
-        uses: actions/setup-node@v6
+        uses: actions/setup-node@48b55a011bda9f5d6aeb4c2d9c7362e8dae4041e # v6
         with:
           node-version-file: .node-version
           cache: pnpm
 
-      # Pinned (not @stable) so rustfmt's line-wrapping heuristics can't drift
-      # under us and break `cargo fmt --check`. Keep this version byte-identical
-      # to `rust-toolchain.toml` at the repo root — bump both together.
+      # Pinned toolchain (not @stable) so rustfmt's line-wrapping heuristics
+      # can't drift under us and break `cargo fmt --check`. Keep the toolchain
+      # version byte-identical to `rust-toolchain.toml` at the repo root and to
+      # release.yml — bump all three together. (The action itself is pinned by
+      # SHA; the toolchain version moved from the ref to the `toolchain` input.)
       - name: Install Rust toolchain
-        uses: dtolnay/rust-toolchain@1.96.0
+        uses: dtolnay/rust-toolchain@3c5f7ea28cd621ae0bf5283f0e981fb97b8a7af9 # master
         with:
+          toolchain: 1.96.0
           components: rustfmt, clippy
+          # x86_64 target on the macOS (arm64) leg: the release matrix builds
+          # x86_64-apple-darwin — without a CI compile check, target-specific
+          # breakage only surfaces on release day (re-run can't fix a compile error).
+          targets: ${{ runner.os == 'macOS' && 'x86_64-apple-darwin' || '' }}
 
       - name: Cache Rust
-        uses: Swatinem/rust-cache@v2
+        uses: Swatinem/rust-cache@e18b497796c12c097a38f9edb9d0641fb99eee32 # v2
         with:
           workspaces: 'src-tauri -> target'
 
@@ -88,6 +103,11 @@ jobs:
       - name: Rust build
         run: cargo build --manifest-path src-tauri/Cargo.toml
 
+      # Intel macOS compile check (release matrix parity — see toolchain note)
+      - name: Rust check (x86_64-apple-darwin)
+        if: runner.os == 'macOS'
+        run: cargo check --manifest-path src-tauri/Cargo.toml --target x86_64-apple-darwin
+
       # Guard scripts (platform-neutral) — run once only, on the macOS leg.
       # Self-tests first: a guard that silently passes is worse than no guard.
       - name: Guard script self-tests
@@ -97,3 +117,7 @@ jobs:
       - name: Reason parity check
         if: runner.os == 'macOS'
         run: node scripts/check-reason-parity.mjs
+
+      - name: Release asset name parity check
+        if: runner.os == 'macOS'
+        run: node scripts/check-release-assets.mjs

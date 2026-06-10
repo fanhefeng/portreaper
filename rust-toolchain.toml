@@ -5,7 +5,8 @@
 # 因此它同时约束：本机开发、CI（dtolnay/rust-toolchain）、release.yml 的 tauri-action。
 #
 # 升级流程：本机 `rustup update` → 把 channel 改成新版号 → `cargo fmt && cargo clippy`
-#          → 同步更新 .github/workflows/ci.yml 里的 `dtolnay/rust-toolchain@<version>` → 提交。
+#          → 同步更新 .github/workflows/ci.yml 与 release.yml 里 dtolnay/rust-toolchain
+#            步骤的 `toolchain:` 输入（共三处，全部同时改）→ 提交。
 [toolchain]
 channel = "1.96.0"
 components = ["rustfmt", "clippy"]
