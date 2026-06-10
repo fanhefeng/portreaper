@@ -27,7 +27,7 @@ sys-locale = "0.3" # 托盘菜单初始语言（托盘先于 webview 构建，�
 # Windows 端进程/端口枚举与终止（macOS 不编译这些依赖）
 [target.'cfg(windows)'.dependencies]
 sysinfo = "0.33"
-windows = { version = "0.58", features = [
+windows = { version = "0.61", features = [
     "Win32_Foundation",
     "Win32_NetworkManagement_IpHelper",
     "Win32_Networking_WinSock",
