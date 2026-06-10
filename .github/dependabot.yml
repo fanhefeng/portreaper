@@ -11,6 +11,15 @@ updates:
     directory: /
     schedule:
       interval: monthly
+    groups:
+      # React 要求 react 与 react-dom 严格同版本 —— 拆开升必挂
+      # （Dependabot 曾单独把 react 升到 19.2.7 而 react-dom 停在 19.2.6）
+      react:
+        patterns:
+          - react
+          - react-dom
+          - "@types/react"
+          - "@types/react-dom"
 
   - package-ecosystem: cargo
     directory: /src-tauri
