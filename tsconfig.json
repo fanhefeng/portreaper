@@ -5,6 +5,9 @@
     "lib": ["ES2020", "DOM", "DOM.Iterable"],
     "module": "ESNext",
     "skipLibCheck": true,
+    // TS6 起 @types 不再自动包含；node 全局（测试文件的 node:fs/process）须显式声明。
+    // vitest 3 的 d.ts 曾传递性引用 node 类型掩盖了这一点，vitest 4 清理后即裸奔。
+    "types": ["node"],
 
     /* Bundler mode */
     "moduleResolution": "bundler",
