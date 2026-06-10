@@ -16,3 +16,16 @@ updates:
     directory: /src-tauri
     schedule:
       interval: monthly
+    ignore:
+      # sysinfo / windows 是 FFI/采集层的高风险依赖：refresh_kind 语义、
+      # GetExtendedTcpTable / SHGetKnownFolderPath 签名都按当前版本逐字段
+      # 核对过（CLAUDE.md 有事故记录），而 Windows 无真机 QA —— CI 编译过
+      # ≠ 行为对。只收 patch 级更新；major/minor 升级须人工专项评估。
+      - dependency-name: sysinfo
+        update-types:
+          - "version-update:semver-major"
+          - "version-update:semver-minor"
+      - dependency-name: windows
+        update-types:
+          - "version-update:semver-major"
+          - "version-update:semver-minor"
