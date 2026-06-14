@@ -41,7 +41,7 @@ Stable direct links (always point at the latest release):
 
 Releases are **not code-signed yet**, so the OS will warn you. This is expected.
 
-**macOS (Gatekeeper).** After moving Portreaper to `/Applications`, the recommended path:
+**macOS (Gatekeeper).** Drag Portreaper into `/Applications` **first** and launch it from there — running it straight from the mounted `.dmg` triggers App Translocation (the app runs from a random read-only path) and the steps below won't stick. Then:
 
 1. Try to open it once (it gets blocked).
 2. Open **System Settings → Privacy & Security**, scroll down, and click **"Open Anyway"** next to the Portreaper notice.
@@ -53,6 +53,8 @@ Alternatives if that does not appear:
   ```bash
   xattr -dr com.apple.quarantine /Applications/Portreaper.app
   ```
+
+> **If macOS says Portreaper "is damaged and can't be opened"** (instead of the developer-verification notice), "Open Anyway" and right-click → Open usually won't help — this is the unsigned-app variant, and the `xattr` command above is the reliable fix.
 
 **Windows (SmartScreen).** Run the installer; on the blue "Windows protected your PC" screen click **More info → Run anyway**. Because Portreaper terminates other processes, some antivirus / EDR products may flag it — allow it if you trust the source.
 
@@ -187,7 +189,7 @@ Portreaper **不是**通用的端口查看器。它常驻托盘，每隔两秒�
 
 发布包**目前尚未做代码签名**，系统会弹出警告，这是正常现象。
 
-**macOS（Gatekeeper）。** 把 Portreaper 拖到「应用程序」后，推荐做法：
+**macOS（Gatekeeper）。** 请**先**把 Portreaper 拖进「应用程序」(`/Applications`) 再打开 —— 不要直接在挂载的 `.dmg` 里双击运行，那会触发 App Translocation（系统把 App 拷到随机只读路径执行），导致下面的步骤全部失效。然后：
 
 1. 先双击打开一次（会被拦截）。
 2. 打开「**系统设置 → 隐私与安全性**」，向下滚动，在 Portreaper 的提示旁点击「**仍要打开**」。
@@ -199,6 +201,8 @@ Portreaper **不是**通用的端口查看器。它常驻托盘，每隔两秒�
   ```bash
   xattr -dr com.apple.quarantine /Applications/Portreaper.app
   ```
+
+> **如果系统提示的是「已损坏，无法打开」**（而不是「无法验证开发者」），「仍要打开」和右键打开通常都没用 —— 这是未签名 App 的另一种报错，上面的 `xattr` 命令才是可靠解法。
 
 **Windows（SmartScreen）。** 运行安装程序，在蓝色的「Windows 已保护你的电脑」界面点击「**更多信息 → 仍要运行**」。由于 Portreaper 会终止其他进程，部分杀毒 / EDR 软件可能将其标记为可疑 —— 若你信任来源，请放行。
 

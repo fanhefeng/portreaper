@@ -56,12 +56,14 @@ window.I18N = {
     "install.lead": "应用未经签名公证。下面是绕过系统拦截的标准步骤。",
     "install.tab.mac": "macOS",
     "install.tab.win": "Windows",
-    "install.mac.s1": "打开下载的 <code>.dmg</code>，把 Portreaper 拖入「应用程序」。",
+    "install.mac.s1":
+      "打开下载的 <code>.dmg</code>，把 Portreaper 拖入「应用程序」后再打开 —— 不要直接在 dmg 里双击运行（会触发 App Translocation，下面的步骤会失效）。",
     "install.mac.s2":
       "首次打开若提示「无法验证开发者」：前往「系统设置 → 隐私与安全性」，点最下方的「仍要打开」。",
     "install.mac.s3":
       "或者在「应用程序」里 <strong>右键 → 打开</strong>，在弹窗里再次确认「打开」。",
-    "install.mac.s4": "仍被拦截时，可在终端执行下面这行移除隔离属性：",
+    "install.mac.s4":
+      "若提示的是「<strong>已损坏，无法打开</strong>」（未签名 App 的常见报错，此时「仍要打开」常常不出现、右键打开也无效），在终端执行下面这行移除隔离属性最可靠：",
     "install.copy": "复制",
     "install.win.s1":
       "运行 <code>.exe</code> 安装包。若出现 SmartScreen 蓝屏，点击「更多信息 → 仍要运行」。",
@@ -136,12 +138,13 @@ window.I18N = {
     "install.tab.mac": "macOS",
     "install.tab.win": "Windows",
     "install.mac.s1":
-      "Open the downloaded <code>.dmg</code> and drag Portreaper into Applications.",
+      "Open the downloaded <code>.dmg</code>, drag Portreaper into Applications, and launch it from there — don't run it straight from the dmg (that triggers App Translocation and the steps below won't stick).",
     "install.mac.s2":
       "If the first launch says “cannot verify the developer”: go to System Settings → Privacy & Security and click “Open Anyway” at the bottom.",
     "install.mac.s3":
       "Or in Applications, <strong>right-click → Open</strong> and confirm “Open” in the dialog.",
-    "install.mac.s4": "If it's still blocked, run this in Terminal to strip the quarantine attribute:",
+    "install.mac.s4":
+      "If it instead says the app is <strong>“damaged and can't be opened”</strong> (a common error for unsigned apps — “Open Anyway” and right-click → Open usually won't help here), running this in Terminal to strip the quarantine attribute is the reliable fix:",
     "install.copy": "Copy",
     "install.win.s1":
       "Run the <code>.exe</code> installer. If SmartScreen appears, click “More info → Run anyway”.",
