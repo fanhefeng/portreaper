@@ -21,14 +21,29 @@ pub struct TrayMenuItems {
     pub show: MenuItem<Wry>,
     pub open_dir: Submenu<Wry>,
     pub open_config: MenuItem<Wry>,
+    pub open_data: MenuItem<Wry>,
+    pub open_cache: MenuItem<Wry>,
     pub open_logs: MenuItem<Wry>,
+    pub open_temp: MenuItem<Wry>,
+    /// 「打开调试控制台」—— 仅 dev 构建注册（DA-3）。
+    #[cfg(debug_assertions)]
+    pub open_devtools: MenuItem<Wry>,
     pub quit: MenuItem<Wry>,
 }
 
-/// macOS 应用菜单里替代 predefined Quit 的 ⌘Q 项句柄（语言切换时 re-text）。
+/// macOS 应用菜单里的句柄（语言切换时 re-text）：⌘Q 替代项，以及与托盘复用
+/// 相同 id 的「打开目录」子菜单及其项 —— 双入口（顶部应用菜单栏 + 托盘右键）。
 #[cfg(target_os = "macos")]
 pub struct AppMenuItems {
     pub quit_to_tray: MenuItem<Wry>,
+    pub open_dir: Submenu<Wry>,
+    pub open_config: MenuItem<Wry>,
+    pub open_data: MenuItem<Wry>,
+    pub open_cache: MenuItem<Wry>,
+    pub open_logs: MenuItem<Wry>,
+    pub open_temp: MenuItem<Wry>,
+    #[cfg(debug_assertions)]
+    pub open_devtools: MenuItem<Wry>,
 }
 
 pub(crate) fn tray_texts(lang: &str) -> (&'static str, &'static str) {
@@ -39,12 +54,35 @@ pub(crate) fn tray_texts(lang: &str) -> (&'static str, &'static str) {
     }
 }
 
-/// 「打开目录」子菜单的文案：(子菜单标题, 配置目录项, 日志目录项)。
-pub(crate) fn dir_menu_texts(lang: &str) -> (&'static str, &'static str, &'static str) {
+/// 「打开目录」子菜单的全部文案（具名以免多项 tuple 错位）。
+pub(crate) struct DirMenuTexts {
+    pub title: &'static str,
+    pub config: &'static str,
+    pub data: &'static str,
+    pub cache: &'static str,
+    pub logs: &'static str,
+    pub temp: &'static str,
+}
+
+pub(crate) fn dir_menu_texts(lang: &str) -> DirMenuTexts {
     if lang == "zh" {
-        ("打开目录", "配置目录", "日志目录")
+        DirMenuTexts {
+            title: "打开目录",
+            config: "配置目录",
+            data: "数据目录",
+            cache: "缓存目录",
+            logs: "日志目录",
+            temp: "临时目录",
+        }
     } else {
-        ("Open Folder", "Config Folder", "Logs Folder")
+        DirMenuTexts {
+            title: "Open Folder",
+            config: "Config Folder",
+            data: "Data Folder",
+            cache: "Cache Folder",
+            logs: "Logs Folder",
+            temp: "Temp Folder",
+        }
     }
 }
 
@@ -68,6 +106,16 @@ fn open_app_dir(app: &AppHandle, dir: tauri::Result<std::path::PathBuf>) {
         .open_path(path.to_string_lossy().into_owned(), None::<&str>)
     {
         log::warn!("open dir {} failed: {e}", path.display());
+    }
+}
+
+/// 「打开调试控制台」菜单项文案 —— 仅 dev 构建存在（DA-3：调试入口不进 prod）。
+#[cfg(debug_assertions)]
+pub(crate) fn devtools_text(lang: &str) -> &'static str {
+    if lang == "zh" {
+        "打开调试控制台"
+    } else {
+        "Open DevTools"
     }
 }
 
@@ -147,8 +195,9 @@ pub fn run() {
     let builder = builder
         .menu(|handle| {
             use tauri::menu::SubmenuBuilder;
+            let lang = detect_lang();
             let quit_to_tray =
-                MenuItemBuilder::with_id("quit-to-tray", quit_to_tray_text(detect_lang()))
+                MenuItemBuilder::with_id("quit-to-tray", quit_to_tray_text(lang))
                     .accelerator("Cmd+Q")
                     .build(handle)?;
             let app_submenu = SubmenuBuilder::new(handle, "Portreaper")
@@ -160,6 +209,29 @@ pub fn run() {
                 .separator()
                 .item(&quit_to_tray)
                 .build()?;
+            // 「打开目录」菜单 —— 与托盘子菜单复用相同 id：点击事件由托盘的
+            // on_menu_event 全局派发处理（tauri 把应用菜单与托盘菜单事件发到
+            // 同一监听列表），故此处只建项 + 存句柄供语言切换，无需新增 handler。
+            let dt = dir_menu_texts(lang);
+            let open_config =
+                MenuItemBuilder::with_id("open-config-dir", dt.config).build(handle)?;
+            let open_data = MenuItemBuilder::with_id("open-data-dir", dt.data).build(handle)?;
+            let open_cache =
+                MenuItemBuilder::with_id("open-cache-dir", dt.cache).build(handle)?;
+            let open_logs = MenuItemBuilder::with_id("open-log-dir", dt.logs).build(handle)?;
+            let open_temp = MenuItemBuilder::with_id("open-temp-dir", dt.temp).build(handle)?;
+            #[cfg(debug_assertions)]
+            let open_devtools =
+                MenuItemBuilder::with_id("open-devtools", devtools_text(lang)).build(handle)?;
+            let dir_builder = SubmenuBuilder::new(handle, dt.title)
+                .item(&open_config)
+                .item(&open_data)
+                .item(&open_cache)
+                .item(&open_logs)
+                .item(&open_temp);
+            #[cfg(debug_assertions)]
+            let dir_builder = dir_builder.separator().item(&open_devtools);
+            let open_dir = dir_builder.build()?;
             // Edit/Window 子菜单必须保留：webview 的 ⌘C/⌘V/⌘X/⌘A 依赖这些
             // predefined 项的 key equivalent；⌘W 走 close_window → 被
             // on_window_event 拦成隐藏，与产品语义一致。
@@ -177,9 +249,19 @@ pub fn run() {
                 .close_window()
                 .build()?;
             let menu = MenuBuilder::new(handle)
-                .items(&[&app_submenu, &edit_submenu, &window_submenu])
+                .items(&[&app_submenu, &open_dir, &edit_submenu, &window_submenu])
                 .build()?;
-            handle.manage(AppMenuItems { quit_to_tray });
+            handle.manage(AppMenuItems {
+                quit_to_tray,
+                open_dir,
+                open_config,
+                open_data,
+                open_cache,
+                open_logs,
+                open_temp,
+                #[cfg(debug_assertions)]
+                open_devtools,
+            });
             Ok(menu)
         })
         .on_menu_event(|app, event| {
@@ -220,28 +302,43 @@ pub fn run() {
 
             let lang = detect_lang();
             let (show_text, quit_text) = tray_texts(lang);
-            let (dir_text, config_text, logs_text) = dir_menu_texts(lang);
+            let dt = dir_menu_texts(lang);
             let show_item = MenuItemBuilder::with_id("show", show_text).build(app)?;
             let open_config =
-                MenuItemBuilder::with_id("open-config-dir", config_text).build(app)?;
-            let open_logs = MenuItemBuilder::with_id("open-log-dir", logs_text).build(app)?;
-            let open_dir = SubmenuBuilder::new(app, dir_text)
+                MenuItemBuilder::with_id("open-config-dir", dt.config).build(app)?;
+            let open_data = MenuItemBuilder::with_id("open-data-dir", dt.data).build(app)?;
+            let open_cache = MenuItemBuilder::with_id("open-cache-dir", dt.cache).build(app)?;
+            let open_logs = MenuItemBuilder::with_id("open-log-dir", dt.logs).build(app)?;
+            let open_temp = MenuItemBuilder::with_id("open-temp-dir", dt.temp).build(app)?;
+            let open_dir = SubmenuBuilder::new(app, dt.title)
                 .item(&open_config)
+                .item(&open_data)
+                .item(&open_cache)
                 .item(&open_logs)
+                .item(&open_temp)
                 .build()?;
             let quit_item = MenuItemBuilder::with_id("quit", quit_text).build(app)?;
-            let menu = MenuBuilder::new(app)
-                .item(&show_item)
-                .item(&open_dir)
-                .separator()
-                .item(&quit_item)
-                .build()?;
+            #[cfg(debug_assertions)]
+            let open_devtools =
+                MenuItemBuilder::with_id("open-devtools", devtools_text(lang)).build(app)?;
+            // 用 shadowing 条件插入 devtools 项：prod 下不存在该行，故无 unused_mut 告警。
+            let menu = {
+                let b = MenuBuilder::new(app).item(&show_item).item(&open_dir);
+                #[cfg(debug_assertions)]
+                let b = b.item(&open_devtools);
+                b.separator().item(&quit_item).build()?
+            };
             app.manage(TrayLang(Mutex::new(lang)));
             app.manage(TrayMenuItems {
                 show: show_item,
                 open_dir,
                 open_config,
+                open_data,
+                open_cache,
                 open_logs,
+                open_temp,
+                #[cfg(debug_assertions)]
+                open_devtools,
                 quit: quit_item,
             });
 
@@ -275,7 +372,16 @@ pub fn run() {
                         }
                     }
                     "open-config-dir" => open_app_dir(app, paths::config_dir(app)),
+                    "open-data-dir" => open_app_dir(app, paths::data_dir(app)),
+                    "open-cache-dir" => open_app_dir(app, paths::cache_dir(app)),
                     "open-log-dir" => open_app_dir(app, paths::log_dir(app)),
+                    "open-temp-dir" => open_app_dir(app, paths::temp_dir(app)),
+                    #[cfg(debug_assertions)]
+                    "open-devtools" => {
+                        if let Some(w) = app.get_webview_window("main") {
+                            w.open_devtools();
+                        }
+                    }
                     "quit" => {
                         app.exit(0);
                     }

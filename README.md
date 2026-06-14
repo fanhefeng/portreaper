@@ -90,7 +90,7 @@ Prerequisites: **Rust** (stable), **Node.js**, and **pnpm**.
 
 ```bash
 pnpm install        # first-time setup
-pnpm tauri dev      # run the desktop app (vite on :1420 + tauri webview)
+pnpm tauri dev      # run the desktop app (vite on :1430 + tauri webview)
 pnpm tauri build    # produce the bundle (.app / .dmg / .exe)
 ```
 
@@ -138,7 +138,7 @@ Notes:
 
 - **Whitelist** is written atomically (temp file + rename); you may transiently see `whitelist.json.tmp`, and a `whitelist.json.corrupt` backup if the file ever fails to parse.
 - **Logs** rotate at 1 MiB and keep only one file (a persistent failure can't fill the disk). Debug builds also log to stdout.
-- **Webview data** (the `localStorage` language preference, WKWebView/WebView2 caches) is managed by the OS/framework, not by Portreaper. It is isolated by origin (`tauri://localhost` for the release vs `localhost:1420` for dev). On Windows the WebView2 runtime keeps its own `EBWebView\` folder under the config directory above.
+- **Webview data** (the `localStorage` language preference, WKWebView/WebView2 caches) is managed by the OS/framework, not by Portreaper. It is isolated by origin (`tauri://localhost` for the release vs `localhost:1430` for dev). On Windows the WebView2 runtime keeps its own `EBWebView\` folder under the config directory above.
 
 Uninstalling does not remove these directories — delete the `com.fhf.portreaper` folders above by hand if you want a clean wipe.
 
@@ -236,7 +236,7 @@ Portreaper **不是**通用的端口查看器。它常驻托盘，每隔两秒�
 
 ```bash
 pnpm install        # 首次安装
-pnpm tauri dev      # 运行桌面应用（vite 跑在 :1420 + tauri webview）
+pnpm tauri dev      # 运行桌面应用（vite 跑在 :1430 + tauri webview）
 pnpm tauri build    # 产出安装包（.app / .dmg / .exe）
 ```
 
@@ -284,7 +284,7 @@ Portreaper 只往磁盘写两样东西：**收藏（白名单）**（你标星�
 
 - **收藏**采用原子写（临时文件 + rename）：你可能会瞬间看到 `whitelist.json.tmp`；若文件解析失败，损坏的旧文件会被备份为 `whitelist.json.corrupt`。
 - **日志**到 1 MiB 即轮转、只保留一份（持续性故障也刷不满磁盘）。debug 构建额外打到 stdout。
-- **webview 数据**（语言偏好等 `localStorage`、WKWebView/WebView2 缓存）由系统/框架管理，并非 Portreaper 自建。它按 origin 天然隔离（正式版 `tauri://localhost`、开发版 `localhost:1420`）。Windows 上 WebView2 运行时会在上述配置目录下另建一个 `EBWebView\` 文件夹。
+- **webview 数据**（语言偏好等 `localStorage`、WKWebView/WebView2 缓存）由系统/框架管理，并非 Portreaper 自建。它按 origin 天然隔离（正式版 `tauri://localhost`、开发版 `localhost:1430`）。Windows 上 WebView2 运行时会在上述配置目录下另建一个 `EBWebView\` 文件夹。
 
 卸载应用不会删除这些目录 —— 若想彻底清干净，请手动删除上面的 `com.fhf.portreaper` 目录。
 

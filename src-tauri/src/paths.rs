@@ -45,6 +45,25 @@ pub fn log_dir(app: &AppHandle) -> tauri::Result<PathBuf> {
     Ok(scoped(app.path().app_log_dir()?))
 }
 
+/// 分环境后的缓存目录（可重建的临时性数据，OS 可能在空间紧张时回收）。
+pub fn cache_dir(app: &AppHandle) -> tauri::Result<PathBuf> {
+    Ok(scoped(app.path().app_cache_dir()?))
+}
+
+/// 分环境后的数据（文件存储）目录。
+pub fn data_dir(app: &AppHandle) -> tauri::Result<PathBuf> {
+    Ok(scoped(app.path().app_data_dir()?))
+}
+
+/// 分环境后的应用专属临时目录。
+/// `temp_dir()` 是所有进程共享的系统临时根（macOS `$TMPDIR`、Windows `%TEMP%`），
+/// 直接打开会暴露整个系统 temp，故先落到 bundle id 专属子目录、再按环境隔离。
+/// 子目录名复用 `config.identifier`（即 `com.fhf.portreaper`，与 cache/data/log
+/// 所用的 `app_*_dir` 内部一致），改产品名时不会只有 temp 漏同步。
+pub fn temp_dir(app: &AppHandle) -> tauri::Result<PathBuf> {
+    Ok(scoped(app.path().temp_dir()?.join(&app.config().identifier)))
+}
+
 /// 日志文件主名（不含扩展名，tauri-plugin-log 追加 `.log`）。
 /// 即便日后两个环境的目录被指到一处，文件名也带环境后缀、不会互相覆盖 —— 双保险。
 pub fn log_file_name() -> String {

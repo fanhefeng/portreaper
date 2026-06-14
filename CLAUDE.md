@@ -12,7 +12,7 @@ Stack: Tauri 2 + React 19 + TypeScript + Vite, package manager is **pnpm**. UI i
 
 ```bash
 pnpm install           # first-time setup
-pnpm tauri dev         # run the desktop app (launches vite on :1420, then tauri webview)
+pnpm tauri dev         # run the desktop app (launches vite on :1430, then tauri webview)
 pnpm tauri build       # produce a .app/.dmg (macOS) or NSIS .exe (Windows)
 pnpm build             # tsc --noEmit + vite build (used by tauri build)
 

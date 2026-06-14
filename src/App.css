@@ -151,7 +151,7 @@ button {
 
 .search-wrap svg {
   position: absolute;
-  left: 10px;
+  inset-inline-start: 10px;
   color: var(--text-dim);
   pointer-events: none;
 }
@@ -228,7 +228,7 @@ button {
 }
 
 .header-right {
-  margin-left: auto;
+  margin-inline-start: auto;
   display: flex;
   align-items: center;
   gap: 10px;
@@ -329,7 +329,7 @@ button {
 .section-sub {
   font-size: 11.5px;
   color: var(--text-dim);
-  margin-left: 4px;
+  margin-inline-start: 4px;
 }
 
 .allclear {
@@ -487,7 +487,7 @@ button {
 .port-more {
   font-size: 11px;
   color: var(--text-dim);
-  padding-left: 2px;
+  padding-inline-start: 2px;
 }
 
 /* 孤儿进程的「无端口」徽标：弱化的描边胶囊，与端口号视觉区分 */
@@ -546,7 +546,7 @@ button {
   white-space: nowrap;
   flex-shrink: 0;
   min-width: 52px;
-  text-align: right;
+  text-align: end;
 }
 
 /* ───── 行内操作：正常行悬停显现；僵尸行常驻 ───── */
@@ -688,7 +688,7 @@ button {
 
 .chain-arrow {
   color: var(--text-dim);
-  margin-right: 6px;
+  margin-inline-end: 6px;
 }
 
 /* 判定依据 / 为什么不是僵尸：把 tooltip 知识摊开成可读文本 */
