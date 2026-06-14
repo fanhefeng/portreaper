@@ -230,7 +230,7 @@ fn cmd_output(program: &str, args: &[&str]) -> Option<String> {
             // 采集层失败不能静默退化为空输出（与 windows.rs 的留痕对齐）：
             // ps 失败 ⇒ 表格凭空清空、launchctl 失败 ⇒ 托管豁免失效，
             // 没有留痕时用户与开发者都拿不到任何线索（评审发现）。
-            eprintln!("{program} {args:?} failed to spawn: {e}; scan may be degraded");
+            log::warn!("{program} {args:?} failed to spawn: {e}; scan may be degraded");
             return None;
         }
     };
@@ -241,7 +241,7 @@ fn cmd_output(program: &str, args: &[&str]) -> Option<String> {
         let stderr = String::from_utf8_lossy(&output.stderr);
         let stderr = stderr.trim();
         if !stderr.is_empty() {
-            eprintln!(
+            log::warn!(
                 "{program} {args:?} exited with {}: {stderr}; scan may be degraded",
                 output.status
             );
@@ -389,23 +389,32 @@ fn parse_comm(text: &str) -> HashMap<u32, String> {
     map
 }
 
-/// 解析 [[dd-]hh:]mm:ss 形式的 etime 为秒。
-pub(crate) fn parse_etime(s: &str) -> u64 {
+/// 解析 [[dd-]hh:]mm:ss 形式的 etime 为秒。**任一段不是合法数字 ⇒ None**(解析失败)。
+/// kill 路径据此 fail-closed:解析失败绝不能静默当成「0 秒 / 刚启动」—— 那会把一个
+/// 真实创建时间很早的进程算成 now,从而绕过 PID 复用容差(评审发现:与本文件
+/// 其余解析器的 fail-closed 风格保持一致)。
+pub(crate) fn parse_etime_checked(s: &str) -> Option<u64> {
     let (days, rest) = match s.split_once('-') {
-        Some((d, r)) => (d.parse::<u64>().unwrap_or(0), r),
+        Some((d, r)) => (d.parse::<u64>().ok()?, r),
         None => (0, s),
     };
     let parts: Vec<u64> = rest
         .split(':')
-        .map(|p| p.parse::<u64>().unwrap_or(0))
-        .collect();
+        .map(|p| p.parse::<u64>().ok())
+        .collect::<Option<_>>()?;
     let (h, m, sec) = match parts.as_slice() {
         [h, m, s] => (*h, *m, *s),
         [m, s] => (0, *m, *s),
         [s] => (0, 0, *s),
-        _ => (0, 0, 0),
+        _ => return None,
     };
-    days * 86_400 + h * 3_600 + m * 60 + sec
+    Some(days * 86_400 + h * 3_600 + m * 60 + sec)
+}
+
+/// snapshot 的 elapsed_secs 用:解析失败退化为 0(=「刚启动」=落入 grace 宽限,
+/// 偏保守不误扫)。kill 路径请改用 parse_etime_checked 走 fail-closed。
+pub(crate) fn parse_etime(s: &str) -> u64 {
+    parse_etime_checked(s).unwrap_or(0)
 }
 
 /// 解析 ps 输出。数值列在 command 之前；command 是最后一列收尾全行。
@@ -509,6 +518,20 @@ mod tests {
         assert_eq!(parse_etime("01:02"), 62);
         assert_eq!(parse_etime("01:02:03"), 3723);
         assert_eq!(parse_etime("2-01:02:03"), 2 * 86400 + 3723);
+    }
+
+    #[test]
+    fn etime_checked_rejects_garbage() {
+        // 合法输入与旧版同值
+        assert_eq!(parse_etime_checked("01:02:03"), Some(3723));
+        assert_eq!(parse_etime_checked("2-01:02:03"), Some(2 * 86400 + 3723));
+        // 任一段非法数字 ⇒ None(kill 路径据此 fail-closed,绝不退化为 0)
+        assert_eq!(parse_etime_checked(""), None);
+        assert_eq!(parse_etime_checked("oops"), None);
+        assert_eq!(parse_etime_checked("01:xx"), None);
+        assert_eq!(parse_etime_checked("z-01:02"), None);
+        // 旧版仍对垃圾静默退化为 0(parse_ps 的 grace 宽限用,偏保守)
+        assert_eq!(parse_etime("oops"), 0);
     }
 
     #[test]

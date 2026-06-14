@@ -28,7 +28,7 @@ pub fn init(path: PathBuf) {
             Ok(store) => Some(store),
             Err(e) => {
                 // 损坏的文件备份后让位 —— 用户的旧收藏可从 .corrupt 手工找回
-                eprintln!("whitelist.json corrupted ({e}), backing up to .corrupt");
+                log::warn!("whitelist.json corrupted ({e}), backing up to .corrupt");
                 let _ = fs::rename(&path, path.with_extension("json.corrupt"));
                 None
             }

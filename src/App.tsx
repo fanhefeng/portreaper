@@ -1,4 +1,5 @@
 import {
+  memo,
   useCallback,
   useEffect,
   useMemo,
@@ -10,15 +11,16 @@ import { invoke } from "@tauri-apps/api/core";
 import { openUrl } from "@tauri-apps/plugin-opener";
 import { useI18n, type I18nKey, type Lang } from "./i18n";
 import {
-  EXEMPT_REASONS,
   SCAN_TIMEOUT_MS,
-  SWEEPABLE,
+  exemptReasons,
   formatDuration,
+  formatPorts,
   formatUptime,
   legacyWhitelistKey,
   localizeKillError,
   localizeScanError,
   primaryReason,
+  sweepableEntries,
   whitelistKey,
   withTimeout,
   type Filter,
@@ -110,9 +112,7 @@ function App() {
       // 托盘只计入会被清扫的层级（Confirmed + Likely），避免宽限期内的闪烁。
       // 托盘更新是装饰性的 —— fire-and-forget（与 i18n.ts 的 set_tray_language
       // 同一约定），绝不能让它把一次成功的扫描标成错误（评审发现）。
-      const suspectCount = data.filter(
-        (e) => e.is_zombie_suspect && SWEEPABLE.has(e.confidence),
-      ).length;
+      const suspectCount = sweepableEntries(data).length;
       const totalPorts = data.reduce((sum, e) => sum + e.ports.length, 0);
       invoke("update_tray_title", {
         count: totalPorts,
@@ -167,15 +167,13 @@ function App() {
     }
   }, [anyModalOpen]);
 
-  const rememberTrigger = () => {
+  const rememberTrigger = useCallback(() => {
     modalTrigger.current =
       document.activeElement instanceof HTMLElement ? document.activeElement : null;
-  };
+  }, []);
 
   const suspectCount = entries.filter((e) => e.is_zombie_suspect).length;
-  const sweepables = entries.filter(
-    (e) => e.is_zombie_suspect && SWEEPABLE.has(e.confidence),
-  );
+  const sweepables = sweepableEntries(entries);
   const whitelistCount = entries.filter((e) => e.is_whitelisted).length;
   const totalPortCount = entries.reduce((sum, e) => sum + e.ports.length, 0);
 
@@ -201,34 +199,43 @@ function App() {
   const suspects = filtered.filter((e) => e.is_zombie_suspect);
   const healthy = filtered.filter((e) => !e.is_zombie_suspect);
 
-  const askKill = (e: ProcessEntry, force: boolean) => {
-    rememberTrigger();
-    setConfirm({
-      pid: e.pid,
-      // 完整命令行（含脚本路径/参数）—— 毁灭性确认应让用户看清杀的到底是什么，
-      // lsof 短名 "node" 不足以辨认（评审发现）；退回短名仅当完整命令为空
-      command: e.full_command || e.command,
-      ports: e.ports,
-      app_label: e.app_label,
-      force,
-      startUnix: e.start_unix,
-    });
-  };
+  // useCallback 化(连同下方 handleToggleWhitelist / handleOpen / toggleExpand):
+  // Row 经 memo 缓存,只有当传入的回调引用稳定时 memo 才命中,否则每轮轮询新建的
+  // 回调会让所有行重渲染,memo 形同虚设。依赖均为稳定项(setter / 已 useCallback)。
+  const askKill = useCallback(
+    (e: ProcessEntry, force: boolean) => {
+      rememberTrigger();
+      setConfirm({
+        pid: e.pid,
+        // 完整命令行（含脚本路径/参数）—— 毁灭性确认应让用户看清杀的到底是什么，
+        // lsof 短名 "node" 不足以辨认（评审发现）；退回短名仅当完整命令为空
+        command: e.full_command || e.command,
+        ports: e.ports,
+        app_label: e.app_label,
+        force,
+        startUnix: e.start_unix,
+      });
+    },
+    [rememberTrigger],
+  );
 
   // 统一「动作成功 → 清除残留失败横幅；失败 → 设置本次文案」语义。集中一处，
   // 避免每个动作处理器各自手抄 setActionError(null) 而新增的漏写（评审发现：原先 4 处）。
   // toErrorMsg 接受翻译器注入并在渲染时调用 —— 切换语言后横幅自动重译。
-  const runAction = async (
-    work: () => Promise<void>,
-    toErrorMsg: (err: unknown, tr: Translator) => string,
-  ) => {
-    try {
-      await work();
-      setActionError(null);
-    } catch (err) {
-      setActionError({ render: (tr) => toErrorMsg(err, tr) });
-    }
-  };
+  const runAction = useCallback(
+    async (
+      work: () => Promise<void>,
+      toErrorMsg: (err: unknown, tr: Translator) => string,
+    ) => {
+      try {
+        await work();
+        setActionError(null);
+      } catch (err) {
+        setActionError({ render: (tr) => toErrorMsg(err, tr) });
+      }
+    },
+    [],
+  );
 
   const doKill = async () => {
     if (!confirm) return;
@@ -252,35 +259,41 @@ function App() {
     }
   };
 
-  const handleToggleWhitelist = async (e: ProcessEntry) => {
-    const key = whitelistKey(e);
-    await runAction(
-      async () => {
-        if (e.is_whitelisted) {
-          await invoke("remove_whitelist", { key });
-          // v0.4.0 旧键也清掉，否则升级用户的裸键仍命中、星标取消不掉（评审发现）
-          const legacy = legacyWhitelistKey(e);
-          if (legacy !== key) await invoke("remove_whitelist", { key: legacy });
-        } else {
-          await invoke("add_whitelist", { key });
-        }
-        // freshScan 而非 refresh：2s 轮询大概率正有一次扫描在飞行中，它读到的是
-        // 白名单落盘**之前**的数据；refresh 会复用该 Promise，星标/嫌疑态/清扫
-        // 计数要到下一轮才更新（评审发现）。kill 路径同理，早已用 freshScan。
-        await freshScan();
-      },
-      (err, tr) => tr("error.whitelistFailed", { err: String(err) }),
-    );
-  };
+  const handleToggleWhitelist = useCallback(
+    async (e: ProcessEntry) => {
+      const key = whitelistKey(e);
+      await runAction(
+        async () => {
+          if (e.is_whitelisted) {
+            await invoke("remove_whitelist", { key });
+            // v0.4.0 旧键也清掉，否则升级用户的裸键仍命中、星标取消不掉（评审发现）
+            const legacy = legacyWhitelistKey(e);
+            if (legacy !== key) await invoke("remove_whitelist", { key: legacy });
+          } else {
+            await invoke("add_whitelist", { key });
+          }
+          // freshScan 而非 refresh：2s 轮询大概率正有一次扫描在飞行中，它读到的是
+          // 白名单落盘**之前**的数据；refresh 会复用该 Promise，星标/嫌疑态/清扫
+          // 计数要到下一轮才更新（评审发现）。kill 路径同理，早已用 freshScan。
+          await freshScan();
+        },
+        (err, tr) => tr("error.whitelistFailed", { err: String(err) }),
+      );
+    },
+    [runAction, freshScan],
+  );
 
-  const handleOpen = async (port: number) => {
-    await runAction(
-      async () => {
-        await openUrl(`http://localhost:${port}`);
-      },
-      (err, tr) => tr("error.openBrowser", { err: String(err) }),
-    );
-  };
+  const handleOpen = useCallback(
+    async (port: number) => {
+      await runAction(
+        async () => {
+          await openUrl(`http://localhost:${port}`);
+        },
+        (err, tr) => tr("error.openBrowser", { err: String(err) }),
+      );
+    },
+    [runAction],
+  );
 
   const askKillAllSuspects = () => {
     if (sweepables.length === 0) return;
@@ -337,19 +350,26 @@ function App() {
     }
   };
 
-  const toggleExpand = (pid: number) =>
-    setExpandedPid((cur) => (cur === pid ? null : pid));
+  const toggleExpand = useCallback(
+    (pid: number) => setExpandedPid((cur) => (cur === pid ? null : pid)),
+    [],
+  );
 
-  const rowProps = {
-    os,
-    lang,
-    killingPid,
-    sweeping,
-    onAskKill: askKill,
-    onToggleWhitelist: handleToggleWhitelist,
-    onOpenPort: handleOpen,
-    onToggleExpand: toggleExpand,
-  };
+  // useMemo:回调已稳定,rowProps 只在 os/lang/killingPid/sweeping 变化时新建,
+  // 配合 Row 的 memo 让 2s 轮询不再无谓重渲染全表。
+  const rowProps = useMemo(
+    () => ({
+      os,
+      lang,
+      killingPid,
+      sweeping,
+      onAskKill: askKill,
+      onToggleWhitelist: handleToggleWhitelist,
+      onOpenPort: handleOpen,
+      onToggleExpand: toggleExpand,
+    }),
+    [os, lang, killingPid, sweeping, askKill, handleToggleWhitelist, handleOpen, toggleExpand],
+  );
 
   return (
     <div className="app">
@@ -561,7 +581,7 @@ function App() {
                       <span className="batch-pid">PID {s.pid}</span>
                       <span className="batch-label">{s.app_label}</span>
                       <span className="batch-ports muted">
-                        {s.ports.map((p) => `:${p}`).join(" ")}
+                        {formatPorts(s.ports)}
                       </span>
                     </div>
                   ))}
@@ -624,7 +644,7 @@ function App() {
               <div className="modal-row">
                 <span className="modal-label">{t("confirm.ports")}</span>
                 <span className="mono">
-                  {confirm.ports.map((p) => `:${p}`).join("  ")}
+                  {formatPorts(confirm.ports, "  ")}
                   {confirm.ports.length > 1 && (
                     <span className="muted">
                       {" "}
@@ -711,7 +731,28 @@ function Section({
   );
 }
 
-function Row({
+// Row 用 memo + 自定义比较:轮询每 2s 产生全新 entries 数组,e 引用必变,默认
+// 浅比较失效;这里对 e 做内容比较(serde 字段序固定 → JSON.stringify 稳定),
+// 回调已全部 useCallback 稳定 —— 仅当本行数据或 killingPid/sweeping/lang/os
+// 真正变化时才重渲染(否则一行 ~50 条正则 + 整棵 JSX 每 2s 白跑)。
+const Row = memo(RowImpl, rowPropsEqual);
+
+function rowPropsEqual(a: RowProps, b: RowProps): boolean {
+  return (
+    a.expanded === b.expanded &&
+    a.os === b.os &&
+    a.lang === b.lang &&
+    a.killingPid === b.killingPid &&
+    a.sweeping === b.sweeping &&
+    a.onAskKill === b.onAskKill &&
+    a.onToggleWhitelist === b.onToggleWhitelist &&
+    a.onOpenPort === b.onOpenPort &&
+    a.onToggleExpand === b.onToggleExpand &&
+    JSON.stringify(a.e) === JSON.stringify(b.e)
+  );
+}
+
+function RowImpl({
   e,
   expanded,
   os,
@@ -738,9 +779,7 @@ function Row({
   const desc = known ?? t(DESC_KEYS[e.app_category] ?? "desc.unknown");
 
   // 来源：谁启动的 / 谁在托管
-  const exempt = !e.is_zombie_suspect
-    ? e.zombie_reasons.filter((r) => EXEMPT_REASONS.has(r))
-    : [];
+  const exempt = exemptReasons(e);
   let provenance: string | null = null;
   if (exempt.includes("launchd_managed")) {
     provenance = t("story.managedBySystem");
@@ -820,7 +859,7 @@ function Row({
                   {morePorts > 0 && (
                     <span
                       className="port-more"
-                      title={e.ports.map((p) => `:${p}`).join(" ")}
+                      title={formatPorts(e.ports)}
                     >
                       +{morePorts}
                     </span>
@@ -930,9 +969,7 @@ function Detail({ e, os, id }: { e: ProcessEntry; os: Os | null; id: string }) {
       : "cat.unknown"
   ) as I18nKey;
 
-  const exempt = !e.is_zombie_suspect
-    ? e.zombie_reasons.filter((r) => EXEMPT_REASONS.has(r))
-    : [];
+  const exempt = exemptReasons(e);
 
   // 启动链：根（顶端 App / 系统）在前，依次到直接父进程，最后是进程本身
   const chainTopDown = [...e.parent_chain].reverse();
@@ -948,7 +985,7 @@ function Detail({ e, os, id }: { e: ProcessEntry; os: Os | null; id: string }) {
 
         <span className="detail-label">{t("detail.ports")}</span>
         <span className="detail-value mono">
-          {e.ports.length > 0 ? e.ports.map((p) => `:${p}`).join("  ") : "—"}
+          {e.ports.length > 0 ? formatPorts(e.ports, "  ") : "—"}
         </span>
 
         <span className="detail-label">{t("detail.pid")}</span>

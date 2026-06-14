@@ -121,6 +121,27 @@ website/              GitHub Pages download site
 docs/                 maintainer & QA docs
 ```
 
+### Where it stores data
+
+Portreaper writes only two things: the **whitelist** (your starred "leave it alone" entries) and a rotating **log file**. Base locations come from Tauri's per-app directories (all suffixed with the bundle identifier `com.fhf.portreaper`).
+
+**Dev builds are fully isolated from the installed app.** A `pnpm tauri dev` run (debug build) nests everything under a `dev/` subdirectory and writes `portreaper-dev.log`; the installed release uses the base directory and `portreaper-prod.log`. So whitelist entries and error logs from local testing never leak into your day-to-day data, and vice versa. (This is decided at compile time via `cfg(debug_assertions)` — no env var needed; see `src-tauri/src/paths.rs`.)
+
+| Platform | What | Release (prod) | Dev (`pnpm tauri dev`) |
+|----------|------|----------------|------------------------|
+| **macOS** | Whitelist | `~/Library/Application Support/com.fhf.portreaper/whitelist.json` | `~/Library/Application Support/com.fhf.portreaper/dev/whitelist.json` |
+| | Logs | `~/Library/Logs/com.fhf.portreaper/portreaper-prod.log` | `~/Library/Logs/com.fhf.portreaper/dev/portreaper-dev.log` |
+| **Windows** | Whitelist | `%APPDATA%\com.fhf.portreaper\whitelist.json` | `%APPDATA%\com.fhf.portreaper\dev\whitelist.json` |
+| | Logs | `%LOCALAPPDATA%\com.fhf.portreaper\logs\portreaper-prod.log` | `%LOCALAPPDATA%\com.fhf.portreaper\logs\dev\portreaper-dev.log` |
+
+Notes:
+
+- **Whitelist** is written atomically (temp file + rename); you may transiently see `whitelist.json.tmp`, and a `whitelist.json.corrupt` backup if the file ever fails to parse.
+- **Logs** rotate at 1 MiB and keep only one file (a persistent failure can't fill the disk). Debug builds also log to stdout.
+- **Webview data** (the `localStorage` language preference, WKWebView/WebView2 caches) is managed by the OS/framework, not by Portreaper. It is isolated by origin (`tauri://localhost` for the release vs `localhost:1420` for dev). On Windows the WebView2 runtime keeps its own `EBWebView\` folder under the config directory above.
+
+Uninstalling does not remove these directories — delete the `com.fhf.portreaper` folders above by hand if you want a clean wipe.
+
 ### License
 
 MIT © fhf. See [LICENSE](LICENSE).
@@ -245,6 +266,27 @@ scripts/              发布工具（版本号 bump）+ CI 守卫（reason parit
 website/              GitHub Pages 下载站
 docs/                 维护者与 QA 文档
 ```
+
+### 应用产生的文件与目录
+
+Portreaper 只往磁盘写两样东西：**收藏（白名单）**（你标星的「别动它」条目）和一份会轮转的**日志文件**。基目录取自 Tauri 的分应用目录（均以 bundle identifier `com.fhf.portreaper` 结尾）。
+
+**开发版与正式版的数据彻底隔离。** `pnpm tauri dev`（debug 构建）会把所有数据塞进 `dev/` 子目录、日志写成 `portreaper-dev.log`；安装的正式版（release）直接用基目录、日志为 `portreaper-prod.log`。于是本地随手测试加的收藏、刷出的报错日志，绝不会混进日常使用的正式版数据里（反之亦然）。（这一隔离在编译期由 `cfg(debug_assertions)` 决定，无需任何环境变量，详见 `src-tauri/src/paths.rs`。）
+
+| 系统 | 内容 | 正式版（prod） | 开发版（`pnpm tauri dev`） |
+|------|------|----------------|----------------------------|
+| **macOS** | 收藏 | `~/Library/Application Support/com.fhf.portreaper/whitelist.json` | `~/Library/Application Support/com.fhf.portreaper/dev/whitelist.json` |
+| | 日志 | `~/Library/Logs/com.fhf.portreaper/portreaper-prod.log` | `~/Library/Logs/com.fhf.portreaper/dev/portreaper-dev.log` |
+| **Windows** | 收藏 | `%APPDATA%\com.fhf.portreaper\whitelist.json` | `%APPDATA%\com.fhf.portreaper\dev\whitelist.json` |
+| | 日志 | `%LOCALAPPDATA%\com.fhf.portreaper\logs\portreaper-prod.log` | `%LOCALAPPDATA%\com.fhf.portreaper\logs\dev\portreaper-dev.log` |
+
+说明：
+
+- **收藏**采用原子写（临时文件 + rename）：你可能会瞬间看到 `whitelist.json.tmp`；若文件解析失败，损坏的旧文件会被备份为 `whitelist.json.corrupt`。
+- **日志**到 1 MiB 即轮转、只保留一份（持续性故障也刷不满磁盘）。debug 构建额外打到 stdout。
+- **webview 数据**（语言偏好等 `localStorage`、WKWebView/WebView2 缓存）由系统/框架管理，并非 Portreaper 自建。它按 origin 天然隔离（正式版 `tauri://localhost`、开发版 `localhost:1420`）。Windows 上 WebView2 运行时会在上述配置目录下另建一个 `EBWebView\` 文件夹。
+
+卸载应用不会删除这些目录 —— 若想彻底清干净，请手动删除上面的 `com.fhf.portreaper` 目录。
 
 ### 许可证
 

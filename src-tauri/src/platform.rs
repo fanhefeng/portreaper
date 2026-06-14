@@ -64,7 +64,10 @@ fn current_start_unix(pid: u32) -> Option<u64> {
         .duration_since(UNIX_EPOCH)
         .map(|d| d.as_secs())
         .unwrap_or(0);
-    Some(now.saturating_sub(crate::scanner::parse_etime_secs(etime)))
+    // 解析失败返回 None → 上层 kill 走 ERR_PROCESS_GONE 让用户重扫,绝不静默把
+    // 进程当成「刚启动」(current ≈ now 会绕过 ±5s PID 复用容差)。
+    let elapsed = crate::scanner::parse_etime_checked(etime)?;
+    Some(now.saturating_sub(elapsed))
 }
 
 #[cfg(windows)]

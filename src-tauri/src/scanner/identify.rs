@@ -26,9 +26,13 @@ pub(crate) fn is_dev_build_artifact(path: &str) -> bool {
 
 /// 去掉 Windows 可执行后缀：node.exe → node（大小写不敏感）
 pub(crate) fn strip_exe(name: &str) -> &str {
-    let lower = name.to_lowercase();
-    if lower.ends_with(".exe") {
-        &name[..name.len() - 4]
+    // is_char_boundary 守卫:name 末尾若是非 ASCII 多字节字符(如中文进程名),
+    // n-4 可能落在该字符内部,裸切片 `name[n-4..]` 会 panic —— 先确认是字符
+    // 边界再比对。同时省去原 to_lowercase() 的整串堆分配(`.exe` 全 ASCII,
+    // eq_ignore_ascii_case 足够,且不会把非 ASCII 大写映射进来)。
+    let n = name.len();
+    if n >= 4 && name.is_char_boundary(n - 4) && name[n - 4..].eq_ignore_ascii_case(".exe") {
+        &name[..n - 4]
     } else {
         name
     }

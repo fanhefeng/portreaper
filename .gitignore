@@ -12,6 +12,9 @@ dist
 dist-ssr
 *.local
 
+# Design scratch（图标/概念草稿，未被构建引用，仅本地保留）
+design/
+
 # Editor directories and files
 .vscode/*
 !.vscode/extensions.json

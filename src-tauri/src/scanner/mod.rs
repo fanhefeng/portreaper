@@ -20,8 +20,9 @@ use std::collections::{HashMap, HashSet};
 pub use model::ProcessEntry;
 
 /// 供 platform::kill 的身份校验复用（macOS：kill 前用 `ps -o etime=` 重读创建时间）。
+/// checked 版:解析失败返回 None → kill fail-closed,绝不把进程误当「刚启动」。
 #[cfg(target_os = "macos")]
-pub(crate) use macos::parse_etime as parse_etime_secs;
+pub(crate) use macos::parse_etime_checked;
 
 /// 供 platform::kill 复用同一份系统二进制绝对路径映射（kill/ps）—— 加固集中一处。
 #[cfg(target_os = "macos")]
@@ -352,14 +353,48 @@ fn mark_duplicates(entries: &mut [ProcessEntry], cwds: &HashMap<u32, String>) {
         *slot = Some(slot.map_or(pid, |cur| cur.min(pid)));
     }
 
+    // 预计算每个条目的派生身份:原实现在内层循环里对固定的 a 反复重算
+    // project_key / script_identity(各含一次 split_whitespace 全命令行扫描)
+    // 与 chain_node,是 O(n²)×解析。这里每条目只算一次,内层只做比较(评审 H1)。
+    // 不 eligible 的条目留空,内层据 eligible 直接跳过。
+    #[derive(Default)]
+    struct Prep {
+        eligible: bool,
+        project: Option<(String, String)>,
+        script_id: Option<String>,
+        cwd: Option<String>,
+        chain0: Option<(u32, bool, bool)>,
+        chain1: Option<(u32, bool, bool)>,
+    }
+    let prep: Vec<Prep> = entries
+        .iter()
+        .map(|e| {
+            if !eligible(e) {
+                return Prep::default();
+            }
+            Prep {
+                eligible: true,
+                project: project_key(e),
+                script_id: script_identity(e),
+                cwd: cwds.get(&e.pid).cloned(),
+                chain0: chain_node(e, 0),
+                chain1: chain_node(e, 1),
+            }
+        })
+        .collect();
+
     let n = entries.len();
     let mut peer: Vec<Option<u32>> = vec![None; n];
     for i in 0..n {
+        if !prep[i].eligible {
+            continue;
+        }
         for j in (i + 1)..n {
-            let (a, b) = (&entries[i], &entries[j]);
-            if !eligible(a) || !eligible(b) {
+            if !prep[j].eligible {
                 continue;
             }
+            let (a, b) = (&entries[i], &entries[j]);
+            let (pi, pj) = (&prep[i], &prep[j]);
             // 互为父子（master/worker）
             if a.ppid == b.pid || b.ppid == a.pid {
                 continue;
@@ -369,7 +404,7 @@ fn mark_duplicates(entries: &mut [ProcessEntry], cwds: &HashMap<u32, String>) {
                 continue;
             }
             // cwd 一票否决：两侧已知且不同 ⇒ 不同子包/worktree/项目
-            let (cwd_a, cwd_b) = (cwds.get(&a.pid), cwds.get(&b.pid));
+            let (cwd_a, cwd_b) = (pi.cwd.as_deref(), pj.cwd.as_deref());
             if let (Some(ca), Some(cb)) = (cwd_a, cwd_b) {
                 if ca != cb {
                     continue;
@@ -380,9 +415,7 @@ fn mark_duplicates(entries: &mut [ProcessEntry], cwds: &HashMap<u32, String>) {
             // 两侧链都须独立印证该父（评审发现：只验 a 一侧、默认 b 链一致 ——
             // b 链缺失/形态不同时会被静默当作同编排器而漏标；收紧到双侧印证）。
             if a.ppid == b.ppid {
-                if let (Some((pa, pa_sh, pa_app)), Some((pb, _, _))) =
-                    (chain_node(a, 0), chain_node(b, 0))
-                {
+                if let (Some((pa, pa_sh, pa_app)), Some((pb, _, _))) = (pi.chain0, pj.chain0) {
                     if pa == a.ppid && pb == b.ppid && pa > 1 && !pa_sh && !pa_app {
                         continue;
                     }
@@ -391,25 +424,30 @@ fn mark_duplicates(entries: &mut [ProcessEntry], cwds: &HashMap<u32, String>) {
             // 共同祖父的堂兄弟：祖父是存活的非 shell 编排器（turbo 经 shell 包装）。
             // 两侧 is_shell 都须为假（pid 相等时本是同进程、冗余但语义自证）；
             // 祖父是用户可见 App（同一终端两个 tab）不构成编排证据，照常比对。
-            if let (Some((ga, ga_sh, ga_app)), Some((gb, gb_sh, _))) =
-                (chain_node(a, 1), chain_node(b, 1))
-            {
+            if let (Some((ga, ga_sh, ga_app)), Some((gb, gb_sh, _))) = (pi.chain1, pj.chain1) {
                 if ga == gb && ga > 1 && !ga_sh && !gb_sh && !ga_app {
                     continue;
                 }
             }
             let same_cmd = !a.full_command.is_empty() && a.full_command == b.full_command;
-            let same_project = match (project_key(a), project_key(b)) {
+            let same_project = match (&pi.project, &pj.project) {
                 (Some(x), Some(y)) => x == y,
                 _ => false,
             };
             let same_cwd = matches!((cwd_a, cwd_b), (Some(x), Some(y)) if x == y);
             let same_cwd_identity = same_cwd
                 && matches!(
-                    (script_identity(a), script_identity(b)),
+                    (&pi.script_id, &pj.script_id),
                     (Some(x), Some(y)) if x == y
                 );
-            if same_cmd || same_project || same_cwd_identity {
+            // 路径/命令证据（same_cmd / same_project）在 hoisted node_modules 下会把
+            // 不同 monorepo 子包坍缩成相同 —— 仅当 cwd 信息不是「一侧已知、一侧未知」
+            // 时才采信（评审 M3：信息不对称时已知侧无从印证未知侧，易把子包误配对）。
+            // 两侧都未知是纯路径回退（接受其风险）；两侧都已知到此必然相同（不同已被
+            // 上面一票否决）。same_cwd_identity 本就要求双 cwd 相同，不受此限。
+            let cwd_known = cwd_a.is_some() as u8 + cwd_b.is_some() as u8;
+            let path_evidence_ok = cwd_known != 1;
+            if same_cwd_identity || ((same_cmd || same_project) && path_evidence_ok) {
                 assign_min(&mut peer[i], b.pid);
                 assign_min(&mut peer[j], a.pid);
             }
@@ -763,6 +801,22 @@ mod dup_tests {
             &cwd_map(&[(100, "/Users/x/ai-portal"), (200, "/Users/x/ai-portal-wt2")]),
         );
         assert!(!es[0].is_zombie_suspect && !es[1].is_zombie_suspect);
+    }
+
+    #[test]
+    fn asymmetric_cwd_path_evidence_not_flagged() {
+        // 评审 M3:cwd「一侧已知、一侧未知」时,路径/命令证据(hoisted node_modules
+        // 会把不同 monorepo 子包坍缩成逐字相同)不可信 —— 已知侧无从印证未知侧,
+        // 不据此标重复,避免把子包误配对。两侧都未知(no_cwd)仍走纯路径回退。
+        let cmd = "node /Users/x/mono/node_modules/vite/bin/vite.js dev";
+        let a = entry(100, 10, &[3000], cmd);
+        let b = entry(200, 20, &[3001], cmd);
+        let mut es = vec![a, b];
+        mark_duplicates(&mut es, &cwd_map(&[(100, "/Users/x/mono/apps/web")]));
+        assert!(
+            !es[0].is_zombie_suspect && !es[1].is_zombie_suspect,
+            "cwd 信息不对称时路径证据不可信,不应标重复"
+        );
     }
 
     #[test]

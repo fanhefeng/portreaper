@@ -1,4 +1,5 @@
 mod commands;
+mod paths;
 mod platform;
 mod scanner;
 mod whitelist;
@@ -6,9 +7,9 @@ mod whitelist;
 use std::sync::Mutex;
 
 use tauri::{
-    menu::{MenuBuilder, MenuItem, MenuItemBuilder},
+    menu::{MenuBuilder, MenuItem, MenuItemBuilder, Submenu, SubmenuBuilder},
     tray::{MouseButton, MouseButtonState, TrayIconBuilder, TrayIconEvent},
-    Manager, WindowEvent, Wry,
+    AppHandle, Manager, WindowEvent, Wry,
 };
 
 /// 当前界面语言（"zh" / "en"），托盘 tooltip 与菜单共用；
@@ -18,6 +19,9 @@ pub struct TrayLang(pub Mutex<&'static str>);
 /// 托盘菜单项句柄 —— 语言切换时直接 set_text，无需重建菜单。
 pub struct TrayMenuItems {
     pub show: MenuItem<Wry>,
+    pub open_dir: Submenu<Wry>,
+    pub open_config: MenuItem<Wry>,
+    pub open_logs: MenuItem<Wry>,
     pub quit: MenuItem<Wry>,
 }
 
@@ -32,6 +36,38 @@ pub(crate) fn tray_texts(lang: &str) -> (&'static str, &'static str) {
         ("显示窗口", "退出 Portreaper")
     } else {
         ("Show Window", "Quit Portreaper")
+    }
+}
+
+/// 「打开目录」子菜单的文案：(子菜单标题, 配置目录项, 日志目录项)。
+pub(crate) fn dir_menu_texts(lang: &str) -> (&'static str, &'static str, &'static str) {
+    if lang == "zh" {
+        ("打开目录", "配置目录", "日志目录")
+    } else {
+        ("Open Folder", "Config Folder", "Logs Folder")
+    }
+}
+
+/// 在系统文件管理器里打开 app 自建目录。目录可能尚未创建（config 仅在首次保存
+/// 白名单时落盘），故先 create_dir_all 兜底，避免打开一个不存在的路径而失败。
+/// 失败只记日志、不打断用户（菜单点击没有 UI 反馈通道）。
+fn open_app_dir(app: &AppHandle, dir: tauri::Result<std::path::PathBuf>) {
+    use tauri_plugin_opener::OpenerExt;
+    let path = match dir {
+        Ok(p) => p,
+        Err(e) => {
+            log::warn!("resolve app dir failed: {e}");
+            return;
+        }
+    };
+    if let Err(e) = std::fs::create_dir_all(&path) {
+        log::warn!("create dir {} failed: {e}", path.display());
+    }
+    if let Err(e) = app
+        .opener()
+        .open_path(path.to_string_lossy().into_owned(), None::<&str>)
+    {
+        log::warn!("open dir {} failed: {e}", path.display());
     }
 }
 
@@ -51,6 +87,37 @@ fn detect_lang() -> &'static str {
     } else {
         "en"
     }
+}
+
+/// 分环境日志插件。debug：stdout + 文件、Debug 级（dev 终端能看到，便于调试）；
+/// release：仅文件、Info 级 —— GUI 子系统（main.rs 的 windows_subsystem="windows"）
+/// 无控制台，macOS 的 `.app` 同样吞掉 stdout，故正式版只靠落盘才有故障线索。
+/// 文件按 1 MiB 轮转且只留一份，防持续性故障刷满磁盘（沿用旧 windows log_failure 阈值）。
+fn build_log_plugin<R: tauri::Runtime>(
+    log_dir: std::path::PathBuf,
+) -> tauri::plugin::TauriPlugin<R> {
+    use tauri_plugin_log::{Builder, RotationStrategy, Target, TargetKind};
+
+    let level = if cfg!(debug_assertions) {
+        log::LevelFilter::Debug
+    } else {
+        log::LevelFilter::Info
+    };
+
+    let mut builder = Builder::new()
+        .level(level)
+        .max_file_size(1_000_000)
+        .rotation_strategy(RotationStrategy::KeepOne)
+        .target(Target::new(TargetKind::Folder {
+            path: log_dir,
+            file_name: Some(paths::log_file_name()),
+        }));
+
+    if cfg!(debug_assertions) {
+        builder = builder.target(Target::new(TargetKind::Stdout));
+    }
+
+    builder.build()
 }
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
@@ -131,23 +198,60 @@ pub fn run() {
 
     builder
         .setup(|app| {
-            if let Ok(dir) = app.path().app_config_dir() {
+            // 日志系统运行期注册：此时才拿得到 AppHandle 以解析分环境目录。
+            // 放在最前面，让白名单损坏等早期告警也能落盘。
+            match paths::log_dir(app.handle()) {
+                Ok(dir) => {
+                    if let Err(e) = app.handle().plugin(build_log_plugin(dir)) {
+                        eprintln!("failed to init logging: {e}");
+                    }
+                }
+                Err(e) => eprintln!("failed to resolve log dir: {e}"),
+            }
+            log::info!(
+                "Portreaper {} starting (env={})",
+                env!("CARGO_PKG_VERSION"),
+                paths::env_label()
+            );
+
+            if let Ok(dir) = paths::config_dir(app.handle()) {
                 whitelist::init(dir.join("whitelist.json"));
             }
 
             let lang = detect_lang();
             let (show_text, quit_text) = tray_texts(lang);
+            let (dir_text, config_text, logs_text) = dir_menu_texts(lang);
             let show_item = MenuItemBuilder::with_id("show", show_text).build(app)?;
+            let open_config =
+                MenuItemBuilder::with_id("open-config-dir", config_text).build(app)?;
+            let open_logs = MenuItemBuilder::with_id("open-log-dir", logs_text).build(app)?;
+            let open_dir = SubmenuBuilder::new(app, dir_text)
+                .item(&open_config)
+                .item(&open_logs)
+                .build()?;
             let quit_item = MenuItemBuilder::with_id("quit", quit_text).build(app)?;
             let menu = MenuBuilder::new(app)
-                .items(&[&show_item, &quit_item])
+                .item(&show_item)
+                .item(&open_dir)
+                .separator()
+                .item(&quit_item)
                 .build()?;
             app.manage(TrayLang(Mutex::new(lang)));
             app.manage(TrayMenuItems {
                 show: show_item,
+                open_dir,
+                open_config,
+                open_logs,
                 quit: quit_item,
             });
 
+            // 托盘图标：macOS 用专用单色 template 图（纯黑+透明，系统按菜单栏明暗自动反色）。
+            // 复用彩色应用图标会被 icon_as_template 压成糊在一起的剪影，故单独嵌入 tray.png；
+            // 用 include_bytes! 编译期焊进二进制，避免打包后运行期路径解析失败。
+            // 其它平台（Windows）无 template 概念，沿用彩色应用图标。
+            #[cfg(target_os = "macos")]
+            let icon = tauri::image::Image::from_bytes(include_bytes!("../icons/tray.png"))?;
+            #[cfg(not(target_os = "macos"))]
             let icon = app
                 .default_window_icon()
                 .cloned()
@@ -170,6 +274,8 @@ pub fn run() {
                             let _ = w.set_focus();
                         }
                     }
+                    "open-config-dir" => open_app_dir(app, paths::config_dir(app)),
+                    "open-log-dir" => open_app_dir(app, paths::log_dir(app)),
                     "quit" => {
                         app.exit(0);
                     }

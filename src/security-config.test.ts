@@ -39,13 +39,15 @@ describe("security config guards", () => {
     expect(s).not.toMatch(/script-src[^;]*'unsafe-inline'/);
   });
 
-  it("权限面是精确的全量白名单：core:default + scoped opener，不多一项", () => {
+  it("权限面是精确的全量白名单：core:default + log:default + scoped opener，不多一项", () => {
     const perms: unknown[] = caps.permissions;
-    // 字符串型权限精确等于期望集合 —— 新增任何权限必须显式修改本断言
+    // 字符串型权限精确等于期望集合 —— 新增任何权限必须显式修改本断言。
+    // log:default：前端 logger.ts 把未捕获异常转发到后端日志文件所需（仅写日志，
+    // 无读取/无文件系统访问，攻击面极小）。
     const stringPerms = perms.filter((p): p is string => typeof p === "string");
-    expect(stringPerms).toEqual(["core:default"]);
+    expect(stringPerms).toEqual(["core:default", "log:default"]);
     // 对象型权限只有一个：scoped 的 opener:allow-open-url（下一测试校验 scope）
-    expect(perms.length).toBe(2);
+    expect(perms.length).toBe(3);
   });
 
   it("opener 权限已收窄：无 opener:default，open-url 仅限 localhost", () => {

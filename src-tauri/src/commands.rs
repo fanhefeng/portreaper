@@ -104,7 +104,14 @@ pub fn set_tray_language(app: tauri::AppHandle, lang: String) -> Result<(), Stri
     }
     if let Some(items) = app.try_state::<crate::TrayMenuItems>() {
         let (show, quit) = crate::tray_texts(lang);
+        let (dir, config, logs) = crate::dir_menu_texts(lang);
         items.show.set_text(show).map_err(|e| e.to_string())?;
+        items.open_dir.set_text(dir).map_err(|e| e.to_string())?;
+        items
+            .open_config
+            .set_text(config)
+            .map_err(|e| e.to_string())?;
+        items.open_logs.set_text(logs).map_err(|e| e.to_string())?;
         items.quit.set_text(quit).map_err(|e| e.to_string())?;
     }
     // macOS 应用菜单的 ⌘Q 替代项（quit-to-tray）同步语言

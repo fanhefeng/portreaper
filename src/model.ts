@@ -51,6 +51,12 @@ export type Translator = (
 /** 一键清理覆盖的置信层级（Possible 永不入清扫） */
 export const SWEEPABLE: ReadonlySet<Confidence> = new Set(["confirmed", "likely"]);
 
+/** 会被一键清扫覆盖的行（嫌疑 + 置信层级达标）—— 托盘计数与清扫列表共用，
+ *  避免两处各写一遍同一过滤条件而漂移（评审发现）。 */
+export function sweepableEntries(entries: ProcessEntry[]): ProcessEntry[] {
+  return entries.filter((e) => e.is_zombie_suspect && SWEEPABLE.has(e.confidence));
+}
+
 /** 豁免类 reason code —— 非嫌疑行的详情里以「为什么不是僵尸」展示 */
 export const EXEMPT_REASONS = new Set([
   "launchd_managed",
@@ -58,6 +64,14 @@ export const EXEMPT_REASONS = new Set([
   "installed_app",
   "pm2_managed",
 ]);
+
+/** 非嫌疑行的豁免原因（「为什么不是僵尸」）—— Row 与 Detail 详情共用。
+ *  原先两处各写一遍同一过滤（评审发现）。 */
+export function exemptReasons(e: ProcessEntry): string[] {
+  return e.is_zombie_suspect
+    ? []
+    : e.zombie_reasons.filter((r) => EXEMPT_REASONS.has(r));
+}
 
 /** 行内只讲一个最重要的原因（其余进详情面板），此为优先级 */
 export const REASON_PRIORITY = [
@@ -114,6 +128,12 @@ export function formatDuration(secs: number): string {
   return d > 0
     ? `${d}-${pad(h)}:${pad(m)}:${pad(s)}`
     : `${pad(h)}:${pad(m)}:${pad(s)}`;
+}
+
+/** 端口列表 → ":3000 :3001" 串（sep 默认单空格；弹窗等紧凑处传 "  "）。
+ *  原先 App.tsx 四处各写一遍 ports.map(...).join(...)（评审发现）。 */
+export function formatPorts(ports: number[], sep = " "): string {
+  return ports.map((p) => `:${p}`).join(sep);
 }
 
 /** 后端语义错误（ERR_* 前缀）→ 本地化文案；其余透传 OS 原文 */
