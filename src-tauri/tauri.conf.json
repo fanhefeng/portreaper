@@ -1,11 +1,11 @@
 {
   "$schema": "https://schema.tauri.app/config/2",
   "productName": "Portreaper",
-  "version": "0.5.2",
+  "version": "0.6.0",
   "identifier": "com.fhf.portreaper",
   "build": {
     "beforeDevCommand": "pnpm dev",
-    "devUrl": "http://localhost:1420",
+    "devUrl": "http://localhost:1430",
     "beforeBuildCommand": "pnpm build",
     "frontendDist": "../dist"
   },
