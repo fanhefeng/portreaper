@@ -8,7 +8,24 @@ import {
   findCargoTomlVersion,
   setCargoLockVersion,
   findCargoLockVersion,
+  setJsonVersion,
 } from "./bump-version.mjs";
+
+test("setJsonVersion 逐字节保留原格式（回归：JSON.stringify 重写曾抹掉 oxfmt 折叠风格，v0.7.0 发版 CI 变红）", () => {
+  const raw = '{\n  "version": "0.6.0",\n  "bundle": { "targets": ["app", "dmg", "nsis"] }\n}\n';
+  const out = setJsonVersion(raw, "0.7.0");
+  // 除 version 值外一个字节不变：折叠的数组必须保持折叠
+  assert.equal(
+    out,
+    '{\n  "version": "0.7.0",\n  "bundle": { "targets": ["app", "dmg", "nsis"] }\n}\n',
+  );
+});
+
+test("setJsonVersion 无 version 键或替换未生效时返回 null（响亮失败，不静默写坏）", () => {
+  assert.equal(setJsonVersion('{ "name": "x" }', "1.0.0"), null);
+  // 首个匹配是嵌套 version（顶层没有）→ 顶层校验不过 → null
+  assert.equal(setJsonVersion('{ "dep": { "version": "1.0.0" } }', "2.0.0"), null);
+});
 
 test("SEMVER_RE accepts valid versions (incl. pre-release/build)", () => {
   for (const v of [

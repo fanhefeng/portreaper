@@ -27,13 +27,14 @@ This rewrites the version in all the places that must stay in sync:
 
 Use a plain semver string (`1.2.0`), no leading `v`.
 
-### 2. Refresh / sanity-check the lockfile
+### 2. Refresh / sanity-check the lockfile + formatting
 
 ```bash
 cargo build --manifest-path src-tauri/Cargo.toml
+pnpm exec vp check
 ```
 
-This confirms `Cargo.lock` is consistent after the bump and that the crate still compiles. Commit any lockfile changes it produces.
+This confirms `Cargo.lock` is consistent after the bump and that the crate still compiles. Commit any lockfile changes it produces. `vp check` guards the bumped manifests' formatting — the v0.7.0 release turned main's CI red because the (since-fixed) bump script re-serialized `tauri.conf.json` in a non-oxfmt style; if it ever flags something, run `pnpm exec vp check --fix` and include it in the release commit.
 
 ### 3. Commit, tag, push
 

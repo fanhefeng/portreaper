@@ -9,8 +9,10 @@ export default defineConfig(async () => ({
 
   // pre-commit（.vite-hooks/pre-commit → `vp staged`）对暂存文件跑 fmt+lint+类型检查。
   // 函数形式的 config 让 `vp migrate` 无法自动合并，故手动维护（见 viteplus.dev/guide/migrate）。
+  // json/yml/toml 也在列（评审根因）：bump-version 重写过的 tauri.conf.json
+  // 曾因 glob 只有 js/ts 而绕过本钩子，格式回退直到 CI 才被拦下。
   staged: {
-    "*.{js,mjs,ts,tsx}": "vp check --fix",
+    "*.{js,mjs,ts,tsx,json,yml,yaml,toml}": "vp check --fix",
   },
 
   // Vite options tailored for Tauri development and only applied in `tauri dev` or `tauri build`

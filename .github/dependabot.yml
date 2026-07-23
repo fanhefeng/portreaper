@@ -1,25 +1,17 @@
-# 三个生态的依赖更新提醒。github-actions 生态尤其关键：workflow 里的第三方
+# 依赖更新提醒。github-actions 生态尤其关键：workflow 里的第三方
 # action 全部钉了 commit SHA（供应链加固），没有 Dependabot 就没人提醒升级。
+#
+# npm 生态已移除（Vite+ 迁移后）：vite/vitest 等经 pnpm-workspace.yaml 的
+# catalog: 协议由 vite-plus 捆绑托管，Dependabot 的 npm updater 解析不了该
+# 布局 —— 实测迁移后所有 npm 更新任务（含 @types/node 这类普通依赖）都在
+# update_files 阶段挂掉。JS 依赖升级走 `vp outdated` / `vp update`，
+# vite-plus 本体升级走 `vp migrate`（并同步 pnpm-workspace 的钉版条目）。
 version: 2
 updates:
   - package-ecosystem: github-actions
     directory: /
     schedule:
       interval: weekly
-
-  - package-ecosystem: npm
-    directory: /
-    schedule:
-      interval: monthly
-    groups:
-      # React 要求 react 与 react-dom 严格同版本 —— 拆开升必挂
-      # （Dependabot 曾单独把 react 升到 19.2.7 而 react-dom 停在 19.2.6）
-      react:
-        patterns:
-          - react
-          - react-dom
-          - "@types/react"
-          - "@types/react-dom"
 
   - package-ecosystem: cargo
     directory: /src-tauri

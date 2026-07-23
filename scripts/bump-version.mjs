@@ -63,7 +63,11 @@ function parseArgs(argv) {
   return { check, version };
 }
 
-// --- JSON helpers: preserve 2-space indent + single trailing newline. -------
+// --- JSON helpers: 定点替换，原文件格式逐字节保留。 -------------------------
+// 不用 JSON.parse + JSON.stringify 整体重写（评审根因，v0.7.0 发版实锤）：
+// 重写会抹掉 oxfmt 的既有风格 —— tauri.conf.json 被折叠的 targets 数组
+// 被重新展开，主分支的 vp check 门禁当场变红。与 Cargo.toml/lock 的
+// regex 定点手术保持同一纪律：只动 version 的值，其余一个字节不碰。
 
 async function readJsonVersion(path) {
   const raw = await readFile(path, "utf8");
@@ -71,11 +75,26 @@ async function readJsonVersion(path) {
   return data.version;
 }
 
+/** 替换首个 `"version": "…"` 的值；失败或未生效返回 null（调用方响亮退出）。 */
+export function setJsonVersion(raw, version) {
+  const re = /("version"\s*:\s*")[^"]*(")/;
+  if (!re.test(raw)) return null;
+  const out = raw.replace(re, `$1${version}$2`);
+  // 双保险：结果必须仍是合法 JSON，且顶层 version 确已更新 ——
+  // 若首个匹配命中的是某个嵌套 "version"，此检查会失败而非静默写坏文件。
+  try {
+    if (JSON.parse(out).version !== version) return null;
+  } catch {
+    return null;
+  }
+  return out;
+}
+
 async function writeJsonVersion(path, version) {
   const raw = await readFile(path, "utf8");
-  const data = JSON.parse(raw);
-  data.version = version;
-  await writeFile(path, JSON.stringify(data, null, 2) + "\n");
+  const out = setJsonVersion(raw, version);
+  if (out === null) fail(`could not update "version" in ${path}`);
+  await writeFile(path, out);
 }
 
 // --- Cargo.toml: rewrite the version in the [package] section only. ---------
