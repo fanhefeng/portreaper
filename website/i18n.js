@@ -41,7 +41,7 @@ window.I18N = {
       "核心价值是僵尸识别和启动链 —— 帮你分清「正在干活的进程」和「该被收割的孤魂」。",
     "feat.detect.title": "僵尸识别",
     "feat.detect.body":
-      "置信度分层（confirmed / likely / possible）综合孤儿、孤儿链、会话失效等信号判定。launchd / Homebrew 后台服务自动豁免 —— 不误报正在服务的进程。",
+      "置信度分层（confirmed / likely / possible）综合孤儿、孤儿链、会话失效等信号判定。连不占任何端口的孤儿 dev 进程（如 electron-vite 残留的 Electron 主进程）和同项目重复启动的 dev server 也逃不掉。launchd / Homebrew 后台服务自动豁免 —— 不误报正在服务的进程。",
     "feat.chain.title": "启动链",
     "feat.chain.body":
       "沿父进程链一路上溯，看清这个进程到底是谁拉起的：Terminal → zsh → npm → vite。一眼分辨「我自己开的」还是「不知哪来的孤儿」。",
@@ -124,7 +124,7 @@ window.I18N = {
       "The point is zombie detection and the launcher chain — telling the processes doing real work apart from the orphans worth reaping.",
     "feat.detect.title": "Zombie detection",
     "feat.detect.body":
-      "Tiered confidence (confirmed / likely / possible) combining orphan, orphan-chain and dead-session signals. launchd / Homebrew services are auto-exempted — no false alarms on processes that are actually serving.",
+      "Tiered confidence (confirmed / likely / possible) combining orphan, orphan-chain and dead-session signals. Even port-less orphaned dev processes (like the Electron main process an electron-vite session leaves behind) and duplicate dev servers of the same project can't hide. launchd / Homebrew services are auto-exempted — no false alarms on processes that are actually serving.",
     "feat.chain.title": "Launcher chain",
     "feat.chain.body":
       "Walks the parent chain to show exactly who spawned a process: Terminal → zsh → npm → vite. Tell at a glance whether you started it or it's an orphan from nowhere.",
