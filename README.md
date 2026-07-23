@@ -49,12 +49,13 @@ Releases are **not code-signed yet**, so the OS will warn you. This is expected.
 Alternatives if that does not appear:
 
 - Right-click the app → **Open** → confirm in the dialog, or
+- Right-click the bundled **`解除隔离 Remove Quarantine.command`** in the dmg window → **Open** (shipped since v0.7.1) — strips quarantine and launches the app automatically (the script is quarantined too, hence right-click rather than double-click), or
 - Strip the quarantine flag from a terminal:
   ```bash
   xattr -dr com.apple.quarantine /Applications/Portreaper.app
   ```
 
-> **If macOS says Portreaper "is damaged and can't be opened"** (instead of the developer-verification notice), "Open Anyway" and right-click → Open usually won't help — this is the unsigned-app variant, and the `xattr` command above is the reliable fix.
+> **If macOS says Portreaper "is damaged and can't be opened"** (instead of the developer-verification notice), "Open Anyway" and right-click → Open usually won't help — this is the unsigned-app variant, and the bundled `.command` helper or the `xattr` command above are the reliable fixes.
 
 **Windows (SmartScreen).** Run the installer; on the blue "Windows protected your PC" screen click **More info → Run anyway**. Because Portreaper terminates other processes, some antivirus / EDR products may flag it — allow it if you trust the source.
 
@@ -197,12 +198,13 @@ Portreaper **不是**通用的端口查看器。它常驻托盘，每隔两秒�
 如果上面那个按钮没出现，可改用：
 
 - 右键点击 App →「**打开**」→ 在弹窗里确认；或
+- 右键 dmg 窗口里随附的「**解除隔离 Remove Quarantine.command**」→「**打开**」（v0.7.1 起附带）—— 自动移除隔离并启动应用（脚本自身也带隔离标记，所以要右键而不是双击）；或
 - 在终端里去掉隔离属性：
   ```bash
   xattr -dr com.apple.quarantine /Applications/Portreaper.app
   ```
 
-> **如果系统提示的是「已损坏，无法打开」**（而不是「无法验证开发者」），「仍要打开」和右键打开通常都没用 —— 这是未签名 App 的另一种报错，上面的 `xattr` 命令才是可靠解法。
+> **如果系统提示的是「已损坏，无法打开」**（而不是「无法验证开发者」），「仍要打开」和右键打开通常都没用 —— 这是未签名 App 的另一种报错，dmg 里随附的解除隔离脚本或上面的 `xattr` 命令才是可靠解法。
 
 **Windows（SmartScreen）。** 运行安装程序，在蓝色的「Windows 已保护你的电脑」界面点击「**更多信息 → 仍要运行**」。由于 Portreaper 会终止其他进程，部分杀毒 / EDR 软件可能将其标记为可疑 —— 若你信任来源，请放行。
 

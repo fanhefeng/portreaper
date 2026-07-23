@@ -63,7 +63,7 @@ window.I18N = {
     "install.mac.s3":
       "或者在「应用程序」里 <strong>右键 → 打开</strong>，在弹窗里再次确认「打开」。",
     "install.mac.s4":
-      "若提示的是「<strong>已损坏，无法打开</strong>」（未签名 App 的常见报错，此时「仍要打开」常常不出现、右键打开也无效），在终端执行下面这行移除隔离属性最可靠：",
+      "若提示的是「<strong>已损坏，无法打开</strong>」（未签名 App 的常见报错，此时「仍要打开」常常不出现、右键打开也无效）：<strong>右键 dmg 里随附的「解除隔离 Remove Quarantine.command」→「打开」</strong>，自动移除隔离并启动（v0.7.1 起附带；脚本自身也带隔离标记，需右键而非双击）。或在终端手动执行：",
     "install.copy": "复制",
     "install.copyAria": "复制命令",
     "showcase.screenshotAlt": "Portreaper 主界面截图",
@@ -147,7 +147,7 @@ window.I18N = {
     "install.mac.s3":
       "Or in Applications, <strong>right-click → Open</strong> and confirm “Open” in the dialog.",
     "install.mac.s4":
-      "If it instead says the app is <strong>“damaged and can't be opened”</strong> (a common error for unsigned apps — “Open Anyway” and right-click → Open usually won't help here), running this in Terminal to strip the quarantine attribute is the reliable fix:",
+      "If it instead says the app is <strong>“damaged and can't be opened”</strong> (a common error for unsigned apps — “Open Anyway” and right-click → Open usually won't help here): <strong>right-click the bundled “解除隔离 Remove Quarantine.command” inside the dmg → “Open”</strong> — it strips quarantine and launches the app (shipped since v0.7.1; the script is quarantined too, hence right-click rather than double-click). Or run this in Terminal manually:",
     "install.copy": "Copy",
     "install.copyAria": "Copy command",
     "showcase.screenshotAlt": "Screenshot of the Portreaper main window",
