@@ -1,6 +1,6 @@
 [package]
 name = "portreaper"
-version = "0.6.0"
+version = "0.7.0"
 description = "Find and kill orphaned port-listening processes"
 authors = ["fhf"]
 license = "MIT"
