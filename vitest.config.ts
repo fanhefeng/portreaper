@@ -1,4 +1,4 @@
-import { defineConfig } from "vitest/config";
+import { defineConfig } from "vite-plus";
 import react from "@vitejs/plugin-react";
 
 // 前端回归测试（vitest + happy-dom）。与 vite.config.ts 分离：

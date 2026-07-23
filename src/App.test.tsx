@@ -4,7 +4,7 @@
 //   - scanError：扫描错误，下一次成功轮询自动清除（自愈语义）；
 //   - actionError：操作错误，只能用户点击关闭。
 // 本文件用假 invoke + 假定时器完整走一遍「kill 失败 → 多轮成功轮询」流程。
-import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
+import { describe, it, expect, vi, beforeEach, afterEach } from "vite-plus/test";
 import { render, screen, fireEvent, act, cleanup } from "@testing-library/react";
 
 vi.mock("@tauri-apps/api/core", () => ({
@@ -304,9 +304,7 @@ describe("error channels", () => {
 
     fireEvent.click(screen.getAllByText("Kill")[0]);
     // 弹窗「命令」行展示完整命令，用户能辨认杀的是什么
-    expect(
-      screen.getByText("node /Users/x/proj/node_modules/vite/bin/vite.js dev"),
-    ).toBeTruthy();
+    expect(screen.getByText("node /Users/x/proj/node_modules/vite/bin/vite.js dev")).toBeTruthy();
   });
 
   it("清扫进行中禁用行内终止按钮（防对同一进程二次 kill）", async () => {
@@ -369,8 +367,7 @@ describe("error channels", () => {
     let hang = true;
     route({
       get_platform: () => "macos",
-      scan_ports: () =>
-        hang ? new Promise(() => {}) : ([suspectEntry()] as unknown),
+      scan_ports: () => (hang ? new Promise(() => {}) : ([suspectEntry()] as unknown)),
     });
     render(<App />);
     await advance(0);
@@ -403,10 +400,7 @@ describe("error channels", () => {
     const gates: Record<number, () => void> = {};
     route({
       get_platform: () => "macos",
-      scan_ports: () => [
-        suspectEntry(),
-        suspectEntry({ pid: 5151, ports: [5174] }),
-      ],
+      scan_ports: () => [suspectEntry(), suspectEntry({ pid: 5151, ports: [5174] })],
       kill_process: (args) =>
         new Promise<void>((r) => {
           gates[(args as { pid: number }).pid] = r;

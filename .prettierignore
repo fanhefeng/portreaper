@@ -1,0 +1,6 @@
+# oxfmt（vp fmt / vp check）的忽略清单（oxfmt 默认读取 .prettierignore）。
+# markdown 不交给 oxfmt：0.2.6 实测两处内容损坏 ——
+#   docs/TESTING-WINDOWS.md 列表项内的代码围栏被改写成行内代码（渲染语义变化）；
+#   docs/RELEASING.md 跨行代码段所在的 blockquote 连续行丢失 `>` 前缀。
+# 本仓库 md 是双语内容型文档，格式化收益为零、风险真实存在。oxfmt 的 md 支持成熟后可解禁。
+*.md

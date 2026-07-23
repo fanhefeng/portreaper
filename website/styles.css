@@ -28,8 +28,9 @@
   --blue: #60a5fa;
 
   --mono: ui-monospace, SFMono-Regular, "SF Mono", Menlo, Consolas, monospace;
-  --sans: -apple-system, BlinkMacSystemFont, "SF Pro Text", "Helvetica Neue",
-    "PingFang SC", "Hiragino Sans GB", system-ui, sans-serif;
+  --sans:
+    -apple-system, BlinkMacSystemFont, "SF Pro Text", "Helvetica Neue", "PingFang SC",
+    "Hiragino Sans GB", system-ui, sans-serif;
 
   --maxw: 1080px;
 }
@@ -52,7 +53,10 @@ body {
     linear-gradient(rgba(255, 255, 255, 0.012) 1px, transparent 1px),
     linear-gradient(90deg, rgba(255, 255, 255, 0.012) 1px, transparent 1px),
     radial-gradient(900px 500px at 70% -10%, rgba(16, 185, 129, 0.06), transparent 60%);
-  background-size: 44px 44px, 44px 44px, 100% 100%;
+  background-size:
+    44px 44px,
+    44px 44px,
+    100% 100%;
 }
 
 @media (prefers-reduced-motion: reduce) {
@@ -273,7 +277,11 @@ a:hover {
   background: var(--surface);
   border: 1px solid var(--border);
   color: var(--text);
-  transition: transform 0.15s, border-color 0.15s, box-shadow 0.15s, background 0.15s;
+  transition:
+    transform 0.15s,
+    border-color 0.15s,
+    box-shadow 0.15s,
+    background 0.15s;
 }
 .dl-btn:hover {
   text-decoration: none;
@@ -296,7 +304,9 @@ a:hover {
 .dl-btn.is-recommended {
   background: linear-gradient(180deg, rgba(16, 185, 129, 0.16) 0%, rgba(16, 185, 129, 0.06) 100%);
   border-color: rgba(16, 185, 129, 0.5);
-  box-shadow: 0 0 0 1px rgba(16, 185, 129, 0.15), 0 8px 26px -12px var(--accent-glow);
+  box-shadow:
+    0 0 0 1px rgba(16, 185, 129, 0.15),
+    0 8px 26px -12px var(--accent-glow);
 }
 .dl-btn.is-recommended .dl-btn__os {
   color: #d6fff0;
@@ -372,8 +382,13 @@ a:hover {
   animation: floaty 6s ease-in-out infinite;
 }
 @keyframes floaty {
-  0%, 100% { transform: translateY(0); }
-  50% { transform: translateY(-10px); }
+  0%,
+  100% {
+    transform: translateY(0);
+  }
+  50% {
+    transform: translateY(-10px);
+  }
 }
 
 /* ───── Showcase / screenshot ───── */
@@ -388,7 +403,9 @@ a:hover {
   border-radius: 14px;
   overflow: hidden;
   background: var(--bg-elev);
-  box-shadow: 0 30px 80px -40px rgba(0, 0, 0, 0.9), 0 0 0 1px rgba(255, 255, 255, 0.02);
+  box-shadow:
+    0 30px 80px -40px rgba(0, 0, 0, 0.9),
+    0 0 0 1px rgba(255, 255, 255, 0.02);
 }
 
 .window-chrome {
@@ -409,9 +426,15 @@ a:hover {
   border-radius: 50%;
   background: #3a414c;
 }
-.traffic i:nth-child(1) { background: #ff5f57; }
-.traffic i:nth-child(2) { background: #febc2e; }
-.traffic i:nth-child(3) { background: #28c840; }
+.traffic i:nth-child(1) {
+  background: #ff5f57;
+}
+.traffic i:nth-child(2) {
+  background: #febc2e;
+}
+.traffic i:nth-child(3) {
+  background: #28c840;
+}
 .window-chrome__title {
   font-size: 12px;
   color: var(--text-dim);
@@ -619,7 +642,10 @@ a:hover {
   background: var(--surface);
   border: 1px solid var(--border);
   border-radius: 14px;
-  transition: border-color 0.18s, transform 0.18s, background 0.18s;
+  transition:
+    border-color 0.18s,
+    transform 0.18s,
+    background 0.18s;
 }
 .feature-card:hover {
   border-color: var(--border-strong);
@@ -633,7 +659,9 @@ a:hover {
   border-radius: 14px;
   padding: 1px;
   background: linear-gradient(140deg, rgba(16, 185, 129, 0.35), transparent 40%);
-  -webkit-mask: linear-gradient(#000 0 0) content-box, linear-gradient(#000 0 0);
+  -webkit-mask:
+    linear-gradient(#000 0 0) content-box,
+    linear-gradient(#000 0 0);
   -webkit-mask-composite: xor;
   mask-composite: exclude;
   opacity: 0;

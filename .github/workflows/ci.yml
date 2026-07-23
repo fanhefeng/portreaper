@@ -6,6 +6,10 @@ name: CI
 # Keep CI advisory, or replace paths-ignore with an in-job path filter first.
 # website/** changes are NOT unchecked: pages.yml runs the website guards
 # (syntax + asset-name parity) before every deploy.
+# README.md is deliberately NOT ignored (no "**/*.md" pattern): it is one of
+# the three sources check-release-assets.mjs guards — a README-only edit that
+# breaks a stable asset name must fail here, not on release day (review-caught:
+# the old "**/*.md" ignore let exactly that land on main unchecked).
 #
 # All third-party actions are pinned to full commit SHAs (supply chain): the
 # release pipeline ships unsigned binaries via stable `latest` URLs, so a
@@ -15,15 +19,13 @@ on:
   push:
     branches: [main]
     paths-ignore:
-      - 'website/**'
-      - '**/*.md'
-      - 'docs/**'
+      - "website/**"
+      - "docs/**"
   pull_request:
     branches: [main]
     paths-ignore:
-      - 'website/**'
-      - '**/*.md'
-      - 'docs/**'
+      - "website/**"
+      - "docs/**"
 
 permissions:
   contents: read
@@ -42,12 +44,13 @@ jobs:
         uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6
 
       # pnpm/action-setup must run BEFORE setup-node so that `cache: pnpm` can
-      # locate the pnpm binary. This repo has no `packageManager` field in
-      # package.json, and pnpm-lock.yaml is lockfileVersion 9, so we pin pnpm 9.
+      # locate the pnpm binary. Since the Vite+ migration the workspace file uses
+      # pnpm 11 features (catalog: overrides, allowBuilds) and package.json pins
+      # pnpm 11.16 via devEngines — keep this major in sync with devEngines.
       - name: Install pnpm
         uses: pnpm/action-setup@0e279bb959325dab635dd2c09392533439d90093 # v6
         with:
-          version: 9
+          version: 11
 
       - name: Setup Node
         uses: actions/setup-node@48b55a011bda9f5d6aeb4c2d9c7362e8dae4041e # v6
@@ -73,21 +76,26 @@ jobs:
       - name: Cache Rust
         uses: Swatinem/rust-cache@e18b497796c12c097a38f9edb9d0641fb99eee32 # v2
         with:
-          workspaces: 'src-tauri -> target'
+          workspaces: "src-tauri -> target"
 
       - name: Install dependencies
         run: pnpm install --frozen-lockfile
 
-      # Frontend checks: type-check then build (no full `tauri build` in CI — we
-      # don't bundle/sign here, so Windows needs no extra Tauri system deps).
+      # Frontend checks: fmt/lint, type-check, tests, then build (no full
+      # `tauri build` in CI — we don't bundle/sign here, so Windows needs no
+      # extra Tauri system deps). All frontend tooling goes through Vite+ (vp);
+      # tsc stays explicit because `vp check` does not yet cover type-checking.
+      - name: Format + lint (vp check)
+        run: pnpm exec vp check
+
       - name: Type-check (tsc)
         run: pnpm exec tsc --noEmit
 
-      - name: Frontend tests (vitest)
-        run: pnpm exec vitest run
+      - name: Frontend tests (vp test)
+        run: pnpm exec vp test run
 
-      - name: Build frontend (vite)
-        run: pnpm exec vite build
+      - name: Build frontend (vp build)
+        run: pnpm exec vp build
 
       # Rust checks: formatting, lints (warnings = errors), tests, and a debug
       # build to catch compile errors on both macOS and Windows.

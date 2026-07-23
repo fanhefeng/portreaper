@@ -3,7 +3,7 @@
 // 「项目目录名 · 脚本名」，~/code/spotify-clone 会让 \bspotify\b 在身份字段
 // 命中，把一个孤儿 dev server 误描述成「Spotify 音乐」（用户可能因此不敢杀）。
 // 修复语义：dev-script 类别跳过品牌组（真品牌进程永远不是 dev-script —— 后端不变量）。
-import { describe, it, expect } from "vitest";
+import { describe, it, expect } from "vite-plus/test";
 import { describeEntry } from "./describe";
 import type { ProcessEntry } from "./model";
 

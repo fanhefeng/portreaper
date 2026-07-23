@@ -1,11 +1,34 @@
-# packages 字段必须存在：CI 锁定的 pnpm 9 对缺失该字段的 workspace 文件直接报
-# `ERROR packages field missing or empty`（本机 pnpm 11 才容忍缺省）—— 单包仓库
-# 显式声明根目录即可（评审实测验证 pnpm 9.15.9 / 11.5.1 双通过）。
+# packages 字段必须存在：pnpm 9 对缺失该字段的 workspace 文件直接报
+# `ERROR packages field missing or empty` —— 单包仓库显式声明根目录即可。
+# （Vite+ 迁移后 CI 与 devEngines 均已钉 pnpm 11，此字段保留兼容且无害。）
 packages:
   - "."
 
 # esbuild 的 postinstall 只做二进制自检（实际二进制经平台 optionalDependencies 分发），
 # 不需要运行其构建脚本 —— 显式记录决策，否则 pnpm 10+ 在 install/exec 前置检查时报错。
-# （allowBuilds 是 pnpm 11 的键；pnpm 9 静默忽略未知键，不受影响。）
 allowBuilds:
   esbuild: false
+# ⚠ 版本联动：升级 vite-plus 时，下方 catalog 两条 + minimumReleaseAgeExclude
+# 全部 @0.2.6 钉版条目必须一起改（共 12 处）——漏改的 exclude 条目会静默失效。
+# 建议直接重跑 `vp migrate` 或全文替换版本号。
+catalog:
+  vite: npm:@voidzero-dev/vite-plus-core@0.2.6
+  vite-plus: 0.2.6
+minimumReleaseAgeExclude:
+  - "@voidzero-dev/vite-plus-core@0.2.6"
+  - "@voidzero-dev/vite-plus-darwin-arm64@0.2.6"
+  - "@voidzero-dev/vite-plus-darwin-x64@0.2.6"
+  - "@voidzero-dev/vite-plus-linux-arm64-gnu@0.2.6"
+  - "@voidzero-dev/vite-plus-linux-arm64-musl@0.2.6"
+  - "@voidzero-dev/vite-plus-linux-x64-gnu@0.2.6"
+  - "@voidzero-dev/vite-plus-linux-x64-musl@0.2.6"
+  - "@voidzero-dev/vite-plus-win32-arm64-msvc@0.2.6"
+  - "@voidzero-dev/vite-plus-win32-x64-msvc@0.2.6"
+  - vite-plus@0.2.6
+overrides:
+  vite: "catalog:"
+peerDependencyRules:
+  allowAny:
+    - vite
+  allowedVersions:
+    vite: "*"

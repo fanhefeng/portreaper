@@ -11,15 +11,13 @@
 // - 权限全量白名单：capabilities 只约束 webview 发起的 IPC，而前端只调
 //   invoke + openUrl —— 任何新增权限（如曾经的 4 个 core:window:allow-* 死权限，
 //   评审发现：无消费者、徒增注入后攻击面）都必须先改这里、强制过一次评审。
-import { describe, it, expect } from "vitest";
+import { describe, it, expect } from "vite-plus/test";
 import { readFileSync } from "node:fs";
 import { join } from "node:path";
 
 // happy-dom 环境下 import.meta.url 是 http: 协议，不能喂给 fs ——
 // vitest 的工作目录就是项目根，直接从 cwd 解析。
-const conf = JSON.parse(
-  readFileSync(join(process.cwd(), "src-tauri/tauri.conf.json"), "utf8"),
-);
+const conf = JSON.parse(readFileSync(join(process.cwd(), "src-tauri/tauri.conf.json"), "utf8"));
 const caps = JSON.parse(
   readFileSync(join(process.cwd(), "src-tauri/capabilities/default.json"), "utf8"),
 );
