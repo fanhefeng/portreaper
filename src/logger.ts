@@ -35,8 +35,7 @@ export function initFrontendLogging(): void {
     const where = `${e.filename}:${e.lineno}:${e.colno}`;
     // e.error 是真正的 Error 对象(带 stack);e.message 只是摘要。生产 GUI 版
     // 无常驻开发者工具,stack 是唯一可追因的线索 —— 有 Error 就优先记 stack。
-    const detail =
-      e.error instanceof Error ? (e.error.stack ?? e.error.message) : e.message;
+    const detail = e.error instanceof Error ? (e.error.stack ?? e.error.message) : e.message;
     logError(`uncaught error: ${detail} @ ${where}`);
   });
 
@@ -44,8 +43,7 @@ export function initFrontendLogging(): void {
     const r: unknown = e.reason;
     // String(reason) 对 Error 只给 "Error: msg"(丢 stack),对普通对象给
     // "[object Object]" —— 两者都让生产崩溃无从追起。是 Error 就取 stack。
-    const detail =
-      r instanceof Error ? (r.stack ?? `${r.name}: ${r.message}`) : String(r);
+    const detail = r instanceof Error ? (r.stack ?? `${r.name}: ${r.message}`) : String(r);
     logError(`unhandled rejection: ${detail}`);
   });
 }

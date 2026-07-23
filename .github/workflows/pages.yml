@@ -4,8 +4,8 @@ on:
   push:
     branches: [main]
     paths:
-      - 'website/**'
-      - '.github/workflows/pages.yml'
+      - "website/**"
+      - ".github/workflows/pages.yml"
   workflow_dispatch:
 
 # Permissions required by the GitHub Pages deployment actions.
@@ -30,6 +30,13 @@ jobs:
     steps:
       - name: Checkout
         uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6
+
+      # Pin Node via .node-version（与 release.yml 的 verify-version 同一理由）：
+      # guard 脚本不应跑在会独立漂移的 runner 默认 Node 上。
+      - name: Setup Node
+        uses: actions/setup-node@48b55a011bda9f5d6aeb4c2d9c7362e8dae4041e # v6
+        with:
+          node-version-file: .node-version
 
       # website/** is paths-ignored by ci.yml — without these checks a JS
       # syntax error or a renamed download asset would deploy straight to prod.

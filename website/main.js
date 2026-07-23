@@ -11,7 +11,7 @@
     var saved = null;
     try {
       saved = localStorage.getItem(LANG_KEY);
-    } catch (e) {
+    } catch {
       /* localStorage may be unavailable */
     }
     if (saved === "zh" || saved === "en") return saved;
@@ -32,14 +32,11 @@
     currentLang = lang === "en" ? "en" : "zh";
     try {
       localStorage.setItem(LANG_KEY, currentLang);
-    } catch (e) {
+    } catch {
       /* ignore */
     }
 
-    document.documentElement.setAttribute(
-      "lang",
-      currentLang === "zh" ? "zh-CN" : "en"
-    );
+    document.documentElement.setAttribute("lang", currentLang === "zh" ? "zh-CN" : "en");
 
     // textContent / innerHTML for data-i18n nodes
     var nodes = document.querySelectorAll("[data-i18n]");
@@ -49,6 +46,10 @@
       var val = t(key);
       if (el.tagName === "META") {
         el.setAttribute("content", val);
+      } else if (el.tagName === "IMG") {
+        // 图片的 data-i18n 落到 alt（评审发现：截图 alt 曾写死中文，
+        // 英文访客的读屏拿到中文文案）
+        el.setAttribute("alt", val);
       } else if (/<[a-z][\s\S]*>/i.test(val)) {
         el.innerHTML = val;
       } else {
@@ -59,20 +60,14 @@
     // aria-labels
     var ariaNodes = document.querySelectorAll("[data-i18n-aria]");
     for (var j = 0; j < ariaNodes.length; j++) {
-      ariaNodes[j].setAttribute(
-        "aria-label",
-        t(ariaNodes[j].getAttribute("data-i18n-aria"))
-      );
+      ariaNodes[j].setAttribute("aria-label", t(ariaNodes[j].getAttribute("data-i18n-aria")));
     }
 
     // toggle button shows the OTHER language
     var toggle = document.getElementById("lang-toggle");
     if (toggle) {
       toggle.textContent = currentLang === "zh" ? "EN" : "中文";
-      toggle.setAttribute(
-        "aria-label",
-        currentLang === "zh" ? "Switch to English" : "切换到中文"
-      );
+      toggle.setAttribute("aria-label", currentLang === "zh" ? "Switch to English" : "切换到中文");
     }
 
     // re-render version line in the active language if data is present
@@ -96,13 +91,9 @@
     var platformHint = uaData && uaData.platform ? uaData.platform.toLowerCase() : "";
 
     var isWindows =
-      plat.indexOf("win") === 0 ||
-      platformHint.indexOf("win") !== -1 ||
-      /windows/i.test(ua);
+      plat.indexOf("win") === 0 || platformHint.indexOf("win") !== -1 || /windows/i.test(ua);
     var isMac =
-      plat.indexOf("mac") === 0 ||
-      platformHint.indexOf("mac") !== -1 ||
-      /mac os x/i.test(ua);
+      plat.indexOf("mac") === 0 || platformHint.indexOf("mac") !== -1 || /mac os x/i.test(ua);
 
     if (isWindows) return "win";
     // arm vs intel mac can't be reliably detected → highlight macOS generally.
@@ -116,10 +107,7 @@
     var btns = document.querySelectorAll("#downloads [data-dl]");
     for (var i = 0; i < btns.length; i++) {
       var dl = btns[i].getAttribute("data-dl");
-      var match =
-        target === "win"
-          ? dl === "win"
-          : dl === "mac-arm" || dl === "mac-x64";
+      var match = target === "win" ? dl === "win" : dl === "mac-arm" || dl === "mac-x64";
       if (match) btns[i].classList.add("is-recommended");
     }
   }
@@ -230,9 +218,7 @@
     for (var i = 0; i < btns.length; i++) {
       btns[i].addEventListener("click", function () {
         var btn = this;
-        var target = document.getElementById(
-          btn.getAttribute("data-copy-target")
-        );
+        var target = document.getElementById(btn.getAttribute("data-copy-target"));
         if (!target) return;
         var text = target.textContent || "";
         var done = function () {
@@ -266,7 +252,7 @@
       document.execCommand("copy");
       document.body.removeChild(ta);
       done();
-    } catch (e) {
+    } catch {
       /* ignore */
     }
   }

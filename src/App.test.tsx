@@ -15,7 +15,7 @@ vi.mock("@tauri-apps/plugin-opener", () => ({
 }));
 
 import { invoke } from "@tauri-apps/api/core";
-import { SCAN_TIMEOUT_MS } from "./model";
+import { ACTION_TIMEOUT_MS, SCAN_TIMEOUT_MS } from "./model";
 import App from "./App";
 
 const mockInvoke = vi.mocked(invoke);
@@ -169,6 +169,31 @@ describe("error channels", () => {
     // 两轮成功轮询后仍可见（actionError 不被轮询冲掉）
     await advance(4500);
     expect(screen.getByText(/2\/2 processes failed/)).toBeTruthy();
+  });
+
+  it("kill 挂起不再永久卡死清扫 UI：超时后释放按钮并报错（回归：mutation invoke 曾无超时）", async () => {
+    route({
+      get_platform: () => "macos",
+      scan_ports: () => [suspectEntry()],
+      kill_process: () => new Promise(() => {}), // 后端挂死：invoke 永不 settle
+    });
+    render(<App />);
+    await advance(0);
+
+    fireEvent.click(screen.getByText(/Clean up \(1\)/));
+    fireEvent.click(screen.getByText("Terminate all"));
+
+    // 超时前：清扫进行中，按钮切到进行态
+    await advance(1000);
+    expect(screen.getByText(/Cleaning…/)).toBeTruthy();
+
+    // ACTION_TIMEOUT_MS + 700ms 收尾 + freshScan 落定：sweeping 释放、
+    // 聚合横幅出现且含本地化的超时文案 —— 修复前这里会永远停在 Cleaning…
+    await advance(ACTION_TIMEOUT_MS + 1000);
+    const banner = screen.getByText(/1\/1 processes failed/);
+    expect(banner.textContent).toContain("timed out");
+    const sweepBtn = screen.getByText<HTMLButtonElement>(/Clean up \(1\)/);
+    expect(sweepBtn.disabled).toBe(false);
   });
 
   it("扫描错误保留自愈语义：后端恢复后下一轮轮询自动清除", async () => {

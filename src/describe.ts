@@ -18,7 +18,7 @@ import type { ProcessEntry } from "./model";
  *   node_modules .app 归 dev-script、真应用归 installed-app），故 dev-script
  *   行直接跳过品牌组，落到泛化运行时描述（评审发现：初版修复漏了 app_label）。
  */
-export const KNOWN_PROCESSES: ReadonlyArray<
+const KNOWN_PROCESSES: ReadonlyArray<
   readonly [RegExp, string, string] | readonly [RegExp, string, string, "path" | "brand"]
 > = [
   // —— 开发服务器 / 框架（先于泛化的 node/python；自身就是 dev-script，身份型）——

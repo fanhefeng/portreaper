@@ -43,13 +43,10 @@ export type Os = "macos" | "windows";
 export type Filter = "all" | "suspect" | "whitelist";
 
 /** t() 的函数签名（useI18n 返回值），供纯函数层接受翻译器注入 */
-export type Translator = (
-  k: I18nKey,
-  p?: Record<string, string | number>,
-) => string;
+export type Translator = (k: I18nKey, p?: Record<string, string | number>) => string;
 
 /** 一键清理覆盖的置信层级（Possible 永不入清扫） */
-export const SWEEPABLE: ReadonlySet<Confidence> = new Set(["confirmed", "likely"]);
+const SWEEPABLE: ReadonlySet<Confidence> = new Set(["confirmed", "likely"]);
 
 /** 会被一键清扫覆盖的行（嫌疑 + 置信层级达标）—— 托盘计数与清扫列表共用，
  *  避免两处各写一遍同一过滤条件而漂移（评审发现）。 */
@@ -68,9 +65,7 @@ export const EXEMPT_REASONS = new Set([
 /** 非嫌疑行的豁免原因（「为什么不是僵尸」）—— Row 与 Detail 详情共用。
  *  原先两处各写一遍同一过滤（评审发现）。 */
 export function exemptReasons(e: ProcessEntry): string[] {
-  return e.is_zombie_suspect
-    ? []
-    : e.zombie_reasons.filter((r) => EXEMPT_REASONS.has(r));
+  return e.is_zombie_suspect ? [] : e.zombie_reasons.filter((r) => EXEMPT_REASONS.has(r));
 }
 
 /** 行内只讲一个最重要的原因（其余进详情面板），此为优先级 */
@@ -125,9 +120,7 @@ export function formatDuration(secs: number): string {
   const m = Math.floor((secs % 3600) / 60);
   const s = secs % 60;
   const pad = (n: number) => String(n).padStart(2, "0");
-  return d > 0
-    ? `${d}-${pad(h)}:${pad(m)}:${pad(s)}`
-    : `${pad(h)}:${pad(m)}:${pad(s)}`;
+  return d > 0 ? `${d}-${pad(h)}:${pad(m)}:${pad(s)}` : `${pad(h)}:${pad(m)}:${pad(s)}`;
 }
 
 /** 端口列表 → ":3000 :3001" 串（sep 默认单空格；弹窗等紧凑处传 "  "）。
@@ -136,13 +129,25 @@ export function formatPorts(ports: number[], sep = " "): string {
   return ports.map((p) => `:${p}`).join(sep);
 }
 
+/** 变更类 invoke（kill / 白名单）共用的超时与本地化：与 SCAN_TIMEOUT_MS 同一
+ *  故障类（后端子进程挂起 → invoke 永不 settle），但后果更糟 —— runAction 的
+ *  finally 永不执行，sweeping/killingPid 卡死会**永久禁用**清扫和行内按钮且无
+ *  任何报错（评审发现：scan 修了、mutation 漏了的不对称）。kill 侧 shell 出
+ *  ps + kill 两个子进程，给比扫描更宽的余量。 */
+export const ACTION_TIMEOUT_MS = 15_000;
+
+export function localizeActionError(err: string, t: Translator): string {
+  if (err.includes("ERR_ACTION_TIMEOUT")) return t("error.actionTimeout");
+  return err;
+}
+
 /** 后端语义错误（ERR_* 前缀）→ 本地化文案；其余透传 OS 原文 */
 export function localizeKillError(err: string, t: Translator): string {
   if (err.includes("ERR_PID_REUSED")) return t("error.pidReused");
   if (err.includes("ERR_PROCESS_GONE")) return t("error.processGone");
   if (err.includes("ERR_ACCESS_DENIED")) return t("error.accessDenied");
   if (err.includes("ERR_IDENTITY_UNKNOWN")) return t("error.identityUnknown");
-  return err;
+  return localizeActionError(err, t);
 }
 
 /** scan_ports 无取消机制：后端子进程（lsof/launchctl）若卡死，invoke 会永不

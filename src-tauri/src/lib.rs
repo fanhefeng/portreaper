@@ -16,9 +16,11 @@ use tauri::{
 /// 由系统 locale 初始化，前端切换语言时通过 set_tray_language 同步。
 pub struct TrayLang(pub Mutex<&'static str>);
 
-/// 托盘菜单项句柄 —— 语言切换时直接 set_text，无需重建菜单。
-pub struct TrayMenuItems {
-    pub show: MenuItem<Wry>,
+/// 「打开目录」子菜单及其项的句柄。托盘与 macOS 应用菜单是双入口，各持一份
+/// 本结构（菜单项 id 相同、事件全局派发）——构建走 `build_dir_menu`、语言
+/// 切换走 `set_lang`，新增目录项只需改这两处，四个手写同步点就此消失
+/// （评审发现：此前构建 ×2 + re-text ×2 逐字重复约 80 行，漏改即静默 bug）。
+pub struct DirMenuItems {
     pub open_dir: Submenu<Wry>,
     pub open_config: MenuItem<Wry>,
     pub open_data: MenuItem<Wry>,
@@ -28,22 +30,83 @@ pub struct TrayMenuItems {
     /// 「打开调试控制台」—— 仅 dev 构建注册（DA-3）。
     #[cfg(debug_assertions)]
     pub open_devtools: MenuItem<Wry>,
+}
+
+impl DirMenuItems {
+    /// 子菜单标题 + 全部目录项（含 devtools）一次 re-text。
+    pub(crate) fn set_lang(&self, lang: &'static str) -> Result<(), String> {
+        let dt = dir_menu_texts(lang);
+        let e = |e: tauri::Error| e.to_string();
+        self.open_dir.set_text(dt.title).map_err(e)?;
+        self.open_config.set_text(dt.config).map_err(e)?;
+        self.open_data.set_text(dt.data).map_err(e)?;
+        self.open_cache.set_text(dt.cache).map_err(e)?;
+        self.open_logs.set_text(dt.logs).map_err(e)?;
+        self.open_temp.set_text(dt.temp).map_err(e)?;
+        #[cfg(debug_assertions)]
+        self.open_devtools
+            .set_text(devtools_text(lang))
+            .map_err(e)?;
+        Ok(())
+    }
+}
+
+/// 构建「打开目录」子菜单。devtools 项两个入口的挂载位置不同 —— 应用菜单
+/// 挂在本子菜单尾部、托盘挂在托盘根菜单，故由 `devtools_in_submenu` 区分；
+/// 句柄始终存入返回值供 re-text。
+fn build_dir_menu<M: Manager<Wry>>(
+    m: &M,
+    lang: &'static str,
+    devtools_in_submenu: bool,
+) -> tauri::Result<DirMenuItems> {
+    let dt = dir_menu_texts(lang);
+    let open_config = MenuItemBuilder::with_id("open-config-dir", dt.config).build(m)?;
+    let open_data = MenuItemBuilder::with_id("open-data-dir", dt.data).build(m)?;
+    let open_cache = MenuItemBuilder::with_id("open-cache-dir", dt.cache).build(m)?;
+    let open_logs = MenuItemBuilder::with_id("open-log-dir", dt.logs).build(m)?;
+    let open_temp = MenuItemBuilder::with_id("open-temp-dir", dt.temp).build(m)?;
+    #[cfg(debug_assertions)]
+    let open_devtools = MenuItemBuilder::with_id("open-devtools", devtools_text(lang)).build(m)?;
+    let b = SubmenuBuilder::new(m, dt.title)
+        .item(&open_config)
+        .item(&open_data)
+        .item(&open_cache)
+        .item(&open_logs)
+        .item(&open_temp);
+    #[cfg(debug_assertions)]
+    let b = if devtools_in_submenu {
+        b.separator().item(&open_devtools)
+    } else {
+        b
+    };
+    #[cfg(not(debug_assertions))]
+    let _ = devtools_in_submenu;
+    let open_dir = b.build()?;
+    Ok(DirMenuItems {
+        open_dir,
+        open_config,
+        open_data,
+        open_cache,
+        open_logs,
+        open_temp,
+        #[cfg(debug_assertions)]
+        open_devtools,
+    })
+}
+
+/// 托盘菜单项句柄 —— 语言切换时直接 set_text，无需重建菜单。
+pub struct TrayMenuItems {
+    pub show: MenuItem<Wry>,
+    pub dir: DirMenuItems,
     pub quit: MenuItem<Wry>,
 }
 
-/// macOS 应用菜单里的句柄（语言切换时 re-text）：⌘Q 替代项，以及与托盘复用
-/// 相同 id 的「打开目录」子菜单及其项 —— 双入口（顶部应用菜单栏 + 托盘右键）。
+/// macOS 应用菜单里的句柄（语言切换时 re-text）：⌘Q 替代项 + 目录菜单的
+/// 应用菜单栏那份 —— 与托盘双入口。
 #[cfg(target_os = "macos")]
 pub struct AppMenuItems {
     pub quit_to_tray: MenuItem<Wry>,
-    pub open_dir: Submenu<Wry>,
-    pub open_config: MenuItem<Wry>,
-    pub open_data: MenuItem<Wry>,
-    pub open_cache: MenuItem<Wry>,
-    pub open_logs: MenuItem<Wry>,
-    pub open_temp: MenuItem<Wry>,
-    #[cfg(debug_assertions)]
-    pub open_devtools: MenuItem<Wry>,
+    pub dir: DirMenuItems,
 }
 
 pub(crate) fn tray_texts(lang: &str) -> (&'static str, &'static str) {
@@ -176,7 +239,6 @@ pub fn run() {
             commands::scan_ports,
             commands::kill_process,
             commands::get_platform,
-            commands::get_whitelist,
             commands::add_whitelist,
             commands::remove_whitelist,
             commands::update_tray_title,
@@ -189,17 +251,18 @@ pub fn run() {
     // ExitRequested —— 实测（quit AppleEvent）进程直接退出，旧拦截分支从未生效。
     // 解法：整体提供自定义应用菜单（默认菜单仅在 Builder::menu 缺席时安装），
     // 把 ⌘Q 绑到自定义 quit-to-tray 项，行为与窗口关闭按钮一致（隐藏到托盘）。
-    // Dock 右键退出 / 注销关机走 AppleEvent quit，仍真正退出 —— 系统发起的退出
-    // 必须放行，否则应用无法被正常关闭（刻意决策）。
+    // 应用现已是 Accessory 策略（见 setup，无 Dock 图标）：这份菜单在菜单栏里
+    // 不可见，但 key equivalent 仍经它路由 —— ⌘C/⌘V/⌘W/⌘Q 都依赖它，不能删。
+    // 注销关机走 AppleEvent quit，仍真正退出 —— 系统发起的退出必须放行，
+    // 否则应用无法被正常关闭（刻意决策）。
     #[cfg(target_os = "macos")]
     let builder = builder
         .menu(|handle| {
             use tauri::menu::SubmenuBuilder;
             let lang = detect_lang();
-            let quit_to_tray =
-                MenuItemBuilder::with_id("quit-to-tray", quit_to_tray_text(lang))
-                    .accelerator("Cmd+Q")
-                    .build(handle)?;
+            let quit_to_tray = MenuItemBuilder::with_id("quit-to-tray", quit_to_tray_text(lang))
+                .accelerator("Cmd+Q")
+                .build(handle)?;
             let app_submenu = SubmenuBuilder::new(handle, "Portreaper")
                 .about(None)
                 .separator()
@@ -212,26 +275,7 @@ pub fn run() {
             // 「打开目录」菜单 —— 与托盘子菜单复用相同 id：点击事件由托盘的
             // on_menu_event 全局派发处理（tauri 把应用菜单与托盘菜单事件发到
             // 同一监听列表），故此处只建项 + 存句柄供语言切换，无需新增 handler。
-            let dt = dir_menu_texts(lang);
-            let open_config =
-                MenuItemBuilder::with_id("open-config-dir", dt.config).build(handle)?;
-            let open_data = MenuItemBuilder::with_id("open-data-dir", dt.data).build(handle)?;
-            let open_cache =
-                MenuItemBuilder::with_id("open-cache-dir", dt.cache).build(handle)?;
-            let open_logs = MenuItemBuilder::with_id("open-log-dir", dt.logs).build(handle)?;
-            let open_temp = MenuItemBuilder::with_id("open-temp-dir", dt.temp).build(handle)?;
-            #[cfg(debug_assertions)]
-            let open_devtools =
-                MenuItemBuilder::with_id("open-devtools", devtools_text(lang)).build(handle)?;
-            let dir_builder = SubmenuBuilder::new(handle, dt.title)
-                .item(&open_config)
-                .item(&open_data)
-                .item(&open_cache)
-                .item(&open_logs)
-                .item(&open_temp);
-            #[cfg(debug_assertions)]
-            let dir_builder = dir_builder.separator().item(&open_devtools);
-            let open_dir = dir_builder.build()?;
+            let dir = build_dir_menu(handle, lang, true)?;
             // Edit/Window 子菜单必须保留：webview 的 ⌘C/⌘V/⌘X/⌘A 依赖这些
             // predefined 项的 key equivalent；⌘W 走 close_window → 被
             // on_window_event 拦成隐藏，与产品语义一致。
@@ -249,19 +293,9 @@ pub fn run() {
                 .close_window()
                 .build()?;
             let menu = MenuBuilder::new(handle)
-                .items(&[&app_submenu, &open_dir, &edit_submenu, &window_submenu])
+                .items(&[&app_submenu, &dir.open_dir, &edit_submenu, &window_submenu])
                 .build()?;
-            handle.manage(AppMenuItems {
-                quit_to_tray,
-                open_dir,
-                open_config,
-                open_data,
-                open_cache,
-                open_logs,
-                open_temp,
-                #[cfg(debug_assertions)]
-                open_devtools,
-            });
+            handle.manage(AppMenuItems { quit_to_tray, dir });
             Ok(menu)
         })
         .on_menu_event(|app, event| {
@@ -296,49 +330,39 @@ pub fn run() {
                 paths::env_label()
             );
 
+            // Accessory 激活策略：无 Dock 图标、不进 ⌘Tab —— 身份与「常驻托盘」的
+            // 产品定位对齐。此前用默认 Regular 策略（有 Dock 图标）却把 ⌘Q 劫持成
+            // 隐藏，普通 App 的外观配菜单栏工具的行为，用户会按 HIG 预期 ⌘Q 退出
+            // 而感到意外；Accessory 下菜单栏归前台 Regular App 所有、本应用菜单不
+            // 可见，「⌘Q 应退出」的预期自然消失。注意：应用菜单仍必须构建
+            // （Builder::menu）—— AppKit 对未被响应链消费的按键仍会查询本应用
+            // mainMenu 的 key equivalent，webview 的 ⌘C/⌘V/⌘W/⌘Q 全靠这份隐形
+            // 菜单路由。副作用：Dock 右键退出的路径随图标一起消失，真正退出只剩
+            // 托盘菜单与注销/关机（AppleEvent quit，依旧放行）。
+            #[cfg(target_os = "macos")]
+            app.set_activation_policy(tauri::ActivationPolicy::Accessory);
+
             if let Ok(dir) = paths::config_dir(app.handle()) {
                 whitelist::init(dir.join("whitelist.json"));
             }
 
             let lang = detect_lang();
             let (show_text, quit_text) = tray_texts(lang);
-            let dt = dir_menu_texts(lang);
             let show_item = MenuItemBuilder::with_id("show", show_text).build(app)?;
-            let open_config =
-                MenuItemBuilder::with_id("open-config-dir", dt.config).build(app)?;
-            let open_data = MenuItemBuilder::with_id("open-data-dir", dt.data).build(app)?;
-            let open_cache = MenuItemBuilder::with_id("open-cache-dir", dt.cache).build(app)?;
-            let open_logs = MenuItemBuilder::with_id("open-log-dir", dt.logs).build(app)?;
-            let open_temp = MenuItemBuilder::with_id("open-temp-dir", dt.temp).build(app)?;
-            let open_dir = SubmenuBuilder::new(app, dt.title)
-                .item(&open_config)
-                .item(&open_data)
-                .item(&open_cache)
-                .item(&open_logs)
-                .item(&open_temp)
-                .build()?;
+            // 托盘的 devtools 项挂在根菜单（不入子菜单），故 devtools_in_submenu=false
+            let dir = build_dir_menu(&*app, lang, false)?;
             let quit_item = MenuItemBuilder::with_id("quit", quit_text).build(app)?;
-            #[cfg(debug_assertions)]
-            let open_devtools =
-                MenuItemBuilder::with_id("open-devtools", devtools_text(lang)).build(app)?;
             // 用 shadowing 条件插入 devtools 项：prod 下不存在该行，故无 unused_mut 告警。
             let menu = {
-                let b = MenuBuilder::new(app).item(&show_item).item(&open_dir);
+                let b = MenuBuilder::new(app).item(&show_item).item(&dir.open_dir);
                 #[cfg(debug_assertions)]
-                let b = b.item(&open_devtools);
+                let b = b.item(&dir.open_devtools);
                 b.separator().item(&quit_item).build()?
             };
             app.manage(TrayLang(Mutex::new(lang)));
             app.manage(TrayMenuItems {
                 show: show_item,
-                open_dir,
-                open_config,
-                open_data,
-                open_cache,
-                open_logs,
-                open_temp,
-                #[cfg(debug_assertions)]
-                open_devtools,
+                dir,
                 quit: quit_item,
             });
 

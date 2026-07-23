@@ -15,12 +15,11 @@
 // 用法：node scripts/check-reason-parity.mjs   （exit 1 = 不一致）
 // 自测：node --test scripts/*.test.mjs          （check-reason-parity.test.mjs）
 
-import { readFileSync } from "node:fs";
+import { readFileSync, realpathSync } from "node:fs";
 import { dirname, join } from "node:path";
-import { fileURLToPath } from "node:url";
+import { fileURLToPath, pathToFileURL } from "node:url";
 
-const camelToSnake = (s) =>
-  s.replace(/([a-z0-9])([A-Z])/g, "$1_$2").toLowerCase();
+const camelToSnake = (s) => s.replace(/([a-z0-9])([A-Z])/g, "$1_$2").toLowerCase();
 
 /**
  * 提取 `pub enum <name> { ... }` 块内的变体名。
@@ -121,7 +120,9 @@ export function checkParity({ classifySrc, i18nSrc, modelSrc }) {
 }
 
 // ---- CLI 入口（被 import 时不执行）----
-if (process.argv[1] === fileURLToPath(import.meta.url)) {
+// realpath 双侧归一（评审发现，理由同 check-release-assets.mjs）：
+// symlink 调用下裸比较不相等 → 守卫静默 exit 0，比没有守卫更糟。
+if (process.argv[1] && pathToFileURL(realpathSync(process.argv[1])).href === import.meta.url) {
   const root = join(dirname(fileURLToPath(import.meta.url)), "..");
   const errors = checkParity({
     classifySrc: readFileSync(join(root, "src-tauri/src/scanner/classify.rs"), "utf8"),
@@ -130,7 +131,9 @@ if (process.argv[1] === fileURLToPath(import.meta.url)) {
   });
   if (errors.length > 0) {
     for (const e of errors) console.error(`✗ ${e}`);
-    console.error(`\nReasonCode/Confidence ↔ i18n/渲染链路 parity check FAILED (${errors.length}).`);
+    console.error(
+      `\nReasonCode/Confidence ↔ i18n/渲染链路 parity check FAILED (${errors.length}).`,
+    );
     process.exit(1);
   }
   console.log("✓ reason parity OK — reason/reasonTip/story/verdict 渲染链路全部双语齐全且归类闭环");

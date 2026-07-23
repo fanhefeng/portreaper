@@ -270,8 +270,11 @@ fn identify_app_with(
     }
 
     // 5. 包管理器安装的 CLI：scoop / chocolatey / winget links
+    // program_data 空值守卫与本函数其余 known-path 分支一致：空前缀会让
+    // starts_with 退化成对裸 "chocolatey\" 的匹配（实际不可达，纯风格统一）。
     if p.contains("\\scoop\\")
-        || p.starts_with(&format!("{}chocolatey\\", kp.program_data))
+        || (!kp.program_data.is_empty()
+            && p.starts_with(&format!("{}chocolatey\\", kp.program_data)))
         || p.contains("\\microsoft\\winget\\")
     {
         return (

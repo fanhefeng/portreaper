@@ -6,7 +6,7 @@
 //! release 直接用基目录。于是开发时随手测试加的白名单、刷出的报错日志，绝不会
 //! 混进日常使用的正式版数据里（反之亦然）。
 //!
-//! 注：webview 的 localStorage（语言偏好）已天然按 origin 隔离（dev = localhost:1420，
+//! 注：webview 的 localStorage（语言偏好）已天然按 origin 隔离（dev = localhost:1430，
 //! prod = tauri://localhost），WKWebView 缓存同理 —— 本模块只需管 Rust 侧自建的目录。
 
 use std::path::PathBuf;
@@ -61,7 +61,9 @@ pub fn data_dir(app: &AppHandle) -> tauri::Result<PathBuf> {
 /// 子目录名复用 `config.identifier`（即 `com.fhf.portreaper`，与 cache/data/log
 /// 所用的 `app_*_dir` 内部一致），改产品名时不会只有 temp 漏同步。
 pub fn temp_dir(app: &AppHandle) -> tauri::Result<PathBuf> {
-    Ok(scoped(app.path().temp_dir()?.join(&app.config().identifier)))
+    Ok(scoped(
+        app.path().temp_dir()?.join(&app.config().identifier),
+    ))
 }
 
 /// 日志文件主名（不含扩展名，tauri-plugin-log 追加 `.log`）。

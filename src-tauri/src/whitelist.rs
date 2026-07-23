@@ -11,7 +11,16 @@ use once_cell::sync::Lazy;
 use serde::{Deserialize, Serialize};
 use std::fs;
 use std::path::PathBuf;
-use std::sync::Mutex;
+use std::sync::{Mutex, MutexGuard, PoisonError};
+
+/// 取锁并从毒化中恢复（与 windows.rs 的 System 锁同一策略）：这两把锁保护的
+/// 都是「半更新状态也可安全续用」的数据 —— add/remove 有显式回滚、init 只做
+/// 整体赋值，不存在半写入的结构失效。若不恢复，持锁 panic 一次会让此后每轮
+/// scan_ports（内部 get_all）在 spawn_blocking 里跟着 panic，前端永久收到
+/// "scan task failed"（评审发现：拒绝服务比脏读更糟）。
+fn lock_recovering<T>(m: &Mutex<T>) -> MutexGuard<'_, T> {
+    m.lock().unwrap_or_else(PoisonError::into_inner)
+}
 
 #[derive(Serialize, Deserialize, Default, Clone)]
 pub struct WhitelistStore {
@@ -35,18 +44,18 @@ pub fn init(path: PathBuf) {
         },
         Err(_) => None, // 不存在/不可读：首次启动的常态
     };
-    *WHITELIST_PATH.lock().unwrap() = Some(path);
+    *lock_recovering(&WHITELIST_PATH) = Some(path);
     if let Some(store) = loaded {
-        *WHITELIST.lock().unwrap() = store;
+        *lock_recovering(&WHITELIST) = store;
     }
 }
 
 pub fn get_all() -> Vec<String> {
-    WHITELIST.lock().unwrap().entries.clone()
+    lock_recovering(&WHITELIST).entries.clone()
 }
 
 pub fn add(key: String) -> Result<(), String> {
-    let mut wl = WHITELIST.lock().unwrap();
+    let mut wl = lock_recovering(&WHITELIST);
     if wl.entries.contains(&key) {
         return Ok(());
     }
@@ -59,7 +68,7 @@ pub fn add(key: String) -> Result<(), String> {
 }
 
 pub fn remove(key: &str) -> Result<(), String> {
-    let mut wl = WHITELIST.lock().unwrap();
+    let mut wl = lock_recovering(&WHITELIST);
     let Some(idx) = wl.entries.iter().position(|x| x == key) else {
         return Ok(());
     };
@@ -74,7 +83,7 @@ pub fn remove(key: &str) -> Result<(), String> {
 /// 原子持久化：写同目录 .tmp 再 rename（同卷 rename 在 macOS/Windows 均为原子替换）。
 /// 刻意不 fsync：断电窗口内最坏丢一次收藏修改（可重建数据），换每次星标零卡顿。
 fn save_locked(store: &WhitelistStore) -> Result<(), String> {
-    let path_guard = WHITELIST_PATH.lock().unwrap();
+    let path_guard = lock_recovering(&WHITELIST_PATH);
     let Some(path) = path_guard.as_ref() else {
         return Err("whitelist path not initialized".to_string());
     };

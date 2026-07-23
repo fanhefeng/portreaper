@@ -65,6 +65,8 @@ window.I18N = {
     "install.mac.s4":
       "若提示的是「<strong>已损坏，无法打开</strong>」（未签名 App 的常见报错，此时「仍要打开」常常不出现、右键打开也无效），在终端执行下面这行移除隔离属性最可靠：",
     "install.copy": "复制",
+    "install.copyAria": "复制命令",
+    "showcase.screenshotAlt": "Portreaper 主界面截图",
     "install.win.s1":
       "运行 <code>.exe</code> 安装包。若出现 SmartScreen 蓝屏，点击「更多信息 → 仍要运行」。",
     "install.win.s2":
@@ -134,7 +136,8 @@ window.I18N = {
       "Lives in the macOS menu bar and the Windows system tray; closing the window just hides it, never interrupting your flow. Bilingual UI, with the suspect count live in the tray (menu-bar title on macOS, tooltip on Windows).",
 
     "install.title": "Install & first launch",
-    "install.lead": "The app is unsigned. Here are the standard steps to get past the OS gatekeeper.",
+    "install.lead":
+      "The app is unsigned. Here are the standard steps to get past the OS gatekeeper.",
     "install.tab.mac": "macOS",
     "install.tab.win": "Windows",
     "install.mac.s1":
@@ -146,6 +149,8 @@ window.I18N = {
     "install.mac.s4":
       "If it instead says the app is <strong>“damaged and can't be opened”</strong> (a common error for unsigned apps — “Open Anyway” and right-click → Open usually won't help here), running this in Terminal to strip the quarantine attribute is the reliable fix:",
     "install.copy": "Copy",
+    "install.copyAria": "Copy command",
+    "showcase.screenshotAlt": "Screenshot of the Portreaper main window",
     "install.win.s1":
       "Run the <code>.exe</code> installer. If SmartScreen appears, click “More info → Run anyway”.",
     "install.win.s2":

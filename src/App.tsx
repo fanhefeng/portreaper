@@ -6,17 +6,20 @@ import {
   useRef,
   useState,
   type KeyboardEvent as ReactKeyboardEvent,
+  type ReactNode,
 } from "react";
 import { invoke } from "@tauri-apps/api/core";
 import { openUrl } from "@tauri-apps/plugin-opener";
 import { useI18n, type I18nKey, type Lang } from "./i18n";
 import {
+  ACTION_TIMEOUT_MS,
   SCAN_TIMEOUT_MS,
   exemptReasons,
   formatDuration,
   formatPorts,
   formatUptime,
   legacyWhitelistKey,
+  localizeActionError,
   localizeKillError,
   localizeScanError,
   primaryReason,
@@ -45,6 +48,53 @@ type ConfirmState = {
 type ActionError = { render: (t: Translator) => string };
 
 type BatchFailure = { pid: number; label: string; raw: string };
+
+/** 变更类 invoke（kill / 白名单）统一包超时：后端挂起时各调用方的 finally
+ *  才能执行，sweeping/killingPid 不会永久卡死按钮（评审发现；scan 侧的同类
+ *  防护是 runScan 里的 withTimeout，缘由见 model.ts ACTION_TIMEOUT_MS）。 */
+function invokeAction(cmd: string, args: Record<string, unknown>): Promise<void> {
+  return withTimeout(invoke<void>(cmd, args), ACTION_TIMEOUT_MS, "ERR_ACTION_TIMEOUT");
+}
+
+/** 毁灭性确认弹窗的共用骨架：backdrop 点击关闭、stopPropagation、dialog aria
+ *  语义、Tab 焦点圈定、autoFocus 落在取消键（Enter 永远不应直接触发终止）。
+ *  单杀与批量两处共用 —— 这些 a11y/安全不变量集中一处维护，
+ *  不再随两份手抄脚手架漂移（评审发现）。 */
+function ConfirmModal(props: {
+  titleId: string;
+  title: string;
+  cancelLabel: string;
+  confirmLabel: string;
+  onCancel: () => void;
+  onConfirm: () => void;
+  children: ReactNode;
+}) {
+  return (
+    <div className="modal-backdrop" onClick={props.onCancel}>
+      <div
+        className="modal"
+        role="dialog"
+        aria-modal="true"
+        aria-labelledby={props.titleId}
+        onClick={(e) => e.stopPropagation()}
+        onKeyDown={trapTab}
+      >
+        <div className="modal-title" id={props.titleId}>
+          {props.title}
+        </div>
+        <div className="modal-body">{props.children}</div>
+        <div className="modal-actions">
+          <button className="btn-ghost" autoFocus onClick={props.onCancel}>
+            {props.cancelLabel}
+          </button>
+          <button className="btn-danger-solid" onClick={props.onConfirm}>
+            {props.confirmLabel}
+          </button>
+        </div>
+      </div>
+    </div>
+  );
+}
 
 /** 极简焦点圈定：Tab 在弹窗内的按钮间循环（毁灭性确认弹窗的键盘安全网） */
 function trapTab(ev: ReactKeyboardEvent<HTMLDivElement>) {
@@ -85,6 +135,11 @@ function App() {
     : scanError
       ? localizeScanError(scanError, t)
       : null;
+  // 横幅关闭集中一处：onClick 与键盘（Enter/空格）共用，防两路清除逻辑漂移
+  const dismissError = useCallback(() => {
+    setActionError(null);
+    setScanError(null);
+  }, []);
   const [killingPid, setKillingPid] = useState<number | null>(null);
   const [confirm, setConfirm] = useState<ConfirmState>(null);
   const [batchConfirm, setBatchConfirm] = useState<ProcessEntry[] | null>(null);
@@ -223,10 +278,7 @@ function App() {
   // 避免每个动作处理器各自手抄 setActionError(null) 而新增的漏写（评审发现：原先 4 处）。
   // toErrorMsg 接受翻译器注入并在渲染时调用 —— 切换语言后横幅自动重译。
   const runAction = useCallback(
-    async (
-      work: () => Promise<void>,
-      toErrorMsg: (err: unknown, tr: Translator) => string,
-    ) => {
+    async (work: () => Promise<void>, toErrorMsg: (err: unknown, tr: Translator) => string) => {
       try {
         await work();
         setActionError(null);
@@ -245,12 +297,11 @@ function App() {
     try {
       await runAction(
         async () => {
-          await invoke("kill_process", { pid, force, startUnix });
+          await invokeAction("kill_process", { pid, force, startUnix });
           await new Promise((r) => setTimeout(r, 250));
           await freshScan();
         },
-        (err, tr) =>
-          tr("error.killFailed", { err: localizeKillError(String(err), tr) }),
+        (err, tr) => tr("error.killFailed", { err: localizeKillError(String(err), tr) }),
       );
     } finally {
       // 函数式更新（评审发现）：kill A 在飞行中用户又对 B 发起 kill 时，
@@ -265,19 +316,19 @@ function App() {
       await runAction(
         async () => {
           if (e.is_whitelisted) {
-            await invoke("remove_whitelist", { key });
+            await invokeAction("remove_whitelist", { key });
             // v0.4.0 旧键也清掉，否则升级用户的裸键仍命中、星标取消不掉（评审发现）
             const legacy = legacyWhitelistKey(e);
-            if (legacy !== key) await invoke("remove_whitelist", { key: legacy });
+            if (legacy !== key) await invokeAction("remove_whitelist", { key: legacy });
           } else {
-            await invoke("add_whitelist", { key });
+            await invokeAction("add_whitelist", { key });
           }
           // freshScan 而非 refresh：2s 轮询大概率正有一次扫描在飞行中，它读到的是
           // 白名单落盘**之前**的数据；refresh 会复用该 Promise，星标/嫌疑态/清扫
           // 计数要到下一轮才更新（评审发现）。kill 路径同理，早已用 freshScan。
           await freshScan();
         },
-        (err, tr) => tr("error.whitelistFailed", { err: String(err) }),
+        (err, tr) => tr("error.whitelistFailed", { err: localizeActionError(String(err), tr) }),
       );
     },
     [runAction, freshScan],
@@ -314,7 +365,7 @@ function App() {
           const failures: BatchFailure[] = [];
           for (const s of suspects) {
             try {
-              await invoke("kill_process", {
+              await invokeAction("kill_process", {
                 pid: s.pid,
                 force,
                 startUnix: s.start_unix,
@@ -447,13 +498,13 @@ function App() {
           {sweepables.length > 0 && (
             <button
               className="btn-sweep"
-              disabled={sweeping}
+              // 单杀飞行中禁止发起清扫（与「清扫中禁用行内终止」互为镜像）：
+              // 清扫快照仍含正被杀的 PID，二次 kill 只会制造多余的失败横幅（评审发现）
+              disabled={sweeping || killingPid !== null}
               onClick={askKillAllSuspects}
               title={t("sweep.title")}
             >
-              {sweeping
-                ? t("sweep.sweeping")
-                : `${t("sweep.button")} (${sweepables.length})`}
+              {sweeping ? t("sweep.sweeping") : `${t("sweep.button")} (${sweepables.length})`}
             </button>
           )}
           <button
@@ -471,15 +522,11 @@ function App() {
           className="error"
           role="button"
           tabIndex={0}
-          onClick={() => {
-            setActionError(null);
-            setScanError(null);
-          }}
+          onClick={dismissError}
           onKeyDown={(ev) => {
             if (ev.key === "Enter" || ev.key === " ") {
               ev.preventDefault();
-              setActionError(null);
-              setScanError(null);
+              dismissError();
             }
           }}
         >
@@ -554,129 +601,89 @@ function App() {
       </footer>
 
       {batchConfirm && (
-        <div className="modal-backdrop" onClick={() => setBatchConfirm(null)}>
-          <div
-            className="modal"
-            role="dialog"
-            aria-modal="true"
-            aria-labelledby="batch-modal-title"
-            onClick={(e) => e.stopPropagation()}
-            onKeyDown={trapTab}
-          >
-            <div className="modal-title" id="batch-modal-title">
-              {t("batch.title", { n: batchConfirm.length })}
-            </div>
-            <div className="modal-body">
-              <div className="modal-row">
-                <span className="modal-label">{t("batch.signal")}</span>
-                <span className="mono">
-                  {os === "windows" ? t("batch.signal.windows") : t("batch.signal.macos")}
-                </span>
-              </div>
-              <div className="modal-row modal-row-top">
-                <span className="modal-label">{t("batch.procs")}</span>
-                <div className="batch-list">
-                  {batchConfirm.slice(0, 8).map((s) => (
-                    <div key={s.pid} className="batch-item mono">
-                      <span className="batch-pid">PID {s.pid}</span>
-                      <span className="batch-label">{s.app_label}</span>
-                      <span className="batch-ports muted">
-                        {formatPorts(s.ports)}
-                      </span>
-                    </div>
-                  ))}
-                  {batchConfirm.length > 8 && (
-                    <div className="muted batch-more">
-                      {t("batch.more", { n: batchConfirm.length - 8 })}
-                    </div>
-                  )}
+        <ConfirmModal
+          titleId="batch-modal-title"
+          title={t("batch.title", { n: batchConfirm.length })}
+          cancelLabel={t("batch.cancel")}
+          confirmLabel={t("batch.confirm")}
+          onCancel={() => setBatchConfirm(null)}
+          onConfirm={doBatchKill}
+        >
+          <div className="modal-row">
+            <span className="modal-label">{t("batch.signal")}</span>
+            <span className="mono">
+              {os === "windows" ? t("batch.signal.windows") : t("batch.signal.macos")}
+            </span>
+          </div>
+          <div className="modal-row modal-row-top">
+            <span className="modal-label">{t("batch.procs")}</span>
+            <div className="batch-list">
+              {batchConfirm.slice(0, 8).map((s) => (
+                <div key={s.pid} className="batch-item mono">
+                  <span className="batch-pid">PID {s.pid}</span>
+                  <span className="batch-label">{s.app_label}</span>
+                  <span className="batch-ports muted">{formatPorts(s.ports)}</span>
                 </div>
-              </div>
-              <div className="modal-row">
-                <span className="muted">{t("batch.scope.note")}</span>
-              </div>
-            </div>
-            <div className="modal-actions">
-              {/* autoFocus 落在取消键：Enter 永远不应直接触发批量终止 */}
-              <button
-                className="btn-ghost"
-                autoFocus
-                onClick={() => setBatchConfirm(null)}
-              >
-                {t("batch.cancel")}
-              </button>
-              <button className="btn-danger-solid" onClick={doBatchKill}>
-                {t("batch.confirm")}
-              </button>
+              ))}
+              {batchConfirm.length > 8 && (
+                <div className="muted batch-more">
+                  {t("batch.more", { n: batchConfirm.length - 8 })}
+                </div>
+              )}
             </div>
           </div>
-        </div>
+          <div className="modal-row">
+            <span className="muted">{t("batch.scope.note")}</span>
+          </div>
+        </ConfirmModal>
       )}
 
       {confirm && (
-        <div className="modal-backdrop" onClick={() => setConfirm(null)}>
-          <div
-            className="modal"
-            role="dialog"
-            aria-modal="true"
-            aria-labelledby="confirm-modal-title"
-            onClick={(e) => e.stopPropagation()}
-            onKeyDown={trapTab}
-          >
-            <div className="modal-title" id="confirm-modal-title">
-              {confirm.force && os !== "windows"
-                ? t("confirm.title.force")
-                : t("confirm.title.kill")}
-            </div>
-            <div className="modal-body">
-              <div className="modal-row">
-                <span className="modal-label">{t("confirm.app")}</span>
-                <span>{confirm.app_label}</span>
-              </div>
-              <div className="modal-row">
-                <span className="modal-label">{t("confirm.cmd")}</span>
-                <span className="mono">{confirm.command}</span>
-              </div>
-              <div className="modal-row">
-                <span className="modal-label">{t("confirm.pid")}</span>
-                <span className="mono">{confirm.pid}</span>
-              </div>
-              <div className="modal-row">
-                <span className="modal-label">{t("confirm.ports")}</span>
-                <span className="mono">
-                  {formatPorts(confirm.ports, "  ")}
-                  {confirm.ports.length > 1 && (
-                    <span className="muted">
-                      {" "}
-                      {t("confirm.portsRelease", { n: confirm.ports.length })}
-                    </span>
-                  )}
-                </span>
-              </div>
-              <div className="modal-row">
-                <span className="modal-label">{t("confirm.signal")}</span>
-                <span className="mono">
-                  {os === "windows"
-                    ? t("confirm.signal.win")
-                    : confirm.force
-                      ? t("confirm.signal.kill")
-                      : t("confirm.signal.term")}
-                </span>
-              </div>
-            </div>
-            <div className="modal-actions">
-              {/* autoFocus 落在取消键：Enter 永远不应直接触发终止 */}
-              <button className="btn-ghost" autoFocus onClick={() => setConfirm(null)}>
-                {t("confirm.cancel")}
-              </button>
-              <button className="btn-danger-solid" onClick={doKill}>
-                {confirm.force && os !== "windows"
-                  ? t("confirm.force")
-                  : t("confirm.kill")}
-              </button>
-            </div>
+        <ConfirmModal
+          titleId="confirm-modal-title"
+          title={
+            confirm.force && os !== "windows" ? t("confirm.title.force") : t("confirm.title.kill")
+          }
+          cancelLabel={t("confirm.cancel")}
+          confirmLabel={confirm.force && os !== "windows" ? t("confirm.force") : t("confirm.kill")}
+          onCancel={() => setConfirm(null)}
+          onConfirm={doKill}
+        >
+          <div className="modal-row">
+            <span className="modal-label">{t("confirm.app")}</span>
+            <span>{confirm.app_label}</span>
           </div>
-        </div>
+          <div className="modal-row">
+            <span className="modal-label">{t("confirm.cmd")}</span>
+            <span className="mono">{confirm.command}</span>
+          </div>
+          <div className="modal-row">
+            <span className="modal-label">{t("confirm.pid")}</span>
+            <span className="mono">{confirm.pid}</span>
+          </div>
+          <div className="modal-row">
+            <span className="modal-label">{t("confirm.ports")}</span>
+            <span className="mono">
+              {formatPorts(confirm.ports, "  ")}
+              {confirm.ports.length > 1 && (
+                <span className="muted">
+                  {" "}
+                  {t("confirm.portsRelease", { n: confirm.ports.length })}
+                </span>
+              )}
+            </span>
+          </div>
+          <div className="modal-row">
+            <span className="modal-label">{t("confirm.signal")}</span>
+            <span className="mono">
+              {os === "windows"
+                ? t("confirm.signal.win")
+                : confirm.force
+                  ? t("confirm.signal.kill")
+                  : t("confirm.signal.term")}
+            </span>
+          </div>
+        </ConfirmModal>
       )}
     </div>
   );
@@ -708,15 +715,7 @@ type SectionProps = {
 };
 
 /** 嫌疑 / 健康 / 收藏三个分区共用：section-head + 行列表（评审 E4 去重） */
-function Section({
-  title,
-  count,
-  sub,
-  danger,
-  entries,
-  expandedPid,
-  rowProps,
-}: SectionProps) {
+function Section({ title, count, sub, danger, entries, expandedPid, rowProps }: SectionProps) {
   return (
     <section>
       <div className={danger ? "section-head section-head-danger" : "section-head"}>
@@ -857,10 +856,7 @@ function RowImpl({
                     </button>
                   ))}
                   {morePorts > 0 && (
-                    <span
-                      className="port-more"
-                      title={formatPorts(e.ports)}
-                    >
+                    <span className="port-more" title={formatPorts(e.ports)}>
                       +{morePorts}
                     </span>
                   )}
@@ -895,9 +891,7 @@ function RowImpl({
                   <span className="desc-starred">★ {t("story.starred")} · </span>
                 )}
                 <span className="desc-text">{desc}</span>
-                {provenance && (
-                  <span className="desc-text desc-dim"> · {provenance}</span>
-                )}
+                {provenance && <span className="desc-text desc-dim"> · {provenance}</span>}
               </>
             )}
           </div>
@@ -1008,6 +1002,16 @@ function Detail({ e, os, id }: { e: ProcessEntry; os: Os | null; id: string }) {
               <span className="detail-dim">{e.tty}</span>
             </>
           )}
+          {/* ps state 标志（如 S+ / Z）：defunct 等判定的原始佐证，
+              与 user/tty 同理不再只收不显（评审发现） */}
+          {e.state && (
+            <>
+              <span className="detail-sep">·</span>
+              <span className="detail-dim" title={t("detail.state")}>
+                {e.state}
+              </span>
+            </>
+          )}
           {os === "macos" && e.ppid === 1 && (
             <span className="detail-note">{t("detail.parent.launchdNote")}</span>
           )}
@@ -1032,7 +1036,13 @@ function Detail({ e, os, id }: { e: ProcessEntry; os: Os | null; id: string }) {
           ) : (
             <span className="chain">
               {chainTopDown.map((p, i) => (
-                <span className="chain-node" key={`${p.pid}-${i}`}>
+                // title 悬浮出示节点的 PID 与可执行路径 —— 链上父进程的辨认依据，
+                // ParentRef 契约字段不再只收不显（评审发现）
+                <span
+                  className="chain-node"
+                  key={`${p.pid}-${i}`}
+                  title={p.exe_path ? `PID ${p.pid} · ${p.exe_path}` : `PID ${p.pid}`}
+                >
                   {i > 0 && <span className="chain-arrow">›</span>}
                   {p.label}
                 </span>
@@ -1046,9 +1056,7 @@ function Detail({ e, os, id }: { e: ProcessEntry; os: Os | null; id: string }) {
 
       {e.is_zombie_suspect && e.zombie_reasons.length > 0 && (
         <div className="evidence">
-          <div className="evidence-title evidence-title-danger">
-            {t("detail.evidence")}
-          </div>
+          <div className="evidence-title evidence-title-danger">{t("detail.evidence")}</div>
           {e.zombie_reasons.map((r) => (
             <div className="evidence-item" key={r}>
               <span className="evidence-name">

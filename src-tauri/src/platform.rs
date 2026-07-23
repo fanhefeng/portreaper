@@ -17,7 +17,10 @@ pub fn kill(pid: u32, force: bool, expected_start: Option<u64>) -> Result<(), St
     // 走到这里说明前端数据异常 —— 宁可让用户重扫，绝不盲杀）
     let expected = expected_start
         .ok_or_else(|| "ERR_IDENTITY_UNKNOWN: missing identity token, rescan first".to_string())?;
+    // 探针工具本身失败（ps 起不来）≠ 进程消失：前者以 OS 原文上抛，
+    // 不映射成 ERR_PROCESS_GONE 误导用户「进程已不在」（评审发现）。
     let current = current_start_unix(pid)
+        .map_err(|e| format!("verify process identity: {e}"))?
         .ok_or_else(|| "ERR_PROCESS_GONE: process no longer exists".to_string())?;
     if current.abs_diff(expected) > START_TOLERANCE_SECS {
         return Err(
@@ -38,14 +41,23 @@ pub fn kill(pid: u32, force: bool, expected_start: Option<u64>) -> Result<(), St
         .output()
         .map_err(|e| e.to_string())?;
     if !output.status.success() {
-        return Err(String::from_utf8_lossy(&output.stderr).into_owned());
+        let stderr = String::from_utf8_lossy(&output.stderr);
+        let stderr = stderr.trim();
+        // /bin/kill 失败但 stderr 为空（个别 EPERM 场景）时给出带退出码的兜底
+        // 文案 —— 否则前端错误横幅展示空字符串（评审发现）。
+        if stderr.is_empty() {
+            return Err(format!("kill {pid} failed with {}", output.status));
+        }
+        return Err(stderr.to_string());
     }
     Ok(())
 }
 
-/// 单 PID 的当前创建时间（epoch 秒）：now - etime。进程不存在返回 None。
+/// 单 PID 的当前创建时间（epoch 秒）：now - etime。
+/// `Ok(None)` = 进程不存在（或 etime 不可解析，fail-closed 同样按消失处理）；
+/// `Err` = 探针工具自身失败（ps 无法启动），语义与「进程消失」严格区分。
 #[cfg(target_os = "macos")]
-fn current_start_unix(pid: u32) -> Option<u64> {
+fn current_start_unix(pid: u32) -> Result<Option<u64>, String> {
     use std::process::Command;
     use std::time::{SystemTime, UNIX_EPOCH};
 
@@ -54,20 +66,19 @@ fn current_start_unix(pid: u32) -> Option<u64> {
         .env("LANG", "en_US.UTF-8")
         .env("LC_ALL", "en_US.UTF-8")
         .output()
-        .ok()?;
+        .map_err(|e| format!("spawn ps: {e}"))?;
     let text = String::from_utf8_lossy(&output.stdout);
     let etime = text.trim();
     if etime.is_empty() {
-        return None;
+        return Ok(None);
     }
     let now = SystemTime::now()
         .duration_since(UNIX_EPOCH)
         .map(|d| d.as_secs())
         .unwrap_or(0);
-    // 解析失败返回 None → 上层 kill 走 ERR_PROCESS_GONE 让用户重扫,绝不静默把
+    // 解析失败返回 Ok(None) → 上层 kill 走 ERR_PROCESS_GONE 让用户重扫,绝不静默把
     // 进程当成「刚启动」(current ≈ now 会绕过 ±5s PID 复用容差)。
-    let elapsed = crate::scanner::parse_etime_checked(etime)?;
-    Some(now.saturating_sub(elapsed))
+    Ok(crate::scanner::parse_etime_checked(etime).map(|elapsed| now.saturating_sub(elapsed)))
 }
 
 #[cfg(windows)]

@@ -14,6 +14,7 @@ const real = {
   websiteSrc: readFileSync(join(root, "website/index.html"), "utf8"),
   readmeSrc: readFileSync(join(root, "README.md"), "utf8"),
   i18nSrc: readFileSync(join(root, "website/i18n.js"), "utf8"),
+  mainJsSrc: readFileSync(join(root, "website/main.js"), "utf8"),
 };
 
 test("真实源码当前必须通过资产名一致性校验", () => {
@@ -50,10 +51,7 @@ test("README 漏掉一个资产必须被拦截", () => {
 
 test("en 字典缺键必须被拦截（website 无 tsc 兜底）", () => {
   // 在 zh 字典里加一个 en 没有的键
-  const i18nSrc = real.i18nSrc.replace(
-    /zh: \{/,
-    'zh: {\n    "only.in.zh": "孤键",',
-  );
+  const i18nSrc = real.i18nSrc.replace(/zh: \{/, 'zh: {\n    "only.in.zh": "孤键",');
   const errors = checkWebsiteI18n({ ...real, i18nSrc });
   assert.ok(errors.some((e) => e.includes('"only.in.zh"') && e.includes("en 字典缺键")));
 });
@@ -65,4 +63,20 @@ test("index.html 引用不存在的 data-i18n 键必须被拦截", () => {
   );
   const errors = checkWebsiteI18n({ ...real, websiteSrc });
   assert.ok(errors.some((e) => e.includes('"nav.ghost_key"')));
+});
+
+test("下载链接 URL 前缀损坏必须被拦截（资产名集合仍一致的隐性 404）", () => {
+  // 名字不变、只坏前缀：旧校验（纯文件名集合比对）对此完全放行
+  const websiteSrc = real.websiteSrc.replaceAll(
+    "releases/latest/download/Portreaper-macos-arm64.dmg",
+    "releases/download/latest/Portreaper-macos-arm64.dmg",
+  );
+  const errors = checkAssetNames({ ...real, websiteSrc });
+  assert.ok(errors.some((e) => e.includes("缺少完整下载链接")));
+});
+
+test("main.js 引用不存在的字典键必须被拦截（version.label / copy.done 只从 JS 消费）", () => {
+  const mainJsSrc = real.mainJsSrc.replace('t("version.label")', 't("version.ghost_key")');
+  const errors = checkWebsiteI18n({ ...real, mainJsSrc });
+  assert.ok(errors.some((e) => e.includes('"version.ghost_key"') && e.includes("main.js")));
 });

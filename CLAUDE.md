@@ -6,21 +6,24 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 Portreaper is a macOS + Windows menubar/tray desktop app that finds processes listening on TCP ports and helps the user kill orphaned dev-server "zombies" (e.g. a `vite`/`node`/`cargo run` process whose launching shell died). It also surfaces **orphaned dev processes that hold no port at all** (e.g. an `electron-vite` Electron main process left behind when its parent `node` is killed — adopted by launchd, listening on nothing) — these are invisible to a port scan but are exactly the kind of dev residue users want reaped. It is **not** a generic port viewer — the core value is the zombie-suspect classification (with confidence tiers) and the launcher-chain UI.
 
-Stack: Tauri 2 + React 19 + TypeScript + Vite, package manager is **pnpm**. UI is bilingual (zh/en) via `src/i18n.ts`.
+Stack: Tauri 2 + React 19 + TypeScript 7 + the **Vite+ toolchain** (`vp` — wraps Vite 8/Rolldown, Vitest, Oxlint, Oxfmt), package manager is **pnpm 11**. UI is bilingual (zh/en) via `src/i18n.ts`.
+
+Vite+ specifics: `vite` is aliased to `@voidzero-dev/vite-plus-core` via the pnpm catalog in `pnpm-workspace.yaml` (vitest/oxlint/oxfmt come bundled — they are **not** direct devDependencies; test files import from `vite-plus/test`). Git hooks live in `.vite-hooks/` (pre-commit → `vp staged`, wired by the `prepare` script; the `staged` glob config sits in `vite.config.ts` and must be maintained by hand — the function-form config defeats `vp migrate`'s auto-merge). **Markdown is excluded from oxfmt via `.prettierignore`** — oxfmt 0.2.6 corrupted md content (rewrote a fenced block in a list item into inline code; dropped a blockquote `>` prefix), so never widen fmt scope to `*.md` without re-verifying. `AGENTS.md` is the Vite+ scaffold block — leave it.
 
 ## Commands
 
 ```bash
-pnpm install           # first-time setup
-pnpm tauri dev         # run the desktop app (launches vite on :1430, then tauri webview)
+pnpm install           # first-time setup (also wires git hooks via `prepare` → vp config)
+pnpm tauri dev         # run the desktop app (launches vp dev/vite on :1430, then tauri webview)
 pnpm tauri build       # produce a .app/.dmg (macOS) or NSIS .exe (Windows)
-pnpm build             # tsc --noEmit + vite build (used by tauri build)
+pnpm build             # tsc --noEmit + vp build (used by tauri build)
+pnpm exec vp check     # oxfmt + oxlint gate (CI-enforced); --fix to apply; md excluded (see below)
 
 cd src-tauri && cargo test                 # 35+ unit tests incl. classify fixtures
 cd src-tauri && cargo clippy --all-targets -- -D warnings
 cargo test live_scan -- --ignored --nocapture   # real-machine smoke: scan this Mac
 
-pnpm test                                  # frontend regression tests (vitest + happy-dom)
+pnpm test                                  # frontend regression tests (vp test run: bundled vitest + happy-dom)
 
 # Windows cross-compile check from macOS (needs `brew install llvm` for llvm-rc):
 PATH="/opt/homebrew/opt/llvm/bin:$PATH" cargo check --target x86_64-pc-windows-msvc
@@ -31,16 +34,16 @@ node --test scripts/*.test.mjs             # guard-script self-tests
 node scripts/bump-version.mjs --check 0.1.0
 ```
 
-CI (`.github/workflows/ci.yml`) runs the full gate on macOS + Windows. Release is tag-triggered (`v*`, see `docs/RELEASING.md`). The Rust crate is `portreaper_lib` (see `Cargo.toml [lib]`); `main.rs` is a thin entry point calling `portreaper_lib::run()`.
+The Rust toolchain is pinned by `rust-toolchain.toml` (constrains local dev, CI, and release builds alike; the upgrade steps are documented in that file — keep the workflow files in sync). CI (`.github/workflows/ci.yml`) runs the full gate on macOS + Windows. Release is tag-triggered (`v*`, see `docs/RELEASING.md`). The Rust crate is `portreaper_lib` (see `Cargo.toml [lib]`); `main.rs` is a thin entry point calling `portreaper_lib::run()`.
 
 ## Architecture
 
 ### Two-process structure
 
 - **Frontend** (`src/App.tsx` + `src/model.ts` + `src/describe.ts` + `src/i18n.ts`): polls `scan_ports` every 2 seconds, renders the table, owns the kill-confirm modals and search/filter, pushes counts into the tray via `update_tray_title`. All strings go through the typed i18n dict — a missing English key is a tsc error. Pure logic lives outside the component file so it is unit-testable: `model.ts` holds the `ProcessEntry` serde mirror, `whitelistKey`/`legacyWhitelistKey`, `REASON_PRIORITY`/`EXEMPT_REASONS` (read by check-reason-parity) and format/error helpers; `describe.ts` holds the "what is this" knowledge base — its **brand-scoped patterns are skipped for `dev-script` rows** (a project dir named `spotify-clone` lands in `app_label`, and a real brand process is never dev-script).
-- **Rust backend** (`src-tauri/src/`): owns scanning, classification, the whitelist file, the tray, and window lifecycle.
+- **Rust backend** (`src-tauri/src/`): owns scanning, classification, the whitelist file, the tray, and window lifecycle. Beyond `scanner/`: `commands.rs` (all `#[tauri::command]` fns — thin wrappers over the modules below), `whitelist.rs` (persisted whitelist file I/O), `paths.rs` (per-environment directory resolution, see below), `lib.rs` (builder, tray, menus, window events).
 
-All frontend↔backend communication is Tauri `invoke()` calls registered in `src-tauri/src/lib.rs` (`invoke_handler![...]`). When adding a command, register it there and add any new permissions to `src-tauri/capabilities/default.json` if it touches gated APIs.
+All frontend↔backend communication is Tauri `invoke()` calls: implement in `src-tauri/src/commands.rs`, register in `lib.rs` (`invoke_handler![...]`). Permissions (`src-tauri/capabilities/default.json`) are an **exact whitelist guarded by `src/security-config.test.ts`** — that test also pins the strict CSP (no `unsafe-inline` anywhere, `connect-src` must keep both Tauri IPC carriers). Adding any permission or touching the CSP requires updating those assertions deliberately.
 
 ### Scanner module layout (`src-tauri/src/scanner/`)
 
@@ -90,7 +93,11 @@ Data sources: macOS = `lsof -iTCP -sTCP:LISTEN -P -n -FpcLn` + `ps -A -o pid=,pp
 
 ### Tray / window lifecycle
 
-The window close button is intercepted (`lib.rs` `on_window_event` → hide + `prevent_close()`) — the app lives in the tray; quitting only happens via the tray menu. **macOS ⌘Q** is handled by replacing the default app menu (`Builder::menu` in `lib.rs`): muda's predefined Quit calls `[NSApp terminate:]`, which tao 0.35 does **not** route through `ExitRequested` (empirically verified — the process just dies; do not "fix" ⌘Q by intercepting `ExitRequested{code: None}`, that event only fires when the last window is *destroyed*). The custom `quit-to-tray` item owns the Cmd+Q accelerator and hides the window instead; the Edit/Window submenus must stay (webview ⌘C/⌘V/⌘W depend on them). Dock-quit / logout / shutdown (AppleEvent quit) still exit for real — deliberate: system-initiated quits must be honored. macOS shows counts in the tray *title* (`icon_as_template` gated to macOS); Windows has no tray title — counts go to the *tooltip*. Tray menu labels are bilingual: handles are stored in `TrayMenuItems` state (+ `AppMenuItems` for the macOS ⌘Q item) and re-texted by `set_tray_language` (called by the frontend on toggle; initial language from `sys-locale`).
+The window close button is intercepted (`lib.rs` `on_window_event` → hide + `prevent_close()`) — the app lives in the tray; quitting only happens via the tray menu. **macOS runs as an `ActivationPolicy::Accessory` app** (set in `setup`): no Dock icon, no ⌘Tab entry — the menubar-utility identity matches the tray-resident behavior (verified via LaunchServices `type="UIElement"`). **macOS ⌘Q** is handled by replacing the default app menu (`Builder::menu` in `lib.rs`): muda's predefined Quit calls `[NSApp terminate:]`, which tao 0.35 does **not** route through `ExitRequested` (empirically verified — the process just dies; do not "fix" ⌘Q by intercepting `ExitRequested{code: None}`, that event only fires when the last window is *destroyed*). The custom `quit-to-tray` item owns the Cmd+Q accelerator and hides the window instead. Under Accessory the app menu is never *displayed*, but it must still be *built*: AppKit consults the app's mainMenu for key equivalents even when the menu bar isn't shown — webview ⌘C/⌘V/⌘W/⌘Q all route through this invisible menu, so the Edit/Window submenus must stay. Logout / shutdown (AppleEvent quit) still exit for real — deliberate: system-initiated quits must be honored. (Dock-quit no longer exists — there is no Dock icon.) macOS shows counts in the tray *title* (`icon_as_template` gated to macOS); Windows has no tray title — counts go to the *tooltip*. The tray menu (and macOS app menu) also exposes "open data/cache/log/temp folder" items backed by `paths.rs`. Tray menu labels are bilingual: handles are stored in `TrayMenuItems` state (+ `AppMenuItems` for the macOS ⌘Q item) and re-texted by `set_tray_language` (called by the frontend on toggle; initial language from `sys-locale`).
+
+### Logging & per-environment data isolation
+
+`paths.rs` scopes every persisted directory (config/whitelist, logs, cache, data, app-temp) by build profile: debug builds append a `dev/` subdir, so `pnpm tauri dev` never pollutes the installed app's data (compile-time `cfg(debug_assertions)`, no env vars). Logs go through `tauri-plugin-log` to `portreaper-{dev,prod}.log` in the scoped log dir (+ stdout in debug). `src/logger.ts` bridges webview uncaught errors / unhandled rejections into the same file — **its log calls must swallow their own failures** (`.catch(() => {})`): during the startup race the plugin isn't registered yet, a rejecting `error()` call re-enters the `unhandledrejection` listener and self-excites into an infinite loop (real incident: 46 MB of log and a pegged CPU). Never let the logger produce an error it would itself report.
 
 ### Windows caveats (no dev machine — CI is the safety net)
 

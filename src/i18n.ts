@@ -25,7 +25,7 @@ const zh = {
   "section.suspects.sub": "来源已退出、同项目重复启动，或已脱离父进程的残留进程",
   "section.healthy": "正常监听",
   "section.starred": "已收藏",
-  "allclear": "未发现僵尸进程，一切正常",
+  allclear: "未发现僵尸进程，一切正常",
 
   // ---- footer ----
   "footer.status": "{procs} 个进程 · {ports} 个端口 · 每 2 秒自动扫描",
@@ -41,6 +41,7 @@ const zh = {
   "error.identityUnknown": "缺少进程身份信息，已取消终止，请刷新后重试",
   "error.whitelistFailed": "收藏保存失败（本次更改未持久化）: {err}",
   "error.scanTimeout": "扫描超时（后端无响应），正在自动重试…",
+  "error.actionTimeout": "操作超时（后端无响应），请重试",
 
   // ---- row ----
   "port.tip": "在浏览器打开 http://localhost:{port}",
@@ -99,6 +100,7 @@ const zh = {
   "detail.pid": "PID",
   "detail.parent": "父进程",
   "detail.parent.launchdNote": "PID 1 = launchd：原启动者已退出，本进程已被系统收养",
+  "detail.state": "进程状态（ps state 标志）",
   "detail.chain": "启动链",
   "detail.chain.empty": "无法回溯",
   "detail.category": "类别",
@@ -148,9 +150,11 @@ const zh = {
     "launchctl 认领的任务（LaunchAgent / brew services）—— 由 launchd 有意托管，不是僵尸。",
   "reasonTip.brew_service_path":
     "可执行文件位于 Homebrew 服务路径（brew services 启动的 postgres / redis 等），不是僵尸。",
-  "reasonTip.installed_app": "位于标准安装位置（/Applications、系统目录、Program Files 等），不是僵尸。",
+  "reasonTip.installed_app":
+    "位于标准安装位置（/Applications、系统目录、Program Files 等），不是僵尸。",
   "reasonTip.pm2_managed": "由 pm2 守护进程托管 —— 用户有意让它常驻，不是僵尸。",
-  "reasonTip.just_reparented": "启动（或刚被收养）不足 10 秒，可能正处于重启过渡态 —— 暂列存疑，不会被清扫。",
+  "reasonTip.just_reparented":
+    "启动（或刚被收养）不足 10 秒，可能正处于重启过渡态 —— 暂列存疑，不会被清扫。",
 
   // ---- empty states ----
   "empty.none": "没有发现任何监听端口",
@@ -193,15 +197,13 @@ const en: Record<I18nKey, string> = {
   "filter.whitelist": "Starred",
   "sweep.button": "Clean up",
   "sweep.sweeping": "Cleaning…",
-  "sweep.title":
-    "Batch-terminate 'Zombie' and 'Likely zombie' rows ('Possible' is never swept)",
+  "sweep.title": "Batch-terminate 'Zombie' and 'Likely zombie' rows ('Possible' is never swept)",
 
   "section.suspects": "Suspects",
-  "section.suspects.sub":
-    "Launcher exited, a duplicate instance, or detached from its parent",
+  "section.suspects.sub": "Launcher exited, a duplicate instance, or detached from its parent",
   "section.healthy": "Healthy listeners",
   "section.starred": "Starred",
-  "allclear": "No zombies. All clear",
+  allclear: "No zombies. All clear",
 
   "footer.status": "{procs} processes · {ports} ports · rescans every 2s",
 
@@ -209,14 +211,13 @@ const en: Record<I18nKey, string> = {
   "error.killFailed": "Kill failed: {err}",
   "error.openBrowser": "Failed to open browser: {err}",
   "error.batchFailed": "{failed}/{total} processes failed to terminate:",
-  "error.pidReused":
-    "Process identity changed (PID was reused) — kill aborted, please rescan",
+  "error.pidReused": "Process identity changed (PID was reused) — kill aborted, please rescan",
   "error.processGone": "Process no longer exists (it may have just exited)",
   "error.accessDenied": "Not permitted to terminate this process (it may be protected)",
-  "error.identityUnknown":
-    "Missing process identity token — kill aborted, refresh and retry",
+  "error.identityUnknown": "Missing process identity token — kill aborted, refresh and retry",
   "error.whitelistFailed": "Whitelist update failed (change not persisted): {err}",
   "error.scanTimeout": "Scan timed out (no response from backend); retrying…",
+  "error.actionTimeout": "Action timed out (no response from backend), please retry",
 
   "port.tip": "Open http://localhost:{port} in browser",
   "row.expand.tip": "Show details",
@@ -270,6 +271,7 @@ const en: Record<I18nKey, string> = {
   "detail.parent": "Parent",
   "detail.parent.launchdNote":
     "PID 1 = launchd: the original launcher exited and this process was adopted",
+  "detail.state": "Process state (ps state flags)",
   "detail.chain": "Launch chain",
   "detail.chain.empty": "untraceable",
   "detail.category": "Category",
@@ -400,7 +402,7 @@ export function setLang(lang: Lang) {
   listeners.forEach((fn) => fn());
 }
 
-export function getLang(): Lang {
+function getLang(): Lang {
   return current;
 }
 
@@ -409,11 +411,7 @@ function subscribe(fn: () => void): () => void {
   return () => listeners.delete(fn);
 }
 
-export function translate(
-  lang: Lang,
-  key: I18nKey,
-  params?: Record<string, string | number>,
-): string {
+function translate(lang: Lang, key: I18nKey, params?: Record<string, string | number>): string {
   // 兜底：动态 key（reason.* / story.* 经 as 断言传入）在 Rust 新增码而字典
   // 未更新的陈旧构建里可能缺失 —— 退回英文，再退回 key 本身，绝不渲染空文案。
   // （CI 的 check-reason-parity.mjs 保证正常构建不会走到兜底。）

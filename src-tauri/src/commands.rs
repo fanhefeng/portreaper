@@ -33,11 +33,6 @@ pub fn get_platform() -> &'static str {
     }
 }
 
-#[tauri::command]
-pub fn get_whitelist() -> Vec<String> {
-    whitelist::get_all()
-}
-
 /// 持久化失败（磁盘满/权限/路径被占）会上抛给前端：星标回弹 + 错误横幅，
 /// 而不是内存假成功、重启后丢收藏（评审发现）。
 #[tauri::command]
@@ -104,55 +99,18 @@ pub fn set_tray_language(app: tauri::AppHandle, lang: String) -> Result<(), Stri
     }
     if let Some(items) = app.try_state::<crate::TrayMenuItems>() {
         let (show, quit) = crate::tray_texts(lang);
-        let dt = crate::dir_menu_texts(lang);
         items.show.set_text(show).map_err(|e| e.to_string())?;
-        items.open_dir.set_text(dt.title).map_err(|e| e.to_string())?;
-        items
-            .open_config
-            .set_text(dt.config)
-            .map_err(|e| e.to_string())?;
-        items
-            .open_data
-            .set_text(dt.data)
-            .map_err(|e| e.to_string())?;
-        items
-            .open_cache
-            .set_text(dt.cache)
-            .map_err(|e| e.to_string())?;
-        items.open_logs.set_text(dt.logs).map_err(|e| e.to_string())?;
-        items.open_temp.set_text(dt.temp).map_err(|e| e.to_string())?;
-        #[cfg(debug_assertions)]
-        items
-            .open_devtools
-            .set_text(crate::devtools_text(lang))
-            .map_err(|e| e.to_string())?;
+        items.dir.set_lang(lang)?;
         items.quit.set_text(quit).map_err(|e| e.to_string())?;
     }
     // macOS 应用菜单的 ⌘Q 替代项 + 「打开目录」菜单（顶部应用菜单栏那份）同步语言
     #[cfg(target_os = "macos")]
     if let Some(items) = app.try_state::<crate::AppMenuItems>() {
-        let dt = crate::dir_menu_texts(lang);
         items
             .quit_to_tray
             .set_text(crate::quit_to_tray_text(lang))
             .map_err(|e| e.to_string())?;
-        items.open_dir.set_text(dt.title).map_err(|e| e.to_string())?;
-        items
-            .open_config
-            .set_text(dt.config)
-            .map_err(|e| e.to_string())?;
-        items.open_data.set_text(dt.data).map_err(|e| e.to_string())?;
-        items
-            .open_cache
-            .set_text(dt.cache)
-            .map_err(|e| e.to_string())?;
-        items.open_logs.set_text(dt.logs).map_err(|e| e.to_string())?;
-        items.open_temp.set_text(dt.temp).map_err(|e| e.to_string())?;
-        #[cfg(debug_assertions)]
-        items
-            .open_devtools
-            .set_text(crate::devtools_text(lang))
-            .map_err(|e| e.to_string())?;
+        items.dir.set_lang(lang)?;
     }
     Ok(())
 }
