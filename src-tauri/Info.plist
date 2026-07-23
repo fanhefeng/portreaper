@@ -1,0 +1,15 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<!-- Tauri 在打包时把本文件合并进生成的 Info.plist（文件放 src-tauri/ 即生效）。
+
+     LSUIElement：注册期即声明为 Accessory（纯菜单栏应用，无 Dock 图标）。
+     仅靠 setup 里的运行期 set_activation_policy 时，LaunchServices 会先按
+     Info.plist 把应用登记为 Foreground，冷启动时 Dock 图标闪现 1~2 秒再消失
+     （v0.7.0 实测）。本声明消掉这个闪烁；运行期调用仍保留 —— `tauri dev`
+     跑的是裸二进制、不读本文件，dev 行为全靠它。 -->
+<plist version="1.0">
+<dict>
+	<key>LSUIElement</key>
+	<true/>
+</dict>
+</plist>

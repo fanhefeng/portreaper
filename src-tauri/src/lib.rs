@@ -339,6 +339,9 @@ pub fn run() {
             // mainMenu 的 key equivalent，webview 的 ⌘C/⌘V/⌘W/⌘Q 全靠这份隐形
             // 菜单路由。副作用：Dock 右键退出的路径随图标一起消失，真正退出只剩
             // 托盘菜单与注销/关机（AppleEvent quit，依旧放行）。
+            // 双机制：正式包同时经 src-tauri/Info.plist 的 LSUIElement 在注册期
+            // 声明（否则冷启动 Dock 闪现图标 1~2 秒，v0.7.0 实测）；本运行期调用
+            // 覆盖 `tauri dev` 的裸二进制（不读 bundle Info.plist），两者都不能删。
             #[cfg(target_os = "macos")]
             app.set_activation_policy(tauri::ActivationPolicy::Accessory);
 

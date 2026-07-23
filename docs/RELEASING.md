@@ -104,5 +104,10 @@ The macOS group (`APPLE_*`) enables Developer ID signing + notarization for the 
 - [ ] Commit `chore(release): vX.Y.Z` + tag `vX.Y.Z` pushed.
 - [ ] `verify-version` passed.
 - [ ] All three artifacts built and uploaded with stable names.
+- [ ] Both dmgs contain the quarantine helper (`解除隔离 Remove Quarantine.command`,
+      injected by the "Inject quarantine helper into dmg" step from
+      `src-tauri/dmg-extras/`) — mount one and check before announcing.
+- [ ] First release shipping the helper: update the website/README install
+      steps to mention "right-click the .command in the dmg" as the easy path.
 - [ ] Release flipped from draft → published; `latest/download/...` links resolve.
 - [ ] (When Windows leaves experimental) experimental section removed from the `body.md` heredoc in `release.yml`'s `create-release` job (grep for the `WINDOWS-EXPERIMENTAL` anchor comment) and the website (`dl-btn--exp` / `dl.experimental` in `website/index.html`).

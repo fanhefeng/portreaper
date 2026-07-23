@@ -220,6 +220,35 @@ jobs:
           # `args` is empty for Windows (no --target), so omit --target there.
           args: ${{ matrix.target && format('--target {0} --bundles {1}', matrix.target, matrix.bundles) || format('--bundles {0}', matrix.bundles) }}
 
+      # Inject the quarantine-removal helper into the dmg (macOS legs only).
+      # tauri-bundler has no "extra dmg content" option, so we post-process:
+      # convert to writable, drop in src-tauri/dmg-extras/*.command, convert
+      # back, and REPLACE the asset tauri-action already uploaded (--clobber).
+      # The publish job later re-uploads stable-named copies from the draft,
+      # so it automatically picks up the post-processed dmg. Rehearsed locally
+      # against the v0.7.0 dmg (identical hdiutil sequence) before landing.
+      - name: Inject quarantine helper into dmg
+        if: runner.os == 'macOS'
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          TAG: ${{ github.ref_name }}
+        run: |
+          set -euo pipefail
+          dmg="$(ls src-tauri/target/${{ matrix.target }}/release/bundle/dmg/*.dmg)"
+          echo "Post-processing $dmg"
+          work="$(mktemp -d)"
+          hdiutil convert "$dmg" -format UDRW -o "$work/rw.dmg" -quiet
+          mkdir -p "$work/mnt"
+          hdiutil attach "$work/rw.dmg" -mountpoint "$work/mnt" -nobrowse -quiet
+          cp src-tauri/dmg-extras/*.command "$work/mnt/"
+          chmod +x "$work/mnt/"*.command
+          hdiutil detach "$work/mnt" -quiet
+          hdiutil convert "$work/rw.dmg" -format UDZO -imagekey zlib-level=9 -o "$work/final.dmg" -quiet
+          mv "$work/final.dmg" "$dmg"
+          # Replace the already-uploaded asset on the draft release
+          gh release upload "$TAG" "$dmg" --clobber
+          echo "Replaced $(basename "$dmg") on draft release $TAG"
+
   # --------------------------------------------------------------------------
   # 4. Verify the 3 expected assets exist on the draft release, re-upload them
   #    under STABLE names, then (and only then) flip the release out of draft.
