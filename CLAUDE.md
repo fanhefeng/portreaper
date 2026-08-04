@@ -19,6 +19,7 @@ pnpm tauri build       # produce a .app/.dmg (macOS) or NSIS .exe (Windows)
 pnpm build             # tsc --noEmit + vp build (used by tauri build)
 pnpm exec vp check     # oxfmt + oxlint gate (CI-enforced); --fix to apply; md excluded (see below)
 
+cd src-tauri && cargo fmt --check           # rustfmt gate — CI-enforced, and NOT covered by `vp check` (which is JS/TS only)
 cd src-tauri && cargo test                 # 35+ unit tests incl. classify fixtures
 cd src-tauri && cargo clippy --all-targets -- -D warnings
 cargo test live_scan -- --ignored --nocapture   # real-machine smoke: scan this Mac

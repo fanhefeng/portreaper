@@ -36,11 +36,11 @@ pub(crate) fn is_dev_tool_runtime_path(path: &str) -> bool {
     let norm = path.replace('\\', "/").to_lowercase();
     [
         "/node_modules/",
-        "/ms-playwright/",      // Playwright 下载的浏览器（macOS Caches / Windows LocalAppData）
-        "/.cache/puppeteer/",   // Puppeteer 默认下载目录
-        "/.local-chromium/",    // 旧版 Puppeteer 布局
-        "/.cache/selenium/",    // Selenium Manager 下载的浏览器 / driver
-        "/webdriver-manager/",  // webdriver-manager 下载目录
+        "/ms-playwright/", // Playwright 下载的浏览器（macOS Caches / Windows LocalAppData）
+        "/.cache/puppeteer/", // Puppeteer 默认下载目录
+        "/.local-chromium/", // 旧版 Puppeteer 布局
+        "/.cache/selenium/", // Selenium Manager 下载的浏览器 / driver
+        "/webdriver-manager/", // webdriver-manager 下载目录
     ]
     .iter()
     .any(|p| norm.contains(p))
@@ -512,7 +512,9 @@ mod tests {
     /// 分离值形（`-profile /tmp/x`）与粘连形（`--user-data-dir=/tmp/x`）等价。
     #[test]
     fn automation_temp_profile_accepts_separated_value() {
-        assert!(is_automation_instance("firefox -headless -profile /tmp/prof"));
+        assert!(is_automation_instance(
+            "firefox -headless -profile /tmp/prof"
+        ));
         assert!(is_automation_instance(
             "firefox -headless --profile /private/var/folders/ab/T/prof"
         ));

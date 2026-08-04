@@ -1419,7 +1419,11 @@ mod orphan_tests {
         procs.insert(64834, meta(1, CHROME, &format!("{CHROME} {args}")));
         procs.insert(
             64841,
-            meta(64834, HELPER, &format!("{HELPER} --type=gpu-process {args}")),
+            meta(
+                64834,
+                HELPER,
+                &format!("{HELPER} --type=gpu-process {args}"),
+            ),
         );
         let col = col_of(procs);
         let m = col.procs.get(&64841).unwrap();
