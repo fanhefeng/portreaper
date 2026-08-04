@@ -1,0 +1,36 @@
+# pre-push：推送前把 CI（.github/workflows/ci.yml）的门禁跑一遍。
+#
+# 为什么需要这一层：pre-commit 的 `vp staged` 只对暂存文件跑「可自动修复的
+# 格式化」，管不了 clippy / 测试 / 类型检查 / 守卫脚本。这些一旦失手，要等
+# push 之后 CI 才报红 —— v0.6.0、v0.7.0、v0.7.2 三次 main 变红都是这么来的。
+#
+# 由 .vite-hooks/_/h 以 `sh -e` 执行：任一命令非零退出即中止推送。
+# 逐条与 ci.yml 的步骤对齐；顺序按「快的先跑」排，让失败尽早暴露。
+#
+# 有意不在此处跑的两项（本地环境不具备，只能由 CI 覆盖）：
+#   - cargo check --target x86_64-apple-darwin（需 rustup target add）
+#   - cargo check --target x86_64-pc-windows-msvc（另需 brew install llvm 的 llvm-rc）
+# cargo build 也不单跑：clippy --all-targets 与 cargo test 已经把该编译的都编译了。
+#
+# 逃生阀（仅限确实需要推送半成品时）：VITE_GIT_HOOKS=0 git push
+set -e
+
+echo "pre-push: 正在跑 CI 门禁（跳过请用 VITE_GIT_HOOKS=0）"
+
+# ---- 前端 ----
+pnpm exec vp check
+pnpm exec tsc --noEmit
+pnpm exec vp test run
+pnpm exec vp build
+
+# ---- Rust ----
+cargo fmt --manifest-path src-tauri/Cargo.toml --check
+cargo clippy --manifest-path src-tauri/Cargo.toml --all-targets -- -D warnings
+cargo test --manifest-path src-tauri/Cargo.toml
+
+# ---- 守卫脚本 ----
+node --test scripts/*.test.mjs
+node scripts/check-reason-parity.mjs
+node scripts/check-release-assets.mjs
+
+echo "pre-push: 全部通过"
