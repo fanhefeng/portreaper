@@ -38,6 +38,7 @@ function suspectEntry(over: Record<string, unknown> = {}) {
     elapsed_secs: 3600,
     start_unix: 1000,
     cpu_percent: 0,
+    cpu_percent_tree: 0,
     mem_mb: 10,
     state: "S",
     is_zombie_suspect: true,

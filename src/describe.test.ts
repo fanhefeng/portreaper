@@ -24,6 +24,7 @@ function entry(over: Partial<ProcessEntry>): ProcessEntry {
     elapsed_secs: 3600,
     start_unix: 1000,
     cpu_percent: 0,
+    cpu_percent_tree: 0,
     mem_mb: 0,
     state: "S",
     is_zombie_suspect: true,

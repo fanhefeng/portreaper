@@ -32,7 +32,12 @@ pub enum ReasonCode {
     /// 由 scan() 的跨条目后处理标注（classify 是单进程纯函数，看不到其他条目）；
     /// 只到 Possible，永不入清扫 —— 机器无法判断用户正在用哪个实例。
     DuplicateDevServer,
+    /// 一次性自动化浏览器实例（--headless + 调试端口/临时 profile），
+    /// 且调试端口上无任何客户端连接 —— 自动化框架已退出、实例无人认领
+    AutomationInstance,
     // —— 豁免/降级信号（解释为什么不标记 / 降级）——
+    /// 自动化实例的调试端口上有活跃客户端连接 —— 有人正在驱动它，一票否决
+    DebuggerAttached,
     /// launchctl 认领的任务（LaunchAgent / brew services 等）
     LaunchdManaged,
     /// exe 位于 Homebrew 服务路径（launchctl 探不到 system-domain 时的兜底）
@@ -118,6 +123,18 @@ const DEV_SERVER_SUBSTRINGS: &[&str] = &[
     // dev 工具的，在此显式收录（评审发现的回归：旧 "node"/"php" 裸子串曾命中它们）。
     "nodemon",
     "php-fpm",
+    // 浏览器自动化工具链（KNOWN-GAPS Gap 1 的同族）：driver 与测试运行器本身占端口
+    // （chromedriver 9515 等），孤儿化后就是纯残留。词形足够独特，裸子串零误伤面。
+    "chromedriver",
+    "geckodriver",
+    "msedgedriver",
+    "safaridriver",
+    "webdriver",
+    "playwright",
+    "puppeteer",
+    "selenium",
+    "cypress",
+    "appium",
 ];
 
 /// dev-server 短关键字：常见词，裸子串会大面积误伤（评审实锤的 Confirmed 误升级：
@@ -183,6 +200,13 @@ pub(crate) fn classify(s: &ProcessSnapshot) -> Verdict {
     if s.launchd_managed {
         return Verdict::clear(vec![ReasonCode::LaunchdManaged]);
     }
+    // 自动化实例的存活性否决（KNOWN-GAPS Gap 1/A2 实测反例）：一个自动化浏览器
+    // 存在的意义就是被客户端驱动 —— 调试端口上有 ESTABLISHED 连接 ⇒ 有人正在用它。
+    // 这条证据强于任何命令行特征（残留与活跃实例的命令行几乎同构），且**只用于
+    // 豁免、不用于升级置信度**：宁可漏报，也不能打断用户正在跑的会话。
+    if s.automation_instance && s.debugger_attached {
+        return Verdict::clear(vec![ReasonCode::DebuggerAttached]);
+    }
     if s.exe_is_standard_install {
         return Verdict::clear(vec![ReasonCode::InstalledApp]);
     }
@@ -195,7 +219,9 @@ pub(crate) fn classify(s: &ProcessSnapshot) -> Verdict {
 
     // ---- 3. 收集正向信号 ----
     let direct_orphan = s.direct_orphan.is_some();
-    let dev_like = s.dev_keyword || s.dev_category;
+    // 自动化实例与 dev-script 同权：都是「意图明确的开发期产物」，
+    // 孤儿 × 它们 ⇒ Confirmed（浏览器可执行文件装在哪与此无关）。
+    let dev_like = s.dev_keyword || s.dev_category || s.automation_instance;
     let chain_orphan = s.chain_terminates_at_init && (dev_like || s.chain_has_orphan_shell);
 
     // ---- 4. 无任何孤儿信号 → 不是嫌疑 ----
@@ -215,6 +241,9 @@ pub(crate) fn classify(s: &ProcessSnapshot) -> Verdict {
     }
     if direct_orphan || chain_orphan {
         reasons.push(ReasonCode::NonstandardPath);
+    }
+    if s.automation_instance {
+        reasons.push(ReasonCode::AutomationInstance);
     }
     if s.dev_keyword {
         reasons.push(ReasonCode::DevServerKeyword);
@@ -541,6 +570,61 @@ mod tests {
                 want_reasons: &[Ppid1Orphan, DevServerKeyword, NonstandardPath],
             },
             Case {
+                // KNOWN-GAPS Gap 1 主案：headless Chrome 空转 7 小时、子进程满核。
+                // exe 在 /Applications，但 mod.rs 已按 automation-instance 把它摘出
+                // 路径豁免（exe_is_standard_install=false）—— 到这里就是「孤儿 × dev-like」。
+                name: "23 孤儿 headless 自动化实例（无客户端连接）：身份在命令行，必须检出",
+                snap: ProcessSnapshot {
+                    direct_orphan: Some(Ppid1Orphan),
+                    automation_instance: true,
+                    debugger_attached: false,
+                    ..snap()
+                },
+                want_suspect: true,
+                want_conf: Confirmed,
+                want_reasons: &[Ppid1Orphan, AutomationInstance, NonstandardPath],
+            },
+            Case {
+                // KNOWN-GAPS Gap 1/A2 实测反例：判据全中但**有人正在驱动它**。
+                // 存活性否决必须先于一切正向信号 —— 误杀会打断用户正在跑的会话。
+                name: "24 孤儿自动化实例但调试端口有 ESTABLISHED：存活性一票否决",
+                snap: ProcessSnapshot {
+                    direct_orphan: Some(Ppid1Orphan),
+                    automation_instance: true,
+                    debugger_attached: true,
+                    dev_keyword: true, // 哪怕有其他正向信号也压不过否决
+                    ..snap()
+                },
+                want_suspect: false,
+                want_conf: None,
+                want_reasons: &[DebuggerAttached],
+            },
+            Case {
+                // 对照：自动化特征本身**不构成**嫌疑 —— 没有孤儿信号就不标记。
+                // 活跃会话里的 headless 实例（父进程还在）走这条。
+                name: "25 父进程健在的 headless 实例：无孤儿信号 ⇒ 不是嫌疑",
+                snap: ProcessSnapshot {
+                    automation_instance: true,
+                    ..snap()
+                },
+                want_suspect: false,
+                want_conf: None,
+                want_reasons: &[],
+            },
+            Case {
+                // 托管豁免仍然优先：launchctl 认领的无头浏览器（有人有意常驻）
+                name: "26 launchd 托管的 headless 实例：托管豁免优先",
+                snap: ProcessSnapshot {
+                    direct_orphan: Some(Ppid1Orphan),
+                    automation_instance: true,
+                    launchd_managed: true,
+                    ..snap()
+                },
+                want_suspect: false,
+                want_conf: None,
+                want_reasons: &[LaunchdManaged],
+            },
+            Case {
                 name: "21 launchd 托管的 python -m 守护（LaunchAgent）：托管豁免优先于一切模块判定",
                 snap: ProcessSnapshot {
                     direct_orphan: Some(Ppid1Orphan),
@@ -636,6 +720,28 @@ mod tests {
         ] {
             assert!(is_dev_server(tp), "漏报: {tp}");
         }
+    }
+
+    /// 浏览器自动化工具链的 driver / 测试运行器本身也是 dev 残留（Gap 1 同族）。
+    /// 与短关键字不同，这些词形独特，裸子串匹配零误伤面 —— 但仍锁一遍回归。
+    #[test]
+    fn dev_keyword_covers_browser_automation_toolchain() {
+        for tp in [
+            "/Users/x/p/node_modules/chromedriver/lib/chromedriver/chromedriver --port=9515",
+            "/opt/homebrew/bin/geckodriver --port 4444",
+            "C:\\Users\\x\\tools\\msedgedriver.exe",
+            "/Users/x/p/node_modules/.bin/playwright test",
+            "node /Users/x/p/node_modules/puppeteer/lib/esm/puppeteer/node/ProductLauncher.js",
+            "java -jar selenium-server-4.18.jar standalone",
+            "/Users/x/Library/Caches/Cypress/13.6.0/Cypress.app/Contents/MacOS/Cypress",
+        ] {
+            assert!(is_dev_server(tp), "漏报: {tp}");
+        }
+        // 误伤面：普通浏览器与同形异义的用户程序不得命中
+        assert!(!is_dev_server(
+            "/Applications/Google Chrome.app/Contents/MacOS/Google Chrome"
+        ));
+        assert!(!is_dev_server("/Users/x/bin/driverless-car-sim"));
     }
 
     #[test]

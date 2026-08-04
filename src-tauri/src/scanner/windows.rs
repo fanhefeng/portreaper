@@ -11,8 +11,8 @@ use std::sync::{Mutex, OnceLock};
 use sysinfo::{Pid, ProcessRefreshKind, ProcessesToUpdate, System, UpdateKind, Users};
 use windows::Win32::Foundation::{ERROR_INSUFFICIENT_BUFFER, NO_ERROR};
 use windows::Win32::NetworkManagement::IpHelper::{
-    GetExtendedTcpTable, MIB_TCP6TABLE_OWNER_PID, MIB_TCPTABLE_OWNER_PID,
-    TCP_TABLE_OWNER_PID_LISTENER,
+    GetExtendedTcpTable, MIB_TCP6TABLE_OWNER_PID, MIB_TCPTABLE_OWNER_PID, MIB_TCP_STATE_ESTAB,
+    MIB_TCP_STATE_LISTEN, TCP_TABLE_OWNER_PID_ALL,
 };
 use windows::Win32::Networking::WinSock::{AF_INET, AF_INET6};
 use windows::Win32::System::Com::CoTaskMemFree;
@@ -233,6 +233,25 @@ fn identify_app_with(
         }
     }
 
+    // 0b. 一次性自动化浏览器实例 —— 身份在命令行，不在路径（与阶梯 0 的脚本身份
+    //     对称）。必须先于 Program Files / MSIX 阶梯：chrome.exe / msedge.exe 就装在
+    //     Program Files，被归 installed-app 即吃硬豁免、永远漏网（KNOWN-GAPS Gap 1
+    //     的 Windows 平行情形；判据 --headless 等开关两平台逐字相同，故实现共享）。
+    if super::identify::is_automation_instance(full_command) {
+        return (
+            super::identify::automation_label(exe_path, short_command),
+            super::AUTOMATION_CATEGORY.to_string(),
+        );
+    }
+
+    // 0c. 开发工具下载的浏览器 runtime（Playwright 的 %LOCALAPPDATA%\ms-playwright、
+    //     Puppeteer 的 .cache\puppeteer）—— 与 macOS 侧 node_modules 下的 Electron.app
+    //     同理：它们是项目的开发期 runtime，不是用户安装的应用。必须先于 5b 的
+    //     LOCALAPPDATA→installed-app 阶梯，否则孤儿化的下载浏览器会被整体豁免。
+    if super::identify::is_dev_tool_runtime_path(exe_path) {
+        return (project_binary_label(exe_path), "dev-script".to_string());
+    }
+
     // 1. MSIX / Store 应用：去掉发布者哈希与版本，取包名友好形式
     if p.starts_with(&kp.windows_apps()) || p.starts_with(&kp.appdata_windows_apps()) {
         let label = msix_friendly_name(exe_path)
@@ -375,7 +394,10 @@ fn sanitize_times(start: u64, run: u64) -> (Option<u64>, u64) {
 }
 
 pub(crate) fn collect() -> Collected {
-    let ports_by_pid = tcp_listeners();
+    let TcpTables {
+        listeners: ports_by_pid,
+        mut established_local,
+    } = tcp_tables();
 
     // 毒化恢复：scan 中途 panic 一次不应让后续每轮轮询永久 panic
     //（前端表现为永远 ERR_SCAN_TIMEOUT）。System 只是缓存，半更新状态可安全续用。
@@ -480,11 +502,31 @@ pub(crate) fn collect() -> Collected {
         })
         .collect();
 
+    // 存活性证据只对自动化实例有意义（唯一消费者是 automation-instance 的
+    // DebuggerAttached 否决）。全表已在手，这里只做一次收窄：普通应用的成百上千条
+    // 出站连接留在 Collected 里既无用途，又要跨整次扫描持有（与 macOS 侧
+    // 「只查候选 PID」的口径对齐 —— 两平台交给 mod.rs 的是同一种稀疏数据）。
+    established_local.retain(|pid, _| {
+        procs
+            .get(pid)
+            .is_some_and(|m| super::identify::is_automation_instance(&m.full_command))
+    });
+    // 去重，与 macOS 侧 parse_established 的数据形状对齐：调试端口上的每一条入站
+    // 连接都是同一个本地端口，10 个客户端会推 10 个 9222。消费方只做 contains
+    // 判定、语义不受影响，但两平台交给 mod.rs 的数据必须同形，否则任何未来按
+    // 「连接数」做判定的改动都会在两个平台上得出不同结论。放在 retain 之后：
+    // 此时只剩极少数自动化 PID，排序去重的成本可忽略。
+    for ports in established_local.values_mut() {
+        ports.sort_unstable();
+        ports.dedup();
+    }
+
     Collected {
         listeners,
         procs,
         launchd_pids: Default::default(),
         cwds,
+        established_local_ports: established_local,
     }
 }
 
@@ -513,15 +555,33 @@ fn table_buf_words(reported: u32) -> usize {
     (reported as usize).max(MIN_TABLE_BYTES).div_ceil(4)
 }
 
-/// GetExtendedTcpTable：LISTEN 态 TCP 表（含 owning PID），IPv4 与 IPv6 各查一次。
-fn tcp_listeners() -> HashMap<u32, Vec<u16>> {
-    let mut map: HashMap<u32, Vec<u16>> = HashMap::new();
+/// 一次表查询的两路产物：监听端口，以及**本地端**处于 ESTABLISHED 的端口。
+/// 后者是自动化实例的存活性证据（KNOWN-GAPS Gap 1/A2）——「调试端口上有客户端
+/// 连着」⇒ 有人正在驱动它，一票否决。
+#[derive(Default)]
+pub(crate) struct TcpTables {
+    listeners: HashMap<u32, Vec<u16>>,
+    established_local: HashMap<u32, Vec<u16>>,
+}
+
+/// GetExtendedTcpTable：全状态 TCP 表（含 owning PID），IPv4 与 IPv6 各查一次，
+/// 按 dwState 分流成 LISTEN / ESTABLISHED 两路。
+///
+/// 表类型由 `TCP_TABLE_OWNER_PID_LISTENER` 换成 `TCP_TABLE_OWNER_PID_ALL`：行结构
+/// 完全相同（MIB_TCPROW_OWNER_PID 本就带 dwState），**无额外系统调用** ——
+/// 与 macOS 侧需要多跑一次 lsof 的取舍不同。
+///
+/// 代价不为零（别照抄成「零成本」）：ALL 表在跑着数据库 / 大量连接的机器上比
+/// LISTENER 表大一两个数量级，这些 ESTABLISHED 行会先落进 `established_local`，
+/// 由 `collect()` 在 procs 到手后收窄到自动化实例。收窄之所以只能后置，是因为
+/// 判据要读进程的命令行，而进程表此刻还没采。
+fn tcp_tables() -> TcpTables {
+    let mut out = TcpTables::default();
 
     unsafe {
         for af in [u32::from(AF_INET.0), u32::from(AF_INET6.0)] {
             let mut size: u32 = 0;
-            let _ =
-                GetExtendedTcpTable(None, &mut size, false, af, TCP_TABLE_OWNER_PID_LISTENER, 0);
+            let _ = GetExtendedTcpTable(None, &mut size, false, af, TCP_TABLE_OWNER_PID_ALL, 0);
             // 表可能在两次调用间增长，最多重试几次。
             // 缓冲用 Vec<u32> 而非 Vec<u8>：表结构全员 u32，需要 4 字节对齐 ——
             // Vec<u8> 的对齐由分配器碰巧保证，按语言规则属对齐 UB（评审发现）。
@@ -533,7 +593,7 @@ fn tcp_listeners() -> HashMap<u32, Vec<u16>> {
                     &mut size,
                     false,
                     af,
-                    TCP_TABLE_OWNER_PID_LISTENER,
+                    TCP_TABLE_OWNER_PID_ALL,
                     0,
                 );
                 if ret == ERROR_INSUFFICIENT_BUFFER.0 {
@@ -557,9 +617,7 @@ fn tcp_listeners() -> HashMap<u32, Vec<u16>> {
                         table.dwNumEntries as usize,
                     );
                     for row in rows {
-                        map.entry(row.dwOwningPid)
-                            .or_default()
-                            .push(decode_port(row.dwLocalPort));
+                        out.push_row(row.dwState, row.dwOwningPid, row.dwLocalPort);
                     }
                 } else {
                     let table = &*(buf.as_ptr() as *const MIB_TCP6TABLE_OWNER_PID);
@@ -568,9 +626,7 @@ fn tcp_listeners() -> HashMap<u32, Vec<u16>> {
                         table.dwNumEntries as usize,
                     );
                     for row in rows {
-                        map.entry(row.dwOwningPid)
-                            .or_default()
-                            .push(decode_port(row.dwLocalPort));
+                        out.push_row(row.dwState, row.dwOwningPid, row.dwLocalPort);
                     }
                 }
                 break;
@@ -584,7 +640,24 @@ fn tcp_listeners() -> HashMap<u32, Vec<u16>> {
         }
     }
 
-    map
+    out
+}
+
+impl TcpTables {
+    /// 按 dwState 把一行归入 LISTEN / ESTABLISHED（其余状态 —— TIME_WAIT、
+    /// SYN_SENT 等 —— 一律丢弃：既不是在提供服务，也不是稳定的存活证据）。
+    /// IPv4/IPv6 两个分支共用，避免同一份分流逻辑写两遍而漂移。
+    fn push_row(&mut self, state: u32, pid: u32, dw_local_port: u32) {
+        let port = decode_port(dw_local_port);
+        let bucket = if state == MIB_TCP_STATE_LISTEN.0 as u32 {
+            &mut self.listeners
+        } else if state == MIB_TCP_STATE_ESTAB.0 as u32 {
+            &mut self.established_local
+        } else {
+            return;
+        };
+        bucket.entry(pid).or_default().push(port);
+    }
 }
 
 #[cfg(test)]
@@ -719,6 +792,71 @@ mod tests {
         let (label, cat) = identify_app_with(&kp, "", "System", "");
         assert_eq!(label, "System");
         assert_eq!(cat, "unknown");
+    }
+
+    /// KNOWN-GAPS Gap 1 的 Windows 平行情形：chrome.exe / msedge.exe 就装在
+    /// Program Files，按路径归 installed-app 即吃硬豁免 —— 与 macOS 同源的漏报。
+    /// 判据（--headless 等开关）两平台逐字相同，实现共享在 identify.rs。
+    #[test]
+    fn headless_automation_identified_by_command_line() {
+        let kp = fake_paths();
+        const CHROME: &str = "C:\\Program Files\\Google\\Chrome\\Application\\chrome.exe";
+
+        let (label, cat) = identify_app_with(
+            &kp,
+            &format!(
+                "{CHROME} --headless=new \
+                 --user-data-dir=C:\\Users\\fhf\\AppData\\Local\\Temp\\pptr_profile \
+                 --remote-debugging-port=9222"
+            ),
+            "chrome.exe",
+            CHROME,
+        );
+        assert_eq!(label, "chrome · headless");
+        assert_eq!(cat, super::super::AUTOMATION_CATEGORY);
+
+        // 对照（防误杀）：同一个 exe、无自动化开关 ⇒ 用户日常的 Chrome 仍豁免
+        let (_, cat) = identify_app_with(&kp, CHROME, "chrome.exe", CHROME);
+        assert_eq!(cat, "installed-app");
+
+        // 对照（A2 反例）：有头的活跃自动化实例同样必须留在 installed-app
+        let (_, cat) = identify_app_with(
+            &kp,
+            &format!("{CHROME} --remote-debugging-port=9222 --user-data-dir=C:\\Users\\fhf\\AppData\\Local\\Temp\\prof"),
+            "chrome.exe",
+            CHROME,
+        );
+        assert_eq!(cat, "installed-app");
+    }
+
+    /// Playwright / Puppeteer 下载到 %LOCALAPPDATA% 的浏览器 runtime：必须先于
+    /// 5b 的 LOCALAPPDATA→installed-app 阶梯归 dev-script，与 macOS 侧
+    /// node_modules 下的 Electron.app 是同一条不变量。
+    #[test]
+    fn downloaded_browser_runtimes_are_dev_scripts() {
+        let kp = fake_paths();
+        for exe in [
+            "C:\\Users\\fhf\\AppData\\Local\\ms-playwright\\chromium-1148\\chrome-win\\chrome.exe",
+            "C:\\Users\\fhf\\.cache\\puppeteer\\chrome\\win64-131\\chrome-win64\\chrome.exe",
+            "C:\\Users\\fhf\\code\\app\\node_modules\\electron\\dist\\electron.exe",
+        ] {
+            let (_, cat) = identify_app_with(&kp, exe, "chrome.exe", exe);
+            assert_eq!(cat, "dev-script", "{exe}");
+        }
+    }
+
+    /// 表分流：LISTEN 与 ESTABLISHED 各入各的桶，其余状态（TIME_WAIT 等）丢弃 ——
+    /// 它们既不是在提供服务，也不是稳定的存活证据。
+    #[test]
+    fn tcp_rows_split_by_state() {
+        let mut t = TcpTables::default();
+        let port_5173 = u32::from_le_bytes([0x14, 0x35, 0, 0]);
+        let port_9222 = u32::from_le_bytes([0x24, 0x06, 0, 0]);
+        t.push_row(MIB_TCP_STATE_LISTEN.0 as u32, 100, port_5173);
+        t.push_row(MIB_TCP_STATE_ESTAB.0 as u32, 100, port_9222);
+        t.push_row(12, 100, port_5173); // MIB_TCP_STATE_TIME_WAIT：丢弃
+        assert_eq!(t.listeners.get(&100).unwrap(), &vec![5173]);
+        assert_eq!(t.established_local.get(&100).unwrap(), &vec![9222]);
     }
 
     /// 回归（评审捕获的误杀风险）：Squirrel/Electron 布局的 AppData 应用 ——

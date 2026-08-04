@@ -48,6 +48,9 @@ const zh = {
   "row.expand.tip": "查看详情",
   "row.noPort": "无端口",
   "row.noPort.tip": "该进程不监听任何端口，因脱离父进程成为孤儿而被检出",
+  "row.busySubtree": "子进程 {cpu}% CPU",
+  "row.busySubtree.tip":
+    "这一行自身几乎不占 CPU，但它的子进程正在持续占用 —— 常见于无头浏览器（渲染 / GPU 子进程）",
 
   // ---- uptime（粗粒度，精确值在详情）----
   "uptime.now": "刚刚",
@@ -69,6 +72,7 @@ const zh = {
   "story.orphaned_session": "终端会话已死",
   "story.just_reparented": "刚启动，观察中",
   "story.duplicate_dev_server": "与 PID {pid} 重复启动",
+  "story.automation_instance": "自动化测试留下的无头浏览器",
   "story.nonstandard_path": "非标准路径",
   "story.dev_server_keyword": "疑似开发服务器",
   "story.launchedBy": "由 {app} 启动",
@@ -80,6 +84,7 @@ const zh = {
   "desc.installed-app": "已安装应用的服务",
   "desc.system": "系统组件",
   "desc.dev-script": "开发脚本 / 本地服务器",
+  "desc.automation-instance": "自动化脚本启动的无头浏览器",
   "desc.user-binary": "命令行工具",
   "desc.unknown": "未知程序",
 
@@ -106,6 +111,9 @@ const zh = {
   "detail.category": "类别",
   "detail.resources": "资源",
   "detail.resources.value": "CPU {cpu}% · 内存 {mem} MB · 已运行 {uptime}",
+  // 子树合计：CPU 烧在子进程里时才追加（无头浏览器的 gpu-process 是典型）
+  "detail.resources.tree": "· 含子进程共 {cpu}%",
+  "detail.resources.tree.tip": "该进程与它全部子进程的 CPU 合计",
   "detail.evidence": "判定依据",
   "detail.whyNot": "为什么不是僵尸",
 
@@ -113,6 +121,7 @@ const zh = {
   "cat.installed-app": "应用程序",
   "cat.system": "系统进程",
   "cat.dev-script": "开发脚本",
+  "cat.automation-instance": "自动化实例",
   "cat.user-binary": "命令行工具",
   "cat.unknown": "未知",
 
@@ -126,6 +135,8 @@ const zh = {
   "reason.nonstandard_path": "非标准安装路径",
   "reason.dev_server_keyword": "dev-server 关键字",
   "reason.duplicate_dev_server": "同项目重复实例",
+  "reason.automation_instance": "无头自动化实例",
+  "reason.debugger_attached": "正被调试器驱动",
   "reason.launchd_managed": "launchd 托管",
   "reason.brew_service_path": "Homebrew 服务",
   "reason.installed_app": "正规安装位置",
@@ -146,6 +157,12 @@ const zh = {
   "reasonTip.dev_server_keyword": "命令行命中常见 dev-server 关键字（vite / node / uvicorn …）。",
   "reasonTip.duplicate_dev_server":
     "同一项目已有另一个相同的开发服务器实例在监听（端口被顺延或分散在多个终端 / IDE）—— 通常是忘了已经启动过。确认在用哪个后终止另一个；两个都需要时可收藏豁免。",
+  // 措辞不得预设「它开着调试端口」：无端口的子进程（渲染 / GPU 进程）孤儿化后
+  // 同样带这条理由，那类行根本没有端口可言。
+  "reasonTip.automation_instance":
+    "命令行是一次性自动化会话的形态（--headless 加调试端口 / 临时用户目录）—— Playwright、Puppeteer、爬虫脚本等启动的无头浏览器。它已脱离启动它的程序，也没有任何客户端在驱动它（调试端口上一旦有客户端连着，就会被判为清白），只剩这个实例及其子进程在空转。",
+  "reasonTip.debugger_attached":
+    "它的调试端口上有客户端正连着 —— 有程序此刻正在驱动这个浏览器实例，不是残留。终止它会打断正在跑的会话，因此绝不标记。",
   "reasonTip.launchd_managed":
     "launchctl 认领的任务（LaunchAgent / brew services）—— 由 launchd 有意托管，不是僵尸。",
   "reasonTip.brew_service_path":
@@ -223,6 +240,9 @@ const en: Record<I18nKey, string> = {
   "row.expand.tip": "Show details",
   "row.noPort": "no port",
   "row.noPort.tip": "Listens on no port — surfaced because it was orphaned from its parent",
+  "row.busySubtree": "{cpu}% CPU in children",
+  "row.busySubtree.tip":
+    "This row itself is nearly idle, but its child processes are burning CPU — typical of a headless browser (renderer / GPU child processes)",
 
   "uptime.now": "now",
   "uptime.min": "{n} min",
@@ -241,6 +261,7 @@ const en: Record<I18nKey, string> = {
   "story.orphaned_session": "dead terminal session",
   "story.just_reparented": "just started, watching",
   "story.duplicate_dev_server": "duplicate of PID {pid}",
+  "story.automation_instance": "headless browser left by automation",
   "story.nonstandard_path": "non-standard path",
   "story.dev_server_keyword": "looks like a dev server",
   "story.launchedBy": "launched by {app}",
@@ -251,6 +272,7 @@ const en: Record<I18nKey, string> = {
   "desc.installed-app": "Service of an installed app",
   "desc.system": "System component",
   "desc.dev-script": "Dev script / local server",
+  "desc.automation-instance": "Headless browser started by an automation script",
   "desc.user-binary": "Command-line tool",
   "desc.unknown": "Unknown program",
 
@@ -277,12 +299,15 @@ const en: Record<I18nKey, string> = {
   "detail.category": "Category",
   "detail.resources": "Resources",
   "detail.resources.value": "CPU {cpu}% · {mem} MB RAM · up {uptime}",
+  "detail.resources.tree": "· {cpu}% incl. children",
+  "detail.resources.tree.tip": "CPU of this process plus all of its child processes",
   "detail.evidence": "Why flagged",
   "detail.whyNot": "Why not a zombie",
 
   "cat.installed-app": "Application",
   "cat.system": "System process",
   "cat.dev-script": "Dev script",
+  "cat.automation-instance": "Automation instance",
   "cat.user-binary": "CLI tool",
   "cat.unknown": "Unknown",
 
@@ -295,6 +320,8 @@ const en: Record<I18nKey, string> = {
   "reason.nonstandard_path": "non-standard path",
   "reason.dev_server_keyword": "dev-server keyword",
   "reason.duplicate_dev_server": "duplicate instance",
+  "reason.automation_instance": "headless automation instance",
+  "reason.debugger_attached": "debugger attached",
   "reason.launchd_managed": "launchd-managed",
   "reason.brew_service_path": "Homebrew service",
   "reason.installed_app": "standard install location",
@@ -319,6 +346,10 @@ const en: Record<I18nKey, string> = {
     "The command line matches a common dev-server keyword (vite / node / uvicorn …).",
   "reasonTip.duplicate_dev_server":
     "Another identical dev-server instance of the same project is already listening (port auto-incremented, or spread across terminals / IDEs) — usually a forgotten earlier launch. Keep the one you use and kill the other; star both if intentional.",
+  "reasonTip.automation_instance":
+    "The command line is that of a throwaway automation session (--headless plus a debugging port / temporary user-data dir) — a browser started by Playwright, Puppeteer, a scraping script and the like. It has outlived whatever started it and nothing is driving it any more (a client connected to its debugging port would clear it), so only this instance and its children keep spinning.",
+  "reasonTip.debugger_attached":
+    "A client is currently connected to its debugging port — something is driving this browser instance right now, so it is not residue. Killing it would interrupt a live session; never flagged.",
   "reasonTip.launchd_managed":
     "Claimed by launchctl (LaunchAgent / brew services) — intentionally supervised by launchd, not a zombie.",
   "reasonTip.brew_service_path":

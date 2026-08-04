@@ -508,6 +508,22 @@ button {
   white-space: nowrap;
 }
 
+/* 「负载烧在子进程里」徽标：暖色描边胶囊，与端口/无端口徽标同体量但明确示警。
+   颜色沿用 --warn（= verdict-likely 的暖色），软背景/描边按本文件既有风格
+   写成 rgb + oklch 双行回退，不引入 color-mix（webview 版本下限未验证）。 */
+.cpu-hot {
+  font-size: 10px;
+  color: var(--warn);
+  background: rgb(220 167 68 / 0.12);
+  background: oklch(0.76 0.13 80 / 0.12);
+  border: 1px solid rgb(220 167 68 / 0.32);
+  border: 1px solid oklch(0.76 0.13 80 / 0.32);
+  border-radius: 4px;
+  padding: 1px 5px;
+  white-space: nowrap;
+  flex-shrink: 0;
+}
+
 .row-desc {
   font-size: 12px;
   color: var(--text-muted);

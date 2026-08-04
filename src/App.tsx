@@ -18,11 +18,13 @@ import {
   formatDuration,
   formatPorts,
   formatUptime,
+  hasBusySubtree,
   legacyWhitelistKey,
   localizeActionError,
   localizeKillError,
   localizeScanError,
   primaryReason,
+  subtreeCpuExceedsSelf,
   sweepableEntries,
   whitelistKey,
   withTimeout,
@@ -863,6 +865,14 @@ function RowImpl({
                 </>
               )}
             </span>
+            {/* 「负载烧在子进程里」徽标：本行自身看着是闲的，子树却在满核 ——
+                无头浏览器的 gpu-process 是典型（KNOWN-GAPS Gap 1）。自身就在
+                满核的健康构建不满足条件，不会挂徽标，故不制造日常噪音。 */}
+            {hasBusySubtree(e) && (
+              <span className="cpu-hot mono" title={t("row.busySubtree.tip")}>
+                {t("row.busySubtree", { cpu: Math.round(e.cpu_percent_tree) })}
+              </span>
+            )}
           </div>
           <div className="row-desc">
             {e.is_zombie_suspect ? (
@@ -958,7 +968,9 @@ function Detail({ e, os, id }: { e: ProcessEntry; os: Os | null; id: string }) {
   const selfName = splitLabel(e.app_label).name;
 
   const catKey = (
-    ["installed-app", "system", "dev-script", "user-binary"].includes(e.app_category)
+    ["installed-app", "system", "dev-script", "automation-instance", "user-binary"].includes(
+      e.app_category,
+    )
       ? `cat.${e.app_category}`
       : "cat.unknown"
   ) as I18nKey;
@@ -1027,6 +1039,15 @@ function Detail({ e, os, id }: { e: ProcessEntry; os: Os | null; id: string }) {
             mem: e.mem_mb.toFixed(1),
             uptime: formatDuration(e.elapsed_secs),
           })}
+          {/* 子树合计只在「CPU 烧在子进程里」时追加：无头浏览器把负载全放在
+              gpu-process 子进程，主进程行显示 ~0% —— 不露出来用户无从发现
+              一棵空转的进程树（KNOWN-GAPS Gap 1/B）。等值时不重复噪音。 */}
+          {subtreeCpuExceedsSelf(e) && (
+            <span className="detail-dim" title={t("detail.resources.tree.tip")}>
+              {" "}
+              {t("detail.resources.tree", { cpu: e.cpu_percent_tree.toFixed(1) })}
+            </span>
+          )}
         </span>
 
         <span className="detail-label">{t("detail.chain")}</span>

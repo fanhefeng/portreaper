@@ -29,6 +29,13 @@ pub struct ProcessEntry {
     pub elapsed_secs: u64,       // 双平台统一数值秒；前端 formatDuration 渲染
     pub start_unix: Option<u64>, // 进程创建时间（epoch 秒）——kill 时回传做身份校验，防 PID 复用
     pub cpu_percent: f32,
+    /// 自身 + 全部后代进程的 CPU 合计（纯内存聚合，无额外系统调用）。
+    /// **仅展示用，不进 ProcessSnapshot、不参与判定** —— 判定语义是「无人认领」
+    /// 而非「费电」，健康的 vite build / tsc 一样能吃满核。
+    /// 存在意义（KNOWN-GAPS Gap 1/B）：headless 浏览器把 CPU 全烧在
+    /// `--type=gpu-process` 子进程里，被列出的主进程行显示 ~0% ——
+    /// 只看行内 CPU 会完整错过一棵满核空转 7 小时的进程树。
+    pub cpu_percent_tree: f32,
     pub mem_mb: f32,
     pub state: String, // Windows 上恒为空串（无 defunct 概念）
     pub is_zombie_suspect: bool,
@@ -76,6 +83,13 @@ pub(crate) struct Collected {
     /// 重复 dev server 检测的最强证据：monorepo 不同子包 / git worktree 的
     /// cwd 必然不同，同项目重复启动的 cwd 必然相同。读不到时优雅缺席。
     pub cwds: std::collections::HashMap<u32, String>,
+    /// PID → 该进程**本地端**处于 ESTABLISHED 的端口集合（自动化实例的存活性证据）。
+    /// mod.rs 与该 PID 的监听端口取交集 ⇒「调试端口上有客户端连着」。
+    /// 采集口径按平台成本取舍：macOS 只对命令行呈现为自动化实例的 PID 再查一次
+    /// lsof（日常零个 ⇒ 零开销，绝不放宽主 lsof 的 -sTCP:LISTEN —— 那会把全机
+    /// 所有 TCP 连接拉进这次最贵的调用）；Windows 的 GetExtendedTcpTable 本就返回
+    /// 全状态连接表，纯过滤条件改动、零额外成本，故全量填充。
+    pub established_local_ports: std::collections::HashMap<u32, Vec<u16>>,
 }
 
 /// 喂给纯分类器的进程信号快照 —— 不含任何平台/子进程依赖，可直接构造做表驱动单测。
@@ -104,4 +118,10 @@ pub(crate) struct ProcessSnapshot {
     pub dev_keyword: bool,
     /// identify_app 类别为 dev-script
     pub dev_category: bool,
+    /// identify_app 类别为 automation-instance —— 命令行呈现为一次性自动化浏览器
+    /// 会话（--headless + 调试端口/临时 profile）。与 dev_category 同权参与判定，
+    /// 且已在 mod.rs 被摘出路径豁免（浏览器本体常住 /Applications）。
+    pub automation_instance: bool,
+    /// 该自动化实例的调试端口上有活跃客户端连接 —— 存活性一票否决（只用于豁免）
+    pub debugger_attached: bool,
 }

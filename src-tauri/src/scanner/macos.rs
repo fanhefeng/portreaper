@@ -126,17 +126,29 @@ pub(crate) fn identify_app(
         }
     }
 
+    // 0b. 一次性自动化浏览器实例 —— 身份在命令行，不在路径（与阶梯 0 的脚本身份
+    //     完全对称）。必须先于 .app / /Applications 阶梯：headless Chrome 的宿主
+    //     可执行文件就住在 /Applications，被归 installed-app 即吃硬豁免、永远漏网
+    //     （KNOWN-GAPS Gap 1 的真实案例：空转 7 小时、子进程满核）。
+    if super::identify::is_automation_instance(full_command) {
+        return (
+            super::identify::automation_label(exe, short_command),
+            super::AUTOMATION_CATEGORY.to_string(),
+        );
+    }
+
     // 1. .app bundle —— 抽出 .app 名（exe 来自 ps comm，含空格也完整）
     if let Some(idx) = exe.find(".app/") {
         let before = &exe[..idx];
         if let Some(slash) = before.rfind('/') {
             let app_name = &before[slash + 1..];
-            // node_modules 下的 .app 是项目本地的开发 runtime —— electron / electron-vite
-            // 把 Electron.app 装在 node_modules/electron/dist 下，形态与 /Applications 里的
-            // 真应用一模一样。它不是用户安装的应用，不能享受 installed-app 豁免，否则被杀掉
-            // 父进程的孤儿 Electron（dev 残留）会因「长得像已安装应用」永远漏网。
-            // 用户安装的应用绝不会住在 node_modules 里，故此信号零误伤。
-            if exe.contains("/node_modules/") {
+            // 开发工具自带 / 下载的 .app 是项目本地的开发 runtime —— electron 把
+            // Electron.app 装在 node_modules/electron/dist、Playwright 把 Chromium.app
+            // 下载到 ~/Library/Caches/ms-playwright，形态与 /Applications 里的真应用
+            // 一模一样。它们不是用户安装的应用，不能享受 installed-app 豁免，否则被杀掉
+            // 父进程的孤儿 dev runtime 会因「长得像已安装应用」永远漏网。
+            // 用户安装的应用绝不会住在这些目录里，故此信号零误伤（判定见 identify.rs）。
+            if super::identify::is_dev_tool_runtime_path(exe) {
                 return (app_name.to_string(), "dev-script".to_string());
             }
             let category = if exe.starts_with("/System/") || exe.starts_with("/Library/") {
@@ -289,12 +301,79 @@ pub(crate) fn collect() -> Collected {
         )
     };
 
+    // 自动化实例的存活性证据（KNOWN-GAPS Gap 1/A2）：调试端口只 LISTEN、零
+    // ESTABLISHED 才是真正的「无人认领」。**只对命令行呈现为自动化实例的 PID**
+    // 再查一次 lsof —— 日常这个集合为空 ⇒ 零额外开销；刻意不放宽上面那次
+    // `-sTCP:LISTEN` 过滤：那会把全机所有 TCP 连接拉进本项目最贵的一次调用。
+    let automation_csv = procs
+        .iter()
+        .filter(|(_, m)| super::identify::is_automation_instance(&m.full_command))
+        .map(|(pid, _)| pid.to_string())
+        .collect::<Vec<_>>()
+        .join(",");
+    let established_local_ports = if automation_csv.is_empty() {
+        HashMap::new()
+    } else {
+        parse_established(
+            &cmd_output(
+                "lsof",
+                &[
+                    "-a",
+                    "-p",
+                    &automation_csv,
+                    "-iTCP",
+                    "-sTCP:ESTABLISHED",
+                    "-P",
+                    "-n",
+                    "-Fpn",
+                ],
+            )
+            .unwrap_or_default(),
+        )
+    };
+
     Collected {
         listeners,
         procs,
         launchd_pids,
         cwds,
+        established_local_ports,
     }
+}
+
+/// `lsof … -sTCP:ESTABLISHED -Fpn` 输出：pPID 行后跟 n 行
+/// `127.0.0.1:9222->127.0.0.1:54191`。取 **`->` 左侧（本地端）** 的端口 ——
+/// 调用方与该 PID 的监听端口取交集，才是「有人连着它的调试端口」。
+/// 右侧（对端）端口若被误当本地端口，一个正在抓网页的残留浏览器会因大量
+/// 出站连接被误判成「有人在用」而豁免（本函数存在的全部意义就是不出这个错）。
+fn parse_established(text: &str) -> HashMap<u32, Vec<u16>> {
+    let mut map: HashMap<u32, Vec<u16>> = HashMap::new();
+    let mut cur: Option<u32> = None;
+    for line in text.lines() {
+        if let Some(rest) = line.strip_prefix('p') {
+            // 解析失败必须清空（与 parse_lsof / parse_cwd 同一底线）：
+            // 否则后续 n 行会归到上一个 PID 名下，把别人的连接算作它的存活证据
+            cur = rest.parse().ok();
+        } else if let Some(addr) = line.strip_prefix('n') {
+            // split_once 而非 split().next()：后者对无 `->` 的行也返回整串（永不为
+            // None），校验只能靠另写一次 contains —— 一个读起来像守卫、实际永不触发的
+            // 分支。这里让「必须有对端」直接由解析本身表达：无 `->` 的是监听行，
+            // 不是连接，不构成存活证据。
+            let Some((local, _peer)) = addr.split_once("->") else {
+                continue;
+            };
+            if let (Some(pid), Some(port)) = (
+                cur,
+                local.rsplit(':').next().and_then(|p| p.parse::<u16>().ok()),
+            ) {
+                let ports = map.entry(pid).or_default();
+                if !ports.contains(&port) {
+                    ports.push(port);
+                }
+            }
+        }
+    }
+    map
 }
 
 /// `lsof -a -p <pids> -d cwd -Fpn` 输出：pPID 行后跟 n<路径> 行。
@@ -591,6 +670,33 @@ mod tests {
         assert_eq!(map.get(&200).unwrap(), "/srv/app");
     }
 
+    /// 存活性证据的解析（KNOWN-GAPS Gap 1/A2）：只取 `->` **左侧**的本地端口。
+    /// 取错方向的后果是实打实的漏报：一个正在抓网页的残留浏览器有大量出站连接，
+    /// 按对端端口统计会让它永远「看起来有人在用」。
+    #[test]
+    fn established_parses_local_side_only() {
+        let text = "\
+p397
+n127.0.0.1:9222->127.0.0.1:54191
+n192.168.1.10:54999->93.184.216.34:443
+p400
+n[::1]:9333->[::1]:60123
+";
+        let map = parse_established(text);
+        assert_eq!(map.get(&397).unwrap(), &vec![9222, 54999], "取本地端端口");
+        assert_eq!(map.get(&400).unwrap(), &vec![9333], "IPv6 形态同样取本地端");
+    }
+
+    /// 监听行（无 `->`）不是连接，不得被算成存活证据；坏 p 行必须清空当前 PID，
+    /// 否则后续 n 行会把别人的连接算到上一个进程头上（与 parse_lsof 同一底线）。
+    #[test]
+    fn established_ignores_listen_rows_and_contains_bad_pid() {
+        let text = "p100\nn*:9222\nn127.0.0.1:9222->127.0.0.1:5000\npBAD\nn127.0.0.1:8888->127.0.0.1:6000\n";
+        let map = parse_established(text);
+        assert_eq!(map.get(&100).unwrap(), &vec![9222]);
+        assert_eq!(map.len(), 1, "坏 p 行之后的连接必须被丢弃");
+    }
+
     /// 生产真实形态的 ps 行（无 sess 列；state 的 's' 标志 = 会话首进程，
     /// 与真机 `ps -ax -o stat=,tty=` 输出一致）。
     #[test]
@@ -750,6 +856,32 @@ mod tests {
             "/usr/bin/python3",
         );
         assert_eq!(label, "http.server · python3");
+        assert_eq!(cat, "dev-script");
+
+        // KNOWN-GAPS Gap 1：headless 自动化实例的身份在命令行 —— 必须先于
+        // .app / /Applications 阶梯判定，否则归 installed-app 即吃硬豁免。
+        const CHROME: &str = "/Applications/Google Chrome.app/Contents/MacOS/Google Chrome";
+        let (label, cat) = identify_app(
+            &format!(
+                "{CHROME} --headless=new --user-data-dir=/private/tmp/sess/prof \
+                 --remote-debugging-port=9339 about:blank"
+            ),
+            "Google Chrome",
+            CHROME,
+        );
+        assert_eq!(label, "Google Chrome · headless");
+        assert_eq!(cat, super::super::AUTOMATION_CATEGORY);
+
+        // 对照：同一个 exe，无自动化开关 ⇒ 仍是用户日常那个 Chrome
+        let (label, cat) = identify_app(CHROME, "Google Chrome", CHROME);
+        assert_eq!(label, "Google Chrome");
+        assert_eq!(cat, "installed-app");
+
+        // Playwright 下载到 Caches 的 Chromium.app：形态同真应用，但归 dev-script
+        //（与 node_modules 下的 Electron.app 同一条不变量）
+        let pw = "/Users/x/Library/Caches/ms-playwright/chromium-1148/chrome-mac/Chromium.app/Contents/MacOS/Chromium";
+        let (label, cat) = identify_app(pw, "Chromium", pw);
+        assert_eq!(label, "Chromium");
         assert_eq!(cat, "dev-script");
     }
 

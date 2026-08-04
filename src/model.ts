@@ -29,6 +29,9 @@ export type ProcessEntry = {
   elapsed_secs: number;
   start_unix: number | null;
   cpu_percent: number;
+  /** 自身 + 全部后代的 CPU 合计（展示用，不参与判定）——
+   *  headless 浏览器把 CPU 烧在 gpu-process 子进程里，主进程行看着是闲的 */
+  cpu_percent_tree: number;
   mem_mb: number;
   state: string;
   is_zombie_suspect: boolean;
@@ -60,6 +63,7 @@ export const EXEMPT_REASONS = new Set([
   "brew_service_path",
   "installed_app",
   "pm2_managed",
+  "debugger_attached",
 ]);
 
 /** 非嫌疑行的豁免原因（「为什么不是僵尸」）—— Row 与 Detail 详情共用。
@@ -78,6 +82,9 @@ export const REASON_PRIORITY = [
   "orphaned_session",
   "duplicate_dev_server",
   "just_reparented",
+  // 排在两条泛化信号之前：「自动化会话残留」比「非标准路径 / dev 关键字」
+  // 具体得多，是这类行最该讲给用户听的那句话
+  "automation_instance",
   "nonstandard_path",
   "dev_server_keyword",
 ];
@@ -104,6 +111,22 @@ export function whitelistKey(e: ProcessEntry): string {
  */
 export function legacyWhitelistKey(e: ProcessEntry): string {
   return e.exe_path || e.command;
+}
+
+/** 子树 CPU 明显高于本行自身（后端 fill_subtree_cpu 的合计值）。
+ *  1 个百分点的死区避开采样抖动；字段缺失（陈旧后端 / 测试夹具）时优雅退化为 false。 */
+export function subtreeCpuExceedsSelf(e: ProcessEntry): boolean {
+  return (e.cpu_percent_tree ?? 0) > e.cpu_percent + 1;
+}
+
+/** 行内「负载烧在子进程里」徽标的门槛（单核百分比）。
+ *  用意（KNOWN-GAPS Gap 1/B）：无头浏览器主进程显示 ~0%，真凶是它的
+ *  gpu-process 子进程 —— 这条反直觉的情形才值得占行内的位置。
+ *  自身就在满核的健康构建（vite build / tsc）不满足「高于自身」，不会挂徽标。 */
+export const BUSY_SUBTREE_PERCENT = 50;
+
+export function hasBusySubtree(e: ProcessEntry): boolean {
+  return subtreeCpuExceedsSelf(e) && e.cpu_percent_tree >= BUSY_SUBTREE_PERCENT;
 }
 
 /** 粗粒度运行时长（精确值在详情面板） */

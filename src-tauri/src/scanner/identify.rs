@@ -24,6 +24,118 @@ pub(crate) fn is_dev_build_artifact(path: &str) -> bool {
         || norm.contains("/go-build")
 }
 
+/// 开发工具自带 / 下载的运行时目录 —— 这些位置里的「应用」是项目或工具链的
+/// 开发期 runtime，不是用户安装的应用：electron / electron-vite 把 Electron.app
+/// 放在 node_modules/electron/dist，Playwright / Puppeteer 把 Chromium.app 下载到
+/// ~/Library/Caches/ms-playwright（Windows：%LOCALAPPDATA%\ms-playwright），形态与
+/// /Applications 里的真应用一模一样。不摘出来就会吃 installed-app 硬豁免，
+/// 孤儿化的 dev runtime 永远检测不到（真实漏报：孤儿 Electron 主进程）。
+/// 用户安装的应用绝不会住在这些目录里，故此信号零误伤。
+/// 分隔符与大小写归一后双平台共用一份（新增片段只改这一处）。
+pub(crate) fn is_dev_tool_runtime_path(path: &str) -> bool {
+    let norm = path.replace('\\', "/").to_lowercase();
+    [
+        "/node_modules/",
+        "/ms-playwright/",      // Playwright 下载的浏览器（macOS Caches / Windows LocalAppData）
+        "/.cache/puppeteer/",   // Puppeteer 默认下载目录
+        "/.local-chromium/",    // 旧版 Puppeteer 布局
+        "/.cache/selenium/",    // Selenium Manager 下载的浏览器 / driver
+        "/webdriver-manager/",  // webdriver-manager 下载目录
+    ]
+    .iter()
+    .any(|p| norm.contains(p))
+}
+
+/// 一次性自动化浏览器实例的**命令行**特征（跨平台：Chromium / Firefox 的这些
+/// 开关在 macOS 与 Windows 上逐字相同，故实现放共享层，两平台不各写一份）。
+///
+/// 存在意义见 docs/KNOWN-GAPS.md Gap 1：headless Chrome 由自动化框架
+/// （Playwright / Puppeteer / devtools MCP …）拉起，宿主可执行文件恰好住在
+/// /Applications，会被 installed-app 硬豁免整体放行 —— 但它真正的身份是
+/// 「一次性自动化会话」，和 `python app.py` 的身份是脚本、而非解释器安装位置
+/// 完全同构。命中者由 identify_app 归入 automation-instance 类别，从路径豁免里摘出。
+///
+/// 判据：`--headless` 是**必要条件**，再叠加一条「自动化会话」证据。
+/// 为什么必要条件不可省（实测反例，KNOWN-GAPS A2）：只靠「调试端口 + 临时
+/// profile」会直接命中所有**有头**的自动化实例 —— 那正是用户此刻正在用的
+/// 浏览器窗口，误杀会打断一个活跃会话。
+///
+/// ⚠️ 命中本函数**不等于**判定为残留：它只是把行摘出路径豁免，仍必须有孤儿
+/// 信号才会被标记；且调试端口上有活跃客户端连接时被 DebuggerAttached 一票否决。
+pub(crate) fn is_automation_instance(full_command: &str) -> bool {
+    let mut headless = false;
+    let mut session_evidence = false;
+    let mut tokens = full_command.split_whitespace().peekable();
+    while let Some(tok) = tokens.next() {
+        let lower = tok.to_lowercase();
+        // Chromium `--headless` / `--headless=new`；Firefox 单横线 `-headless`
+        if lower == "--headless" || lower == "-headless" || lower.starts_with("--headless=") {
+            headless = true;
+            continue;
+        }
+        // 调试端口 / 调试管道 / webdriver 标记：不带值的开关直接采信
+        if lower.starts_with("--remote-debugging-port")
+            || lower == "--remote-debugging-pipe"
+            || lower == "--enable-automation"
+            || lower == "-marionette"          // Firefox 的 webdriver 通道
+            || lower == "--marionette"
+        {
+            session_evidence = true;
+            continue;
+        }
+        // 临时目录里的 profile：一次性会话的强特征（真实用户 profile 在家目录下）
+        let temp_profile_value = ["--user-data-dir", "-profile", "--profile"]
+            .iter()
+            .find_map(|flag| {
+                lower
+                    .strip_prefix(flag)
+                    .and_then(|rest| match rest.strip_prefix('=') {
+                        Some(v) => Some(v.to_string()),
+                        // 分离值形（`-profile /tmp/x`）：值是下一个 token
+                        None if rest.is_empty() => tokens.peek().map(|v| v.to_lowercase()),
+                        None => None,
+                    })
+            });
+        if temp_profile_value.is_some_and(|v| is_temp_dir_path(&v)) {
+            session_evidence = true;
+        }
+    }
+    headless && session_evidence
+}
+
+/// 路径值（**命令行参数值**，不是 exe 路径）是否落在系统临时目录下。
+/// 刻意独立于 `is_standard_install_path`：macOS 的 /private/var/folders/ 在那边是
+/// **豁免项**（为 App Translocation 让路），这里恰恰是「一次性」的证据 ——
+/// 两者语义相反，绝不能共用同一个函数（KNOWN-GAPS Gap 1 明示的坑）。
+fn is_temp_dir_path(value: &str) -> bool {
+    let norm = value.replace('\\', "/").to_lowercase();
+    norm.starts_with("/tmp/")
+        || norm.starts_with("/private/tmp/")
+        || norm.starts_with("/var/folders/")
+        || norm.starts_with("/private/var/folders/")
+        || norm.contains("/appdata/local/temp/")
+        || norm.contains("/windows/temp/")
+}
+
+/// 自动化实例的标签：「Chrome · headless」—— 主名取 .app 名（macOS bundle）或
+/// exe 基名。前端 splitLabel 按 " · " 拆成主/副两行渲染。
+pub(crate) fn automation_label(exe_path: &str, short_command: &str) -> String {
+    let name = exe_path
+        .find(".app/")
+        .and_then(|idx| {
+            let before = &exe_path[..idx];
+            before.rfind('/').map(|slash| &before[slash + 1..])
+        })
+        .map(|app| app.to_string())
+        .unwrap_or_else(|| strip_exe(basename(exe_path)).to_string());
+    let name = if name.is_empty() {
+        strip_exe(short_command).to_string()
+    } else {
+        name
+    };
+    format!("{name} · headless")
+}
+
 /// 去掉 Windows 可执行后缀：node.exe → node（大小写不敏感）
 pub(crate) fn strip_exe(name: &str) -> &str {
     // is_char_boundary 守卫:name 末尾若是非 ASCII 多字节字符(如中文进程名),
@@ -338,6 +450,120 @@ mod tests {
         // 长选项不是粘连 -m
         assert_eq!(extract_module_arg("node --max-old-space-size=4096"), None);
         assert_eq!(extract_module_arg("python"), None);
+    }
+
+    /// KNOWN-GAPS Gap 1：一次性自动化实例的命令行判据。
+    /// 真阳性必须检出，反例（尤其**有头**的活跃实例）必须一个都不命中 ——
+    /// 误杀用户正在驱动的浏览器比漏报严重得多。
+    #[test]
+    fn automation_instance_requires_headless_plus_session_evidence() {
+        // —— 真阳性：Gap 1 的实测主案与其变体 ——
+        for tp in [
+            // 主案：headless + 临时 profile + 调试端口
+            "/Applications/Google Chrome.app/Contents/MacOS/Google Chrome --headless=new \
+             --disable-gpu --user-data-dir=/private/tmp/claude-501/sess/scratchpad/cprof8 \
+             --remote-debugging-port=9339 about:blank",
+            // 只有调试端口（profile 在别处）
+            "chrome --headless --remote-debugging-port=9222",
+            // 只有临时 profile
+            "chrome --headless=new --user-data-dir=/tmp/puppeteer_dev_profile-XYZ",
+            // 调试管道（Playwright 默认通道，无端口）
+            "chromium --headless --remote-debugging-pipe",
+            // helper 子进程继承了同一批开关（主进程被杀后会被收养成孤儿）
+            "/Applications/Google Chrome.app/Contents/Frameworks/Google Chrome Framework.framework/\
+             Helpers/Google Chrome Helper.app/Contents/MacOS/Google Chrome Helper \
+             --type=gpu-process --headless=new --use-gl=disabled \
+             --user-data-dir=/private/tmp/claude-501/sess/scratchpad/cprof8",
+            // Windows 形态（%TEMP% 下的 profile，开关逐字相同）
+            "C:\\Program Files\\Google\\Chrome\\Application\\chrome.exe --headless=new \
+             --user-data-dir=C:\\Users\\x\\AppData\\Local\\Temp\\pptr_profile \
+             --remote-debugging-port=9222",
+            // Firefox：单横线 headless + marionette 通道
+            "/Applications/Firefox.app/Contents/MacOS/firefox -headless -marionette \
+             -profile /var/folders/xx/T/rust_mozprofile",
+            // webdriver 驱动的实例
+            "chrome --headless --enable-automation",
+        ] {
+            assert!(is_automation_instance(tp), "漏报: {tp}");
+        }
+
+        // —— 反例：一个都不能命中 ——
+        for fp in [
+            // A2 实测反例：**有头**的活跃实例（判据其余项全中）—— 用户正在用它
+            "/Applications/Google Chrome.app/Contents/MacOS/Google Chrome \
+             --remote-debugging-port=9222 \
+             --user-data-dir=/private/tmp/claude-501/sess/scratchpad/chrome-profile \
+             --no-first-run --no-default-browser-check",
+            // 日常浏览器：既无 headless 也无自动化证据
+            "/Applications/Google Chrome.app/Contents/MacOS/Google Chrome",
+            // headless 但 profile 是真实用户目录（长期自建的无头实例，不是一次性会话）
+            "chrome --headless --user-data-dir=/Users/x/.config/my-scraper",
+            // 光有 headless（可能是别的工具的无关开关），无会话证据
+            "some-tool --headless",
+            // 目录名里恰好含 headless 的普通进程
+            "node /Users/x/code/headless-cms/server.js",
+            // 单词前缀不得误命中（--headless-mode-off 这类拼接开关）
+            "chrome --headlessx --remote-debugging-port=9222",
+        ] {
+            assert!(!is_automation_instance(fp), "误报: {fp}");
+        }
+    }
+
+    /// 分离值形（`-profile /tmp/x`）与粘连形（`--user-data-dir=/tmp/x`）等价。
+    #[test]
+    fn automation_temp_profile_accepts_separated_value() {
+        assert!(is_automation_instance("firefox -headless -profile /tmp/prof"));
+        assert!(is_automation_instance(
+            "firefox -headless --profile /private/var/folders/ab/T/prof"
+        ));
+        // 分离值不是临时目录 ⇒ 无证据
+        assert!(!is_automation_instance(
+            "firefox -headless -profile /Users/x/.mozilla/prof"
+        ));
+    }
+
+    #[test]
+    fn dev_tool_runtime_paths_both_separators() {
+        // 项目本地 / 工具下载的浏览器 runtime —— 形态同真应用，但绝非用户安装
+        assert!(is_dev_tool_runtime_path(
+            "/Users/x/p/node_modules/electron/dist/Electron.app/Contents/MacOS/Electron"
+        ));
+        assert!(is_dev_tool_runtime_path(
+            "/Users/x/Library/Caches/ms-playwright/chromium-1148/chrome-mac/Chromium.app/Contents/MacOS/Chromium"
+        ));
+        assert!(is_dev_tool_runtime_path(
+            "/Users/x/.cache/puppeteer/chrome/mac-131/chrome-mac-arm64/Google Chrome for Testing.app/Contents/MacOS/Google Chrome for Testing"
+        ));
+        assert!(is_dev_tool_runtime_path(
+            "C:\\Users\\x\\AppData\\Local\\ms-playwright\\chromium-1148\\chrome-win\\chrome.exe"
+        ));
+        // 真安装的应用不得命中
+        assert!(!is_dev_tool_runtime_path(
+            "/Applications/Google Chrome.app/Contents/MacOS/Google Chrome"
+        ));
+        assert!(!is_dev_tool_runtime_path(
+            "C:\\Program Files\\Google\\Chrome\\Application\\chrome.exe"
+        ));
+    }
+
+    #[test]
+    fn automation_label_prefers_bundle_name() {
+        assert_eq!(
+            automation_label(
+                "/Applications/Google Chrome.app/Contents/MacOS/Google Chrome",
+                "Google Chrome"
+            ),
+            "Google Chrome · headless"
+        );
+        assert_eq!(
+            automation_label(
+                "C:\\Program Files\\Google\\Chrome\\Application\\chrome.exe",
+                "chrome.exe"
+            ),
+            "chrome · headless"
+        );
+        // exe 读不到时退回短命令名
+        assert_eq!(automation_label("", "chromium"), "chromium · headless");
     }
 
     #[test]

@@ -83,9 +83,16 @@ export const DESC_KEYS: Record<string, I18nKey> = {
   "installed-app": "desc.installed-app",
   system: "desc.system",
   "dev-script": "desc.dev-script",
+  "automation-instance": "desc.automation-instance",
   "user-binary": "desc.user-binary",
   unknown: "desc.unknown",
 };
+
+/** 品牌型模式要跳过的类别 —— 后端不变量：真品牌进程永远归 installed-app，
+ *  这些类别的身份来自命令行 / 项目路径，品牌词命中必是误触
+ *  （~/code/spotify-clone 的 dev server、`--user-data-dir=/tmp/steam-test`
+ *  的无头浏览器）。automation-instance 与 dev-script 同理，见文件头注释。 */
+const IDENTITY_FROM_COMMAND = new Set(["dev-script", "automation-instance"]);
 
 /** app_label 形如 "dev-server.js · node"：拆主名 + 次级说明（Row 与 Detail 共用） */
 export function splitLabel(appLabel: string): { name: string; sub: string | null } {
@@ -105,7 +112,7 @@ export function describeEntry(e: ProcessEntry, lang: Lang): string | null {
   // Rust 产物 / VS Code 子进程的友好描述整体丢失）。
   const pathHay = `${identityHay} ${e.full_command} ${e.exe_path}`.toLowerCase();
   for (const [re, zh, enText, scope] of KNOWN_PROCESSES) {
-    if (scope === "brand" && e.app_category === "dev-script") continue;
+    if (scope === "brand" && IDENTITY_FROM_COMMAND.has(e.app_category)) continue;
     const hay = scope === "path" ? pathHay : identityHay;
     if (re.test(hay)) return lang === "zh" ? zh : enText;
   }
