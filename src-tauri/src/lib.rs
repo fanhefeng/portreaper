@@ -231,7 +231,11 @@ fn build_log_plugin<R: tauri::Runtime>(
     builder.build()
 }
 
-#[cfg_attr(mobile, tauri::mobile_entry_point)]
+/// 桌面端唯一入口（`main.rs` 只是它的薄壳）。
+///
+/// 刻意**没有** `#[cfg_attr(mobile, tauri::mobile_entry_point)]`：那是移动端脚手架
+/// 残留，与 `Cargo.toml` 里已删掉的 staticlib/cdylib 是同一批。桌面构建下 `mobile`
+/// cfg 永不成立，该属性从未展开过 —— 无移动端计划，留着只会让人以为存在移动端支持。
 pub fn run() {
     let builder = tauri::Builder::default()
         .plugin(tauri_plugin_opener::init())
