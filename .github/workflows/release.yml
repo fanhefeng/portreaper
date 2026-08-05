@@ -172,10 +172,12 @@ jobs:
           toolchain: 1.96.0
           targets: ${{ matrix.target }}
 
+      # workspace 根在仓库根（成员：crates/portreaper-core + src-tauri），
+      # target/ 随之上移 —— 拆出 core 之前这里是 "src-tauri -> target"。
       - name: Cache Rust
         uses: Swatinem/rust-cache@e18b497796c12c097a38f9edb9d0641fb99eee32 # v2
         with:
-          workspaces: "src-tauri -> target"
+          workspaces: ". -> target"
 
       - name: Install dependencies
         run: pnpm install --frozen-lockfile
@@ -234,7 +236,14 @@ jobs:
           TAG: ${{ github.ref_name }}
         run: |
           set -euo pipefail
-          dmg="$(ls src-tauri/target/${{ matrix.target }}/release/bundle/dmg/*.dmg)"
+          # Bundle path moved with the Cargo workspace root (repo root since the
+          # portreaper-core split), but tauri-action resolves the target dir via
+          # `cargo metadata` — which we cannot rehearse locally. Try the workspace
+          # location first and fall back to the pre-split one; if NEITHER exists
+          # the second `ls` fails and `set -e` aborts the leg loudly (we must never
+          # publish a release whose dmg was silently not post-processed).
+          dmg="$(ls target/${{ matrix.target }}/release/bundle/dmg/*.dmg 2>/dev/null \
+                 || ls src-tauri/target/${{ matrix.target }}/release/bundle/dmg/*.dmg)"
           echo "Post-processing $dmg"
           work="$(mktemp -d)"
           hdiutil convert "$dmg" -format UDRW -o "$work/rw.dmg" -quiet

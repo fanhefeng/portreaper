@@ -23,14 +23,16 @@ This rewrites the version in all the places that must stay in sync:
 - `package.json`
 - `src-tauri/tauri.conf.json`
 - `src-tauri/Cargo.toml`
-- `src-tauri/Cargo.lock`
+- `Cargo.lock` — 仓库根，**不是** `src-tauri/Cargo.lock`：workspace 根在仓库根，
+  lockfile 属于整个 workspace，而版本号属于 `src-tauri` 这个应用 crate。
+  `crates/portreaper-core` 是不发布的内部 crate，版本与应用版本解耦，不归本脚本管。
 
 Use a plain semver string (`1.2.0`), no leading `v`.
 
 ### 2. Refresh / sanity-check the lockfile + formatting
 
 ```bash
-cargo build --manifest-path src-tauri/Cargo.toml
+cargo build --workspace
 pnpm exec vp check
 ```
 

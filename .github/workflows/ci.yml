@@ -73,10 +73,12 @@ jobs:
           # breakage only surfaces on release day (re-run can't fix a compile error).
           targets: ${{ runner.os == 'macOS' && 'x86_64-apple-darwin' || '' }}
 
+      # workspace 根在仓库根（成员：crates/portreaper-core + src-tauri），
+      # 故 target/ 也在根 —— 拆出 core 之前这里是 "src-tauri -> target"。
       - name: Cache Rust
         uses: Swatinem/rust-cache@e18b497796c12c097a38f9edb9d0641fb99eee32 # v2
         with:
-          workspaces: "src-tauri -> target"
+          workspaces: ". -> target"
 
       - name: Install dependencies
         run: pnpm install --frozen-lockfile
@@ -99,22 +101,26 @@ jobs:
 
       # Rust checks: formatting, lints (warnings = errors), tests, and a debug
       # build to catch compile errors on both macOS and Windows.
+      # --all/--workspace covers BOTH members: crates/portreaper-core (the
+      # classification engine) and src-tauri (the GUI shell). The old
+      # `--manifest-path src-tauri/Cargo.toml` form would silently skip the
+      # engine — i.e. skip every line of logic these gates exist to protect.
       - name: Rust formatting
-        run: cargo fmt --manifest-path src-tauri/Cargo.toml --check
+        run: cargo fmt --all --check
 
       - name: Clippy
-        run: cargo clippy --manifest-path src-tauri/Cargo.toml --all-targets -- -D warnings
+        run: cargo clippy --workspace --all-targets -- -D warnings
 
       - name: Rust tests
-        run: cargo test --manifest-path src-tauri/Cargo.toml
+        run: cargo test --workspace
 
       - name: Rust build
-        run: cargo build --manifest-path src-tauri/Cargo.toml
+        run: cargo build --workspace
 
       # Intel macOS compile check (release matrix parity — see toolchain note)
       - name: Rust check (x86_64-apple-darwin)
         if: runner.os == 'macOS'
-        run: cargo check --manifest-path src-tauri/Cargo.toml --target x86_64-apple-darwin
+        run: cargo check --workspace --target x86_64-apple-darwin
 
       # Guard scripts (platform-neutral) — run once only, on the macOS leg.
       # Self-tests first: a guard that silently passes is worse than no guard.

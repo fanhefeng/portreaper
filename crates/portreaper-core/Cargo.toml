@@ -1,0 +1,33 @@
+[package]
+name = "portreaper-core"
+# 版本与应用主版本解耦：这是内部 crate，不单独发布到 crates.io，
+# 故 bump-version.mjs 不管它（该脚本只同步 package.json / tauri.conf.json /
+# src-tauri 的 [package] version 与 Cargo.lock 里 name="portreaper" 的块）。
+version = "0.1.0"
+description = "Portreaper 的孤儿/僵尸进程判定引擎（无 GUI 依赖）"
+authors = ["fhf"]
+license = "MIT"
+repository = "https://github.com/fanhefeng/portreaper"
+edition = "2021"
+publish = false
+
+[dependencies]
+serde = { version = "1", features = ["derive"] } # ProcessEntry 的序列化契约
+log = "0.4" # 日志门面；落盘由各前端自行接管
+
+[dev-dependencies]
+# classify 的 serde 键名断言（ReasonCode/Confidence 的 snake_case 是前端契约的一部分）。
+# 仅测试需要 —— 引擎自身不产出 JSON，序列化格式由各前端决定。
+serde_json = "1"
+
+# Windows 端进程/端口枚举与终止（macOS 不编译这些依赖）
+[target.'cfg(windows)'.dependencies]
+sysinfo = "0.33"
+windows = { version = "0.58", features = [
+  "Win32_Foundation",
+  "Win32_NetworkManagement_IpHelper",
+  "Win32_Networking_WinSock",
+  "Win32_System_Threading",
+  "Win32_System_Com",
+  "Win32_UI_Shell",
+] }

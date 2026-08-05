@@ -1,4 +1,6 @@
-use crate::{platform, scanner, whitelist};
+use portreaper_core::{platform, scanner};
+
+use crate::whitelist;
 
 /// async + spawn_blocking（评审发现）：Tauri 2 的非 async 命令在主线程执行，
 /// scan() 每 2s shell 出 lsof + 两次 ps + launchctl（几十到几百毫秒）会周期性

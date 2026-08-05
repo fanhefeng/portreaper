@@ -14,7 +14,9 @@ export default defineConfig(async () => ({
   // *.rs 同理（v0.7.2 事故）：`vp check` 只管 JS/TS 侧，Rust 格式在本地一度
   // 零门禁，v0.6.0 与 v0.7.2 两次都是 `cargo fmt --check` 在 CI 上翻红。这里
   // 用 rustfmt 而非 cargo fmt —— staged 会把暂存文件名追加到命令末尾，
-  // rustfmt 直接吃文件列表，cargo fmt 不吃。edition 须与 src-tauri/Cargo.toml 同步。
+  // rustfmt 直接吃文件列表，cargo fmt 不吃。edition 须与各 crate 的 Cargo.toml
+  // 同步（crates/portreaper-core 与 src-tauri，目前都是 2021）。
+  // "*.rs" 不含 `/`，故按 basename 匹配任意深度 —— crates/ 下的引擎源码同样覆盖。
   staged: {
     "*.{js,mjs,ts,tsx,json,yml,yaml,toml}": "vp check --fix",
     "*.rs": "rustfmt --edition 2021",
@@ -39,8 +41,9 @@ export default defineConfig(async () => ({
         }
       : undefined,
     watch: {
-      // 3. tell Vite to ignore watching `src-tauri`
-      ignored: ["**/src-tauri/**"],
+      // 3. tell Vite to ignore watching Rust sources (`src-tauri` = GUI shell,
+      //    `crates` = portreaper-core engine) — cargo owns their rebuilds.
+      ignored: ["**/src-tauri/**", "**/crates/**"],
     },
   },
 }));

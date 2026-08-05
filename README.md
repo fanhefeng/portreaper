@@ -112,12 +112,13 @@ Releases are cut by pushing a version tag — see [docs/RELEASING.md](docs/RELEA
 ```
 src/                  React 19 + TS UI — App.tsx (container: polls scan, kill/whitelist flows)
                       + components/ (row, detail panel, section, confirm modal)
-src-tauri/src/
-  lib.rs              tray, window lifecycle, invoke handlers
-  commands.rs         Tauri command surface
+crates/portreaper-core/src/   the engine — no GUI dependency, reusable by other frontends
   scanner/            process scan + v2 zombie classification (the core logic)
                       mod / model / classify / identify / macos / windows
   platform.rs         cross-platform kill with PID-reuse identity check
+src-tauri/src/        desktop shell only — no verdict logic
+  lib.rs              tray, window lifecycle, invoke handlers
+  commands.rs         Tauri command surface
   whitelist.rs        JSON-persisted whitelist (收藏)
 scripts/              release tooling (bump-version) + CI guards (reason parity, asset-name parity)
 .github/workflows/    CI + release pipelines

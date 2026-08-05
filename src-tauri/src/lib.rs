@@ -1,7 +1,7 @@
+// 扫描 / 分类 / 终止住在 portreaper-core（无 GUI 依赖的判定引擎）——
+// 本 crate 只是它的桌面前端：托盘、窗口生命周期、命令入口、白名单落盘。
 mod commands;
 mod paths;
-mod platform;
-mod scanner;
 mod whitelist;
 
 use std::sync::Mutex;

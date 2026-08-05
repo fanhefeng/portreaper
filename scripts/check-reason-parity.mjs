@@ -125,7 +125,7 @@ export function checkParity({ classifySrc, i18nSrc, modelSrc }) {
 if (process.argv[1] && pathToFileURL(realpathSync(process.argv[1])).href === import.meta.url) {
   const root = join(dirname(fileURLToPath(import.meta.url)), "..");
   const errors = checkParity({
-    classifySrc: readFileSync(join(root, "src-tauri/src/scanner/classify.rs"), "utf8"),
+    classifySrc: readFileSync(join(root, "crates/portreaper-core/src/scanner/classify.rs"), "utf8"),
     i18nSrc: readFileSync(join(root, "src/i18n.ts"), "utf8"),
     modelSrc: readFileSync(join(root, "src/model.ts"), "utf8"),
   });

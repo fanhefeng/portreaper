@@ -1,7 +1,10 @@
 # 架构规划：引擎下沉为 core，适配多前端（Raycast 等）
 
-> 状态：设计稿，待评审。落地前不改代码。
+> 状态：**步骤 1 已落地**（见 §8 的进度标记），步骤 2–5 待做。
 > 目标读者：本仓库维护者。阅读前建议先看 `CLAUDE.md` 的「Architecture」一节。
+>
+> §4 的目录结构是**目标态**。当前 `crates/portreaper-core/src/` 下仍是搬迁来的
+> 原始布局（`scanner/` 六个文件 + `platform.rs`），子模块细分属于步骤 2。
 
 ## 1. 目标与非目标
 
@@ -114,7 +117,15 @@ portreaper/
 └── docs/
 ```
 
-**为什么 workspace 根放仓库根**：`crates/` 与 `src-tauri/` 是平级的兄弟 crate，只有根 workspace 能自然表达。代价是 `target/` 从 `src-tauri/target/` 移到 `target/`，需要同步改 `.gitignore`、CI 缓存 key、`release.yml` 的产物路径 —— 列入 §8 的 checklist。
+**为什么 workspace 根放仓库根**：`crates/` 与 `src-tauri/` 是平级的兄弟 crate，只有根 workspace 能自然表达。代价是 `target/` **和 `Cargo.lock`** 都从 `src-tauri/` 上移到仓库根，牵动五处（步骤 1 已全部处理）：
+
+- `.gitignore`（根新增 `/target/`；`src-tauri/.gitignore` 的那条**要留着**，见下）；
+- 两个 workflow 的 `Swatinem/rust-cache` 键 `". -> target"`；
+- `release.yml` 的 dmg 后处理产物路径；
+- `scripts/bump-version.mjs` 的 `CARGO_LOCK`（`Cargo.toml` 仍在 `src-tauri/` —— 这个不对称是刻意的：lockfile 属于整个 workspace，版本号属于应用 crate）；
+- 所有 `cargo` 调用从 `--manifest-path src-tauri/Cargo.toml` 改成 `--all` / `--workspace`。**这条最危险**：旧写法在 workspace 下依然「成功」，只是把引擎整个跳过 —— 门禁绿着，而判定逻辑一行没查。
+
+**踩到的坑：`src-tauri/.gitignore` 的 `/target/` 不能删。** oxfmt 按 gitignore 决定扫描范围；删掉那行后，拆分前遗留的 `src-tauri/target/`（本机 5.2 GB）立刻涌进 `vp check`，它开始格式化 cargo 的 fingerprint JSON。规则保留 + 清掉遗留目录，两件都要做。
 
 ## 5. core 的公开 API 设计
 
@@ -278,8 +289,12 @@ Raycast 扩展按顺序找：
 
 **步骤 0 — 前置**：当前工作区有未提交改动（`scanner/` 四个文件、`src/components/` 未跟踪、四份文档），先落定提交，让拆分 diff 纯净可读。
 
-**步骤 1 — 机械搬迁（零逻辑变更）**
-建根 `Cargo.toml` workspace；`scanner/` + `platform.rs` 原样搬进 `crates/portreaper-core`；`src-tauri` 改为依赖它。判定代码一行不改，`cargo test` 的 35+ 用例必须全绿。改 `.gitignore` / CI 缓存 / `release.yml` 的 `target/` 路径。这一步的验收标准是「产物 diff 为空」。
+**步骤 1 — 机械搬迁（零逻辑变更）✅ 已完成**
+建根 `Cargo.toml` workspace；`scanner/` + `platform.rs` 原样搬进 `crates/portreaper-core`；`src-tauri` 改为依赖它。判定代码一行不改。
+
+实测记录：`cargo test --workspace` 72 passed（core 71 + shell 1，与拆分前逐个对齐，2 个 live smoke 仍 ignored）；`cargo fmt --all --check` / `clippy --workspace -D warnings` / 前端 28 passed / 四个守卫脚本全绿；`pnpm tauri build` 实跑通过，产物落在 `target/release/bundle/`，证实 tauri-action 的路径假设成立。`serde_json` 从主依赖降为 core 的 dev-dependency（只有 classify 的 serde 键名断言用它 —— 引擎自身不产出 JSON）。
+
+`src-tauri` 侧 `sysinfo` / `windows` 依赖一并移走：GUI 壳不该直接碰平台 API。
 
 **步骤 2 — 解开三处 GUI 耦合**
 `paths.rs` 去 Tauri 化 + 加一致性测试；`whitelist.rs` 改值类型，GUI 侧包 static；`KillError` 枚举化，GUI IPC 保留 `ERR_*` 字符串兼容层。同时把 `scan/mod.rs`（1681 行）按 §4 拆成 `entry/chain/duplicates/subtree`。
@@ -297,7 +312,8 @@ Raycast 扩展按顺序找：
 
 | 风险 | 缓解 |
 |---|---|
-| `target/` 迁移打断 CI 缓存与 release 产物路径 | 步骤 1 单独发一次 tag 验证完整 release 流程再继续 |
+| `target/` 与 `Cargo.lock` 迁移打断 CI 缓存、release 产物路径与版本脚本 | 步骤 1 已改全五处并本地实跑 `tauri build`；**CI/release 只能在真机验证** —— 合并后单独发一次 tag 走完整 release 流程再继续步骤 2 |
+| 旧写法 `--manifest-path src-tauri/Cargo.toml` 在 workspace 下静默跳过引擎 | 所有门禁（CI、pre-push、文档命令清单）已改 `--all`/`--workspace`；新增 cargo 步骤时必须同样处理 |
 | core 与 Tauri 的目录算法漂移 → 白名单分家 | `check-paths-parity` 单测，五个目录逐一断言 |
 | Windows 无手工 QA，拆分放大回归面 | 步骤 1 严格零逻辑变更；`sysinfo::System` 从 static 改 `Scanner` 字段是 Windows 侧唯一实质改动，单独一个 commit 便于回滚 |
 | CLI 让 kill 能力脚本化 | 身份令牌 fail-closed 已强制「先 scan 后 kill」，不加旁路即可 |
