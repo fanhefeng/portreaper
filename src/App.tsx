@@ -483,7 +483,9 @@ function App() {
               />
             )}
 
-            {filter !== "whitelist" && suspects.length === 0 && (
+            {/* 搜索中不下全局结论：suspects 来自过滤后的子集，机器上可能正有
+                嫌疑进程只是没匹配搜索词 —— 那时说「一切正常」是误导（评审发现） */}
+            {filter !== "whitelist" && !search && suspects.length === 0 && (
               <div className="allclear">
                 <svg
                   viewBox="0 0 24 24"

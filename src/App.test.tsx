@@ -16,6 +16,7 @@ vi.mock("@tauri-apps/plugin-opener", () => ({
 
 import { invoke } from "@tauri-apps/api/core";
 import { ACTION_TIMEOUT_MS, SCAN_TIMEOUT_MS } from "./model";
+import { setLang } from "./i18n";
 import App from "./App";
 
 const mockInvoke = vi.mocked(invoke);
@@ -71,8 +72,12 @@ async function advance(ms: number) {
 describe("error channels", () => {
   beforeEach(() => {
     vi.useFakeTimers();
-    // 语言固定走英文分支，断言文案不受系统 locale 影响
+    // 语言固定走英文分支，断言文案不受系统 locale 影响。
+    // 光写 localStorage 不够：i18n 的 current 是**模块级**变量，在 import 那一刻
+    // 就已经按当时的 localStorage/navigator 求值完了，此处再写已经太晚 ——
+    // 必须调 setLang 覆盖它（评审发现：这些断言此前实际依赖跑测机器的系统语言）。
     localStorage.setItem("portreaper.lang", "en");
+    setLang("en");
   });
 
   afterEach(() => {
@@ -503,5 +508,35 @@ describe("error channels", () => {
     // 仅 :5173 的行保留
     expect(screen.getByText("proj")).toBeTruthy();
     expect(screen.queryByText("other")).toBeNull();
+  });
+
+  it("搜索中不宣告「一切正常」：全局结论不能出自过滤子集（评审发现）", async () => {
+    route({
+      get_platform: () => "macos",
+      scan_ports: () => [
+        suspectEntry(), // 嫌疑，:5173
+        suspectEntry({
+          pid: 1111,
+          ports: [8080],
+          command: "healthy",
+          full_command: "healthy server",
+          app_label: "healthy",
+          is_zombie_suspect: false,
+          confidence: "none",
+          zombie_reasons: [],
+        }),
+      ],
+    });
+    render(<App />);
+    await advance(0);
+    expect(screen.queryByText(/All clear/)).toBeNull(); // 有嫌疑，本就不该出现
+
+    // 搜索只命中那个健康进程：suspects 子集为空，但机器上的嫌疑还在 ——
+    // 修复前这里会打出「No zombies. All clear」
+    fireEvent.change(screen.getByPlaceholderText(/Search/), {
+      target: { value: "8080" },
+    });
+    expect(screen.getByText("healthy")).toBeTruthy();
+    expect(screen.queryByText(/All clear/)).toBeNull();
   });
 });

@@ -74,7 +74,15 @@ const KNOWN_PROCESSES: ReadonlyArray<
   // —— 泛化运行时（永远放最后；\b 词界防止把无关二进制误标）——
   // cargo / target/(debug|release) 只出现在 exe 路径或完整命令行 —— 走宽 haystack。
   // 分隔符两路都匹配（Windows 是 target\debug），与后端 is_dev_build_artifact 对齐。
-  [/cargo|target[\\/](debug|release)/, "Rust 开发程序", "Rust dev program", "path"],
+  // cargo 必须被分隔符或空白包住：裸的 /cargo/ 会把 `node ~/code/cargo-cult/app.js`
+  // 说成「Rust 开发程序」—— 宽 haystack 含完整命令行与 exe 路径，项目目录名一律在内。
+  // 顺带排除 `~/.cargo/bin/<任意二进制>`：住在那儿不代表它是 Rust 开发程序。
+  [
+    /(?:^|[\s\\/])cargo(?:\s|$)|target[\\/](debug|release)/,
+    "Rust 开发程序",
+    "Rust dev program",
+    "path",
+  ],
   [/\bnode\b|\bnpm\b|\bpnpm\b|\byarn\b|\bbun\b/, "Node.js 程序", "Node.js program"],
   [/\bpython/, "Python 程序", "Python program"],
   [/\bjava\b|gradle|tomcat/, "Java 程序", "Java program"],

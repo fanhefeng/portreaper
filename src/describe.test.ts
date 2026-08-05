@@ -133,4 +133,52 @@ describe("describeEntry brand scope", () => {
     });
     expect(describeEntry(cargo, "zh")).toBe("Rust 开发程序");
   });
+
+  it("自动化实例的项目名/临时 profile 含品牌词也不误触", () => {
+    // 无头浏览器的身份来自命令行，品牌词只可能来自它拿到的参数 ——
+    // --user-data-dir 指向一个叫 steam-test 的临时目录，不代表这是 Steam
+    const e = entry({
+      app_label: "Chromium",
+      command: "Chromium",
+      full_command:
+        "/Applications/Chromium.app/Contents/MacOS/Chromium --headless " +
+        "--remote-debugging-port=9222 --user-data-dir=/tmp/steam-test",
+      exe_path: "/Applications/Chromium.app/Contents/MacOS/Chromium",
+      app_category: "automation-instance",
+    });
+    expect(describeEntry(e, "zh")).not.toBe("Steam 游戏平台");
+    expect(describeEntry(e, "en")).not.toBe("Steam gaming platform");
+  });
+});
+
+describe("describeEntry cargo 词界", () => {
+  it("项目目录名含 cargo 的 Node 程序不被说成 Rust 开发程序", () => {
+    const e = entry({
+      app_label: "cargo-cult · server.js",
+      full_command: "node /Users/x/code/cargo-cult/server.js",
+      exe_path: "/opt/homebrew/bin/node",
+    });
+    expect(describeEntry(e, "zh")).toBe("Node.js 程序");
+  });
+
+  it("住在 ~/.cargo/bin 的二进制不因路径就算 Rust 开发程序", () => {
+    const e = entry({
+      app_label: "sometool",
+      command: "sometool",
+      full_command: "/Users/x/.cargo/bin/sometool serve",
+      exe_path: "/Users/x/.cargo/bin/sometool",
+      app_category: "user-binary",
+    });
+    expect(describeEntry(e, "zh")).toBeNull();
+  });
+
+  it("真正的 cargo 调用仍然命中", () => {
+    const run = entry({
+      app_label: "myproj · cargo",
+      command: "cargo",
+      full_command: "cargo run --bin server",
+      exe_path: "/Users/x/.rustup/toolchains/stable/bin/cargo",
+    });
+    expect(describeEntry(run, "zh")).toBe("Rust 开发程序");
+  });
 });
