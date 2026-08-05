@@ -65,8 +65,11 @@ export type ScanReport = {
 
 /** 找不到二进制时抛出它 —— UI 据此渲染引导页而不是一条干巴巴的报错。 */
 export class CliNotFoundError extends Error {
-  constructor(readonly searched: string[]) {
-    super("portreaper-cli not found");
+  constructor(
+    readonly searched: string[],
+    options?: ErrorOptions,
+  ) {
+    super("portreaper-cli not found", options);
     this.name = "CliNotFoundError";
   }
 }
@@ -88,16 +91,20 @@ export class SchemaMismatchError extends Error {
  * 2. 扩展自己下载并校验过的副本（supportPath）—— 常规用户走的就是这条；
  * 3. 已安装的桌面版 `.app` 内 —— 打包尚未落地，路径先留着，补上即生效；
  * 4. 从源码构建的产物 —— 开发者在本仓库 `cargo build` 后立刻可用；
- * 5. `cargo install` 的产物 / `PATH`。
+ * 5. `cargo install` 的产物。
  *
- * 全部落空时返回 null，由调用方触发自动安装（Raycast Store 不允许把安装工作
- * 丢给用户，见 install.ts 的说明）。
+ * **不查 `PATH`**：这里只对固定路径逐个 `existsSync`。想用 PATH 上的某一份，
+ * 在扩展偏好里写出它的绝对路径。
+ *
+ * 唯一的候选构造点 —— `resolveCliPath` 与 `searchedLocations` 都从这里取，
+ * 否则引导页会告诉用户「我找过 A、B、C」而实际找的是 A、B、C、D（曾经如此：
+ * 两处各写一份，源码构建的两条路径只存在于其中一处）。
  */
-export function resolveCliPath(
+function cliCandidates(
   preferredPath: string | undefined,
   supportPath?: string,
   repoRoot?: string,
-): string | null {
+): string[] {
   const candidates: string[] = [];
   if (preferredPath && preferredPath.trim() !== "") {
     candidates.push(preferredPath.trim());
@@ -111,29 +118,45 @@ export function resolveCliPath(
     candidates.push(`${repoRoot}/target/debug/portreaper-cli`);
   }
   candidates.push(`${homedir()}/.cargo/bin/portreaper-cli`);
+  return candidates;
+}
 
-  for (const c of candidates) {
+/**
+ * 阶梯上第一个真实存在的路径。全部落空时返回 null，由调用方触发自动安装
+ * （Raycast Store 不允许把安装工作丢给用户，见 install.ts 的说明）。
+ */
+export function resolveCliPath(
+  preferredPath: string | undefined,
+  supportPath?: string,
+  repoRoot?: string,
+): string | null {
+  for (const c of cliCandidates(preferredPath, supportPath, repoRoot)) {
     if (existsSync(c)) return c;
   }
   return null;
 }
 
 /** 候选位置的人类可读清单 —— 引导页据此说清「我找过哪儿」。 */
-export function searchedLocations(preferredPath: string | undefined, supportPath?: string) {
-  return [
-    preferredPath?.trim() || "(preference not set)",
-    supportPath ? installedCliPath(supportPath) : "(extension support path)",
-    "/Applications/Portreaper.app/Contents/MacOS/portreaper-cli",
-    `${homedir()}/.cargo/bin/portreaper-cli`,
-  ];
+export function searchedLocations(
+  preferredPath: string | undefined,
+  supportPath?: string,
+  repoRoot?: string,
+): string[] {
+  const candidates = cliCandidates(preferredPath, supportPath, repoRoot);
+  // 未配置的两项在清单里要说明「为什么这条没出现」，而不是静静少一行
+  if (!preferredPath || preferredPath.trim() === "") candidates.unshift("(preference not set)");
+  if (!supportPath) candidates.unshift("(extension support path)");
+  return candidates;
 }
 
 /** 路径存在 ≠ 能跑（架构不符、文件损坏、缺执行位）——用一次 --version 确认。 */
 export async function verifyCli(cliPath: string, searched: string[]): Promise<void> {
   try {
     await execFileAsync(cliPath, ["--version"], { timeout: 5000 });
-  } catch {
-    throw new CliNotFoundError(searched);
+  } catch (e) {
+    // 保留 cause：引导页只展示「找过哪些位置」，但真正的原因（Exec format error
+    // / Permission denied / 超时）只在这个被吞掉的异常里
+    throw new CliNotFoundError(searched, { cause: e });
   }
 }
 

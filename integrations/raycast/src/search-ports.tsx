@@ -11,6 +11,7 @@
  * `ppid1_orphan` 比一句含糊的翻译更有信息量。
  */
 
+import { rm } from "node:fs/promises";
 import { useEffect, useState } from "react";
 import {
   Action,
@@ -40,7 +41,12 @@ import {
   whitelist,
   whitelistKey,
 } from "./cli";
-import { ChecksumMismatchError, UnsupportedPlatformError, installCli } from "./install";
+import {
+  ChecksumMismatchError,
+  UnsupportedPlatformError,
+  installCli,
+  installedCliPath,
+} from "./install";
 
 type State =
   | { kind: "loading" }
@@ -66,14 +72,28 @@ export default function SearchPorts() {
     const supportPath = environment.supportPath;
     const searched = searchedLocations(prefs.cliPath, supportPath);
     try {
+      const install = () =>
+        installCli(supportPath, (step) => setState({ kind: "installing", step }));
+
       let cliPath = resolveCliPath(prefs.cliPath, supportPath);
       if (cliPath === null) {
         // 首次使用：自己把引擎取回来。Raycast Store 不允许把安装工作丢给用户，
         // 允许的是「从可信源下载 + 校验完整性」——见 install.ts。
         setState({ kind: "installing", step: "Preparing…" });
-        cliPath = await installCli(supportPath, (step) => setState({ kind: "installing", step }));
+        cliPath = await install();
       }
-      await verifyCli(cliPath, searched);
+      try {
+        await verifyCli(cliPath, searched);
+      } catch (e) {
+        // 托管副本跑不起来（下载被截断、换过架构、执行位丢了）时删掉重取一次 ——
+        // 否则扩展会卡死在「找不到 CLI」，而引导页明明写着我们会重新下载。
+        // 只对**我们自己下载的那份**这么做：用户在偏好里显式指定的路径不擅自删。
+        if (cliPath !== installedCliPath(supportPath)) throw e;
+        setState({ kind: "installing", step: "Replacing an unusable copy…" });
+        await rm(cliPath, { force: true });
+        cliPath = await install();
+        await verifyCli(cliPath, searched);
+      }
       const report = await scan(cliPath);
       setState({ kind: "ready", cliPath, entries: report.entries });
     } catch (e) {

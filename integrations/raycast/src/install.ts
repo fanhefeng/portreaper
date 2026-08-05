@@ -21,7 +21,7 @@
  */
 
 import { createHash } from "node:crypto";
-import { chmod, mkdir, readFile, rm, writeFile } from "node:fs/promises";
+import { chmod, mkdir, readFile, rename, rm, writeFile } from "node:fs/promises";
 import { existsSync } from "node:fs";
 import { join } from "node:path";
 
@@ -76,8 +76,15 @@ export function sha256(buf: Buffer): string {
   return createHash("sha256").update(buf).digest("hex");
 }
 
+/** 下载超时。与 cli.ts 里 execFileAsync 的超时同源：任何外部调用都必须有上界，
+ *  否则一个挂起的连接会让扩展永远停在「Setting up…」，且没有任何可操作的出口。 */
+const FETCH_TIMEOUT_MS = 60_000;
+
 async function fetchBuffer(url: string): Promise<Buffer> {
-  const res = await fetch(url, { redirect: "follow" });
+  const res = await fetch(url, {
+    redirect: "follow",
+    signal: AbortSignal.timeout(FETCH_TIMEOUT_MS),
+  });
   if (!res.ok) {
     throw new Error(`GET ${url} → HTTP ${res.status}`);
   }
@@ -124,13 +131,18 @@ export async function installCli(
     throw new ChecksumMismatchError(expected, actual);
   }
 
+  // 原子落盘：写同目录临时文件 → 置执行位 → rename。直接写 dest 的话，中途失败
+  // （磁盘满、进程被杀）会留下一个半截却已可执行的文件，而它对下一次启动来说
+  // 「存在即视为已安装」—— 校验虽拦得住，但那是白跑一趟下载（评审发现）。
   const dest = installedCliPath(supportPath);
+  const tmp = `${dest}.${process.pid}.tmp`;
   await mkdir(join(supportPath, "bin"), { recursive: true });
-  await writeFile(dest, bin);
   try {
-    await chmod(dest, 0o755);
+    await writeFile(tmp, bin);
+    await chmod(tmp, 0o755);
+    await rename(tmp, dest);
   } catch (e) {
-    await rm(dest, { force: true });
+    await rm(tmp, { force: true });
     throw e;
   }
   return dest;
