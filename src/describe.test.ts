@@ -37,6 +37,33 @@ function entry(over: Partial<ProcessEntry>): ProcessEntry {
   };
 }
 
+describe("describeEntry identity-pattern word boundaries", () => {
+  // 身份型模式（vite/webpack/nuxt）不像品牌型那样对 dev-script 跳过 ——
+  // 它们本来就用来描述 dev-script，只能靠 \b 防子串误触。
+  it("项目目录名含 vite 子串不被描述成 Vite 开发服务器", () => {
+    const e = entry({
+      app_label: "invite-portal · server.js",
+      full_command: "node /Users/x/code/invite-portal/server.js",
+    });
+    expect(describeEntry(e, "zh")).toBe("Node.js 程序");
+    expect(describeEntry(e, "en")).toBe("Node.js program");
+  });
+
+  it("真实 vite / nuxt 进程仍正常命中", () => {
+    const v = entry({
+      app_label: "myapp · vite",
+      full_command: "node /Users/x/myapp/node_modules/.bin/vite --port 5173",
+    });
+    expect(describeEntry(v, "zh")).toBe("Vite 前端开发服务器");
+
+    const n = entry({
+      app_label: "shop · nuxt",
+      full_command: "node /Users/x/shop/node_modules/nuxt/bin/nuxt.mjs dev",
+    });
+    expect(describeEntry(n, "zh")).toBe("Nuxt 开发服务器");
+  });
+});
+
 describe("describeEntry brand scope", () => {
   it("项目目录名含品牌词的 dev-script 不被误描述成该品牌", () => {
     const e = entry({

@@ -22,10 +22,14 @@ const KNOWN_PROCESSES: ReadonlyArray<
   readonly [RegExp, string, string] | readonly [RegExp, string, string, "path" | "brand"]
 > = [
   // —— 开发服务器 / 框架（先于泛化的 node/python；自身就是 dev-script，身份型）——
-  [/vite/, "Vite 前端开发服务器", "Vite frontend dev server"],
-  [/webpack/, "Webpack 前端开发服务", "Webpack dev server"],
+  // \b 不是可选的：身份型模式也吃 app_label（「项目目录名 · 脚本名」），
+  // 裸 /vite/ 会让 ~/code/invite-portal 被描述成 Vite 开发服务器 ——
+  // 与下面品牌组 spotify-clone 是同一个坑，身份组当初漏了（评审发现）。
+  // 真实 vite 的 app_label / 命令行里，vite 两侧总是 . / - 或空白，仍能命中。
+  [/\bvite\b/, "Vite 前端开发服务器", "Vite frontend dev server"],
+  [/\bwebpack\b/, "Webpack 前端开发服务", "Webpack dev server"],
   [/next dev|next-server|next start/, "Next.js 开发服务器", "Next.js dev server"],
-  [/nuxt/, "Nuxt 开发服务器", "Nuxt dev server"],
+  [/\bnuxt\b/, "Nuxt 开发服务器", "Nuxt dev server"],
   [/uvicorn|gunicorn|fastapi|flask|django/, "Python Web 服务", "Python web service"],
   [/http\.server/, "Python 临时文件服务器", "Python ad-hoc file server"],
   [/jupyter/, "Jupyter 笔记本服务", "Jupyter notebook server"],
