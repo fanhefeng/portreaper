@@ -91,9 +91,12 @@ pub fn update_tray_title(
         #[cfg(windows)]
         {
             use tauri::Manager;
+            // 毒化恢复：语言只是一个 &'static str，持锁 panic 不可能让它处于
+            // 半更新的无效状态。不恢复的话，一次 panic 就让托盘计数此后永久
+            // 报错 —— 与 scan_ports / whitelist 的锁同一套取舍（评审发现）。
             let lang = app
                 .try_state::<crate::TrayLang>()
-                .map(|l| *l.0.lock().unwrap())
+                .map(|l| *l.0.lock().unwrap_or_else(PoisonError::into_inner))
                 .unwrap_or("en");
             let tooltip = match (lang, suspect_count > 0) {
                 ("zh", true) => {
@@ -120,7 +123,8 @@ pub fn set_tray_language(app: tauri::AppHandle, lang: String) -> Result<(), Stri
         "en"
     };
     if let Some(state) = app.try_state::<crate::TrayLang>() {
-        *state.0.lock().unwrap() = lang;
+        // 毒化恢复同上：语言切换失败一次就永久切不动，比脏读糟得多
+        *state.0.lock().unwrap_or_else(PoisonError::into_inner) = lang;
     }
     if let Some(items) = app.try_state::<crate::TrayMenuItems>() {
         let (show, quit) = crate::tray_texts(lang);

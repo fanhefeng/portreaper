@@ -200,6 +200,29 @@ fn detect_lang() -> &'static str {
     }
 }
 
+/// 日志系统**自己**没起来时的最后一道线索。
+///
+/// 这条路径上不能用 `log::` —— 门面还没接上，写进去等于扔掉；而正式版的 `.app`
+/// / Windows 无控制台又都吞 stderr，只 eprintln 相当于没报。故直接落一个固定的
+/// 临时文件，用户和我们都能按图索骥。
+///
+/// 三条自我约束：**只 append 一行**（不做轮转，这个文件只在启动失败时才被写到）、
+/// **写失败就算了**（`let _`）、**不经过任何日志门面** —— 一个报告日志故障的
+/// 函数如果自己也可能触发日志，就会重演 logger.ts 那次自激（46 MB + 打满 CPU）。
+fn log_bootstrap_failure(msg: &str) {
+    eprintln!("{msg}");
+    let path =
+        std::env::temp_dir().join(format!("portreaper-{}-bootstrap.log", paths::env_label()));
+    if let Ok(mut f) = std::fs::OpenOptions::new()
+        .create(true)
+        .append(true)
+        .open(&path)
+    {
+        use std::io::Write;
+        let _ = writeln!(f, "[{}] {msg}", env!("CARGO_PKG_VERSION"));
+    }
+}
+
 /// 分环境日志插件。debug：stdout + 文件、Debug 级（dev 终端能看到，便于调试）；
 /// release：仅文件、Info 级 —— GUI 子系统（main.rs 的 windows_subsystem="windows"）
 /// 无控制台，macOS 的 `.app` 同样吞掉 stdout，故正式版只靠落盘才有故障线索。
@@ -217,7 +240,8 @@ fn build_log_plugin<R: tauri::Runtime>(
 
     let mut builder = Builder::new()
         .level(level)
-        .max_file_size(1_000_000)
+        // 1 MiB —— 与上方注释里的单位一致（曾写 1_000_000，是 1 MB 不是 1 MiB）
+        .max_file_size(1024 * 1024)
         .rotation_strategy(RotationStrategy::KeepOne)
         .target(Target::new(TargetKind::Folder {
             path: log_dir,
@@ -323,10 +347,10 @@ pub fn run() {
             match paths::log_dir(app.handle()) {
                 Ok(dir) => {
                     if let Err(e) = app.handle().plugin(build_log_plugin(dir)) {
-                        eprintln!("failed to init logging: {e}");
+                        log_bootstrap_failure(&format!("failed to init logging: {e}"));
                     }
                 }
-                Err(e) => eprintln!("failed to resolve log dir: {e}"),
+                Err(e) => log_bootstrap_failure(&format!("failed to resolve log dir: {e}")),
             }
             log::info!(
                 "Portreaper {} starting (env={})",

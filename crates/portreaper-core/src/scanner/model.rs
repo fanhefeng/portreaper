@@ -21,7 +21,9 @@ pub struct ProcessEntry {
     pub full_command: String,
     pub exe_path: String,
     pub app_label: String,
-    pub app_category: String, // "installed-app" | "system" | "dev-script" | "user-binary" | "unknown"
+    // identify_app 的全部取值 —— "automation-instance" 曾漏在这份清单外，而它是
+    // classify 的硬豁免与 describe.ts 品牌跳过共同依赖的一档，注释不全就等于骗人
+    pub app_category: String, // "installed-app" | "system" | "dev-script" | "automation-instance" | "user-binary" | "unknown"
     pub parent_chain: Vec<ParentRef>,
     pub launcher_label: String,
     pub user: String,

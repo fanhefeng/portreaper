@@ -29,7 +29,7 @@ tauri-plugin-log = "2" # 统一日志系统（分环境目录 + 大小轮转，�
 # 注：sysinfo / windows 已随 scanner + platform 一并移入 portreaper-core ——
 # GUI 壳本身不做任何进程枚举或终止，不该直接依赖平台 API。
 #
-# 同理刻意**没有** serde / serde_json / once_cell（评审发现的未用依赖，v0.8.2 移除）：
+# 同理刻意**没有** serde / serde_json / once_cell（评审发现的未用依赖，已移除）：
 #   - serde：本 crate 零 derive。命令签名里流动的 ProcessEntry / KillError 都在
 #     portreaper-core 里派生好，#[tauri::command] 的序列化经由 tauri 自己的
 #     serde 重导出完成，不需要这里再直接依赖一份；

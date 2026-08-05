@@ -106,22 +106,13 @@ pub fn assert_matches_tauri(app: &AppHandle) {
 
     for (name, ours, theirs) in cases {
         // Tauri 侧是未分环境的基目录，补上同样的 dev/ 作用域再比
-        let theirs = theirs.map(scoped_like_core);
+        let theirs = theirs.map(portreaper_core::paths::scoped);
         match (ours, theirs) {
             (Some(a), Ok(b)) if a == b => {}
             (a, b) => report(&format!(
                 "{name} 目录漂移：portreaper_core = {a:?}，tauri = {b:?}"
             )),
         }
-    }
-}
-
-/// 复刻 core 的分环境作用域，用于把 Tauri 的基目录调到可比状态。
-fn scoped_like_core(base: PathBuf) -> PathBuf {
-    if cfg!(debug_assertions) {
-        base.join("dev")
-    } else {
-        base
     }
 }
 
