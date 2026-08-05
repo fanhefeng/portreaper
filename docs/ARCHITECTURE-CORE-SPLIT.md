@@ -213,9 +213,23 @@ pub fn env_label() -> &'static str;
 
 防漂移靠 `src-tauri` 侧的一致性测试钉死（见 §6）。
 
-### 5.5 理由文案下沉
+### 5.5 理由文案 —— ~~下沉到 core~~ **方案已推翻，留在 i18n.ts**
 
-`reasons.rs` 成为 ReasonCode 文案的唯一真相源：
+> **实施时推翻了原设计。** 原方案基于「Raycast 要重写一遍翻译」这个前提，而这个
+> 前提是错的：Raycast 扩展住在**同一个仓库**（`integrations/raycast/`），可以直接
+> `import` `src/i18n.ts`。把文案再复制一份进 Rust，等于凭空造出第二份真相源和
+> 第二条漂移路径，还要新写一套守卫去看住它 —— 净负收益。
+>
+> 现行分工：**引擎只输出机器码**（`ReasonCode` / `Confidence` 的 snake_case），
+> 文案是「表达」，属于前端。`check-reason-parity.mjs` 已经保证 Rust 枚举 ↔
+> `i18n.ts` ↔ `model.ts` 三方齐全，新增消费者不改变这个闭环。
+>
+> 只有当出现**非 TypeScript 的前端**（shell 脚本、Alfred workflow）时才需要重开此题，
+> 届时正确的做法多半也是让 CLI 出一个 `reasons --json`，而不是在 Rust 里写死双语文案。
+>
+> 以下为已作废的原设计，保留以便追溯决策过程。
+
+~~`reasons.rs` 成为 ReasonCode 文案的唯一真相源：~~
 
 ```rust
 pub enum Lang { Zh, En }
@@ -311,8 +325,17 @@ Raycast 扩展按顺序找：
 **步骤 3 — 契约化**
 `Scanner` + `CpuSampling`；ts-rs 生成 `contracts/process-entry.d.ts`，`src/model.ts` 改为导入类型、只留纯函数；`reasons.rs` + parity 脚本升级。
 
-**步骤 4 — CLI**
-`portreaper-cli` 四个子命令；`tauri.conf.json` 打包；release 资产校验扩展；`docs/` 补 CLI 用法。
+**步骤 4 — CLI ✅ 已完成（分发方式另议，见下）**
+`portreaper-cli` 四个子命令，手写参数解析（不引入 clap —— 这个二进制要随 `.app` 分发，每个依赖都进用户的下载包；四个子命令手写约 100 行，还能给出贴合语义的错误信息）。
+
+实测（本机真实进程）：
+- `scan` 列出 13 行，揪出 2 个真实的 `http.server · Python` 残留（confirmed，reasons = `ppid1_orphan` + `dev_server_keyword` + `duplicate_dev_server`）；
+- `kill` 三条路径逐一验证：缺 `--start-unix` → exit 2 + 解释为什么它是强制的；错误令牌 → exit 1 + stderr `{"code":"pid_reused"}`；正确令牌 → 进程真正终止；
+- `whitelist add` 落盘到 `~/Library/Application Support/com.fhf.portreaper/dev/whitelist.json` —— **与桌面版同一个文件**，这是整次拆分最关键的一条证明。
+
+实测抓到一个契约 bug：外层 `ScanReport` 起初用了 `rename_all = "camelCase"`，而 `entries` 里的 `ProcessEntry` 是引擎的 serde 输出（snake_case，`src/model.ts` 镜像的正是它）—— 同一份 JSON 两种命名风格。已统一为 snake_case，附带好处是 Raycast 可以直接复用 `src/model.ts` 的类型。
+
+> **未做：随 `.app` 分发。** Tauri 的 `externalBin` / `bundle.resources` 都要求文件在 **dev 时也存在**，会给日常 `pnpm tauri dev` 加一道「必须先构建 CLI」的脆弱前置；而完整 release 流程本地无法彩排，改坏了只有发版当天才知道。故本次不动打包，改由 Raycast 扩展实现完整的二进制发现阶梯（含引导页）。待某次真机验证 release 流程时再补。
 
 **步骤 5 — Raycast 扩展**
 `integrations/raycast/`。此时 core 与契约已稳定，扩展是纯 TS 工作，不再触碰 Rust。
