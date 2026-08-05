@@ -1,8 +1,9 @@
 [package]
 name = "portreaper-core"
-# 版本与应用主版本解耦：这是内部 crate，不单独发布到 crates.io，
-# 故 bump-version.mjs 不管它（该脚本只同步 package.json / tauri.conf.json /
-# src-tauri 的 [package] version 与 Cargo.lock 里 name="portreaper" 的块）。
+# 版本与应用版本解耦，且**刻意如此**：这是不发布的内部库，用户永远看不到它的
+# 版本号，跟着发版走只会每次产生无意义的 diff。判据是「用户能不能看见」——
+# portreaper（安装包）与 portreaper-cli（release 资产）都看得见，故由
+# scripts/bump-version.mjs 同步；本 crate 看不见，故不管。
 version = "0.1.0"
 description = "Portreaper 的孤儿/僵尸进程判定引擎（无 GUI 依赖）"
 authors = ["fhf"]

@@ -7,7 +7,9 @@ import {
   setCargoTomlVersion,
   findCargoTomlVersion,
   setCargoLockVersion,
+  setAllCargoLockVersions,
   findCargoLockVersion,
+  LOCK_CRATE_NAMES,
   setJsonVersion,
 } from "./bump-version.mjs";
 
@@ -110,4 +112,50 @@ test("setCargoLockVersion targets the portreaper block, not portreaper_lib/serde
     "portreaper_lib block untouched (exact-name match)",
   );
   assert.ok(out.includes('name = "serde"\nversion = "1.0.200"'), "serde block untouched");
+});
+
+// ---- 多发布产物：portreaper 与 portreaper-cli 必须一起同步 ----
+// 判据是「用户能不能看见这个版本号」：安装包与 release 里的 CLI 都看得见，
+// 内部库 portreaper-core 看不见。曾经 CLI 自成一套（0.1.0），用户 `--version`
+// 读到的号对应不到任何一个 release。
+
+const MULTI_LOCK = [
+  "[[package]]",
+  'name = "portreaper"',
+  'version = "0.5.1"',
+  "",
+  "[[package]]",
+  'name = "portreaper-cli"',
+  'version = "0.1.0"',
+  "",
+  "[[package]]",
+  'name = "portreaper-core"',
+  'version = "0.1.0"',
+].join("\n");
+
+test("setAllCargoLockVersions 同步全部发布产物，且不碰内部库", () => {
+  const out = setAllCargoLockVersions(MULTI_LOCK, "0.9.0");
+  assert.equal(findCargoLockVersion(out, "portreaper"), "0.9.0");
+  assert.equal(findCargoLockVersion(out, "portreaper-cli"), "0.9.0");
+  assert.equal(
+    findCargoLockVersion(out, "portreaper-core"),
+    "0.1.0",
+    "portreaper-core 不发布，版本不应被同步",
+  );
+});
+
+// 行尾锚定的回归：没有 `$`，正则 `name = "portreaper"` 会连 "portreaper-cli"
+// 的块一起命中，于是两个包都被当成第一个处理 —— 改对一个、漏掉另一个，且不报错。
+test("包名匹配必须精确，portreaper 不得命中 portreaper-cli 的块", () => {
+  const out = setCargoLockVersion(MULTI_LOCK, "0.9.0", "portreaper");
+  assert.equal(findCargoLockVersion(out, "portreaper"), "0.9.0");
+  assert.equal(
+    findCargoLockVersion(out, "portreaper-cli"),
+    "0.1.0",
+    "只改 portreaper 时，portreaper-cli 必须原封不动",
+  );
+});
+
+test("LOCK_CRATE_NAMES 就是发布产物的清单", () => {
+  assert.deepEqual(LOCK_CRATE_NAMES, ["portreaper", "portreaper-cli"]);
 });

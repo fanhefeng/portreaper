@@ -23,9 +23,17 @@ This rewrites the version in all the places that must stay in sync:
 - `package.json`
 - `src-tauri/tauri.conf.json`
 - `src-tauri/Cargo.toml`
-- `Cargo.lock` — 仓库根，**不是** `src-tauri/Cargo.lock`：workspace 根在仓库根，
-  lockfile 属于整个 workspace，而版本号属于 `src-tauri` 这个应用 crate。
-  `crates/portreaper-core` 是不发布的内部 crate，版本与应用版本解耦，不归本脚本管。
+- `crates/portreaper-cli/Cargo.toml`
+- `Cargo.lock` — 仓库根，**不是** `src-tauri/Cargo.lock`（workspace 根在仓库根，
+  lockfile 属于整个 workspace）。其中 `portreaper` 与 `portreaper-cli` 两个包块都会被同步。
+
+哪些 crate 纳入同步，判据是「**用户能不能看见这个版本号**」：
+
+- `portreaper`（安装包）与 `portreaper-cli`（release 资产，用户会下载、会在
+  `--version` 里读到、会拿它报 issue）都看得见 → 必须同步，否则用户报的版本
+  对应不到任何一个 release（v0.8.0 就踩过：CLI 自报 0.1.0）；
+- `crates/portreaper-core` 是不发布的内部库，用户永远看不到 → 刻意不同步，
+  免得每次发版都产生无意义的 diff。
 
 Use a plain semver string (`1.2.0`), no leading `v`.
 

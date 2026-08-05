@@ -5,16 +5,22 @@
 //   node scripts/bump-version.mjs 0.2.0          rewrite the version everywhere
 //   node scripts/bump-version.mjs --check 0.2.0  verify everything already agrees
 //
-// Touches four files (paths are relative to the repo root):
-//   package.json                 .version          (JSON)
-//   src-tauri/tauri.conf.json     .version          (JSON)
-//   src-tauri/Cargo.toml          [package] version (TOML, first match only)
-//   Cargo.lock                    [[package]] name="portreaper" -> version
+// Touches five files (paths are relative to the repo root):
+//   package.json                    .version          (JSON)
+//   src-tauri/tauri.conf.json       .version          (JSON)
+//   src-tauri/Cargo.toml            [package] version (TOML, first match only)
+//   crates/portreaper-cli/Cargo.toml [package] version (TOML)
+//   Cargo.lock                      [[package]] name="portreaper" / "portreaper-cli"
 //
-// Cargo.lock 住在仓库根（workspace 根也在那里），而 Cargo.toml 仍在 src-tauri/ ——
-// 这不是笔误：src-tauri 只是 workspace 的一个成员 crate，lockfile 属于整个
-// workspace。同理，crates/portreaper-core 的版本**不**归本脚本管（它是不发布的
-// 内部 crate，版本与应用版本解耦）。
+// Cargo.lock 住在仓库根（workspace 根也在那里），而各 Cargo.toml 在各自 crate 下 ——
+// 这不是笔误：lockfile 属于整个 workspace，版本号属于各个 crate。
+//
+// 纳入本脚本的判据是「**用户能不能看见这个版本号**」：
+//   - portreaper（桌面应用）与 portreaper-cli 都是**发布产物**（前者是安装包，
+//     后者是 release 资产，用户会下载、会在 --version 里读到它、会拿它报 issue）。
+//     它们的版本必须能对应到某一个 release，故必须同步。
+//   - crates/portreaper-core 是**不发布的内部库**，用户永远看不到它的版本，
+//     故刻意不管 —— 让它按自己的节奏走，避免每次发版都产生无意义的 diff。
 //
 // Zero dependencies. Requires Node >= 18 (ESM, fs/promises).
 
@@ -28,6 +34,7 @@ const ROOT = join(__dirname, "..");
 const PKG_JSON = join(ROOT, "package.json");
 const TAURI_CONF = join(ROOT, "src-tauri", "tauri.conf.json");
 const CARGO_TOML = join(ROOT, "src-tauri", "Cargo.toml");
+const CLI_CARGO_TOML = join(ROOT, "crates", "portreaper-cli", "Cargo.toml");
 const CARGO_LOCK = join(ROOT, "Cargo.lock"); // workspace 根，非 src-tauri/
 
 // semver-ish: major.minor.patch with an optional pre-release/build suffix.
@@ -36,7 +43,8 @@ const CARGO_LOCK = join(ROOT, "Cargo.lock"); // workspace 根，非 src-tauri/
 export const SEMVER_RE =
   /^(?:0|[1-9]\d*)\.(?:0|[1-9]\d*)\.(?:0|[1-9]\d*)(?:-[0-9A-Za-z.-]+)?(?:\+[0-9A-Za-z.-]+)?$/;
 
-const CRATE_NAME = "portreaper";
+/** Cargo.lock 里需要同步版本的包 —— 即所有「用户看得见版本号」的发布产物。 */
+export const LOCK_CRATE_NAMES = ["portreaper", "portreaper-cli"];
 
 function fail(msg) {
   console.error(`error: ${msg}`);
@@ -143,14 +151,14 @@ export function setCargoTomlVersion(raw, version) {
 
 // --- Cargo.lock: rewrite the version of the `portreaper` [[package]] block. -
 
-export function findCargoLockVersion(raw) {
-  const block = findCargoLockBlock(raw);
+export function findCargoLockVersion(raw, crateName = LOCK_CRATE_NAMES[0]) {
+  const block = findCargoLockBlock(raw, crateName);
   if (!block) return undefined;
   const m = block.text.match(/^version\s*=\s*"([^"]*)"/m);
   return m ? m[1] : undefined;
 }
 
-function findCargoLockBlock(raw) {
+function findCargoLockBlock(raw, crateName) {
   // Each entry is `[[package]]\nname = "..."\nversion = "..."\n...`.
   // \r?\n：.gitattributes 已钉 LF，但 Windows 上 autocrlf=true 的旧检出
   // 仍可能是 CRLF —— 容忍它，避免脚本在那种环境响亮失败（评审发现）。
@@ -158,23 +166,34 @@ function findCargoLockBlock(raw) {
   let m;
   while ((m = re.exec(raw)) !== null) {
     const body = m[1];
-    if (new RegExp(`^name\\s*=\\s*"${CRATE_NAME}"\\s*$`, "m").test(body)) {
+    // 行尾 `$` 锚定不可省：没有它，"portreaper" 会连 "portreaper-cli" 的块一起匹配，
+    // 于是两个包都被当成第一个包处理（改对一个、漏掉另一个，且不报错）。
+    if (new RegExp(`^name\\s*=\\s*"${crateName}"\\s*$`, "m").test(body)) {
       return { start: m.index, end: m.index + m[0].length, text: m[0] };
     }
   }
   return null;
 }
 
-export function setCargoLockVersion(raw, version) {
-  const block = findCargoLockBlock(raw);
+export function setCargoLockVersion(raw, version, crateName = LOCK_CRATE_NAMES[0]) {
+  const block = findCargoLockBlock(raw, crateName);
   if (!block) {
-    fail(`could not find [[package]] name = "${CRATE_NAME}" block in Cargo.lock`);
+    fail(`could not find [[package]] name = "${crateName}" block in Cargo.lock`);
   }
   const updated = block.text.replace(/^(version\s*=\s*")[^"]*(")/m, `$1${version}$2`);
   if (updated === block.text) {
-    fail(`could not find version line for "${CRATE_NAME}" in Cargo.lock`);
+    fail(`could not find version line for "${crateName}" in Cargo.lock`);
   }
   return raw.slice(0, block.start) + updated + raw.slice(block.end);
+}
+
+/** 一次性同步 Cargo.lock 里所有发布产物的版本。 */
+export function setAllCargoLockVersions(raw, version) {
+  let out = raw;
+  for (const name of LOCK_CRATE_NAMES) {
+    out = setCargoLockVersion(out, version, name);
+  }
+  return out;
 }
 
 // ---------------------------------------------------------------------------
@@ -182,12 +201,17 @@ export function setCargoLockVersion(raw, version) {
 async function collect() {
   const [pkg, conf] = await Promise.all([readJsonVersion(PKG_JSON), readJsonVersion(TAURI_CONF)]);
   const tomlRaw = await readFile(CARGO_TOML, "utf8");
+  const cliTomlRaw = await readFile(CLI_CARGO_TOML, "utf8");
   const lockRaw = await readFile(CARGO_LOCK, "utf8");
   return [
     { name: "package.json", version: pkg },
     { name: "src-tauri/tauri.conf.json", version: conf },
     { name: "src-tauri/Cargo.toml", version: findCargoTomlVersion(tomlRaw) },
-    { name: "Cargo.lock", version: findCargoLockVersion(lockRaw) },
+    { name: "crates/portreaper-cli/Cargo.toml", version: findCargoTomlVersion(cliTomlRaw) },
+    ...LOCK_CRATE_NAMES.map((n) => ({
+      name: `Cargo.lock [${n}]`,
+      version: findCargoLockVersion(lockRaw, n),
+    })),
   ];
 }
 
@@ -213,14 +237,18 @@ async function runBump(version) {
   const tomlRaw = await readFile(CARGO_TOML, "utf8");
   await writeFile(CARGO_TOML, setCargoTomlVersion(tomlRaw, version));
 
+  const cliTomlRaw = await readFile(CLI_CARGO_TOML, "utf8");
+  await writeFile(CLI_CARGO_TOML, setCargoTomlVersion(cliTomlRaw, version));
+
   const lockRaw = await readFile(CARGO_LOCK, "utf8");
-  await writeFile(CARGO_LOCK, setCargoLockVersion(lockRaw, version));
+  await writeFile(CARGO_LOCK, setAllCargoLockVersions(lockRaw, version));
 
   console.log(`Bumped version to ${version} in:`);
   console.log("  package.json");
   console.log("  src-tauri/tauri.conf.json");
   console.log("  src-tauri/Cargo.toml");
-  console.log("  Cargo.lock");
+  console.log("  crates/portreaper-cli/Cargo.toml");
+  console.log(`  Cargo.lock (${LOCK_CRATE_NAMES.join(", ")})`);
 }
 
 async function main() {
