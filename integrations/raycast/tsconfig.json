@@ -14,5 +14,8 @@
     "isolatedModules": true,
     "resolveJsonModule": true
   },
-  "include": ["src/**/*"]
+  // raycast-env.d.ts 由 `ray build` 从 package.json 的 preferences 生成，
+  // 提供全局 `Preferences` 类型。纳入编译范围后，偏好项的类型就无需手写镜像
+  // —— 改了 package.json 而忘记改类型，tsc 会直接报错。
+  "include": ["src/**/*", "raycast-env.d.ts"]
 }

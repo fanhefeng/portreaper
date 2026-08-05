@@ -63,6 +63,55 @@ export function checkAssetNames({ releaseSrc, websiteSrc, readmeSrc }) {
   return errors;
 }
 
+/**
+ * portreaper-cli 的稳定资产名：release.yml 的 `cli_asset` ↔ Raycast 扩展的
+ * `CLI_ASSETS` 必须完全一致（纯函数，可测）。
+ *
+ * 与上面 dmg/exe 的校验是同一类问题、更高的代价：扩展**在用户机器上**按这些名字
+ * 去 GitHub Release 下载引擎，改了一边就是 404 —— 而且不是「下载按钮坏了」这种
+ * 一眼可见的故障，是「扩展装好了却起不来」。校验和文件名同理，少了它扩展就没法
+ * 验完整性（Raycast Store 明确要求 hash verification）。
+ */
+export function checkCliAssetNames({ releaseSrc, installSrc }) {
+  const errors = [];
+  // `^\s+cli_asset:` 而非裸 `cli_asset:` —— 后者会把解释这个字段的**注释行**
+  // （`# cli_asset: the STABLE name ...`）也当成一条配置，抓出个 "the" 来。
+  // 自测里有一条就钉这个（守卫自身的 bug 同样会让门禁说谎）。
+  const fromRelease = new Set(
+    [...releaseSrc.matchAll(/^\s+cli_asset:\s*(\S+)/gm)].map((m) => m[1].trim()),
+  );
+  // 扩展侧：CLI_ASSETS 映射表的值 + 校验和文件常量
+  const fromExt = new Set(
+    [...installSrc.matchAll(/"(portreaper-cli-(?:macos|windows)[A-Za-z0-9.-]*)"/g)].map(
+      (m) => m[1],
+    ),
+  );
+
+  if (fromRelease.size === 0) {
+    errors.push("release.yml 中未找到任何 cli_asset（matrix 字段被改名？提取正则失效？）");
+  }
+  if (fromExt.size === 0) {
+    errors.push("Raycast 扩展的 install.ts 中未找到任何 portreaper-cli-* 资产名");
+  }
+  if (!setEq(fromRelease, fromExt)) {
+    errors.push(
+      `portreaper-cli 资产名不一致：release.yml [${fmt(fromRelease)}] vs ` +
+        `integrations/raycast/src/install.ts [${fmt(fromExt)}] —— ` +
+        `扩展会按这些名字去 GitHub Release 下载引擎，对不上即 404（扩展装好却起不来）`,
+    );
+  }
+
+  // 校验和文件：release.yml 生成它，扩展消费它。两侧都必须提到同一个名字。
+  const SUMS = "portreaper-cli-SHA256SUMS";
+  if (!releaseSrc.includes(SUMS)) {
+    errors.push(`release.yml 未产出 ${SUMS}（扩展无法校验下载完整性）`);
+  }
+  if (!installSrc.includes(SUMS)) {
+    errors.push(`install.ts 未引用 ${SUMS}`);
+  }
+  return errors;
+}
+
 /** website 字典：执行 i18n.js（自家代码）拿到 window.I18N。 */
 function loadWebsiteDict(i18nSrc) {
   const sandbox = {};
@@ -114,11 +163,16 @@ export function checkWebsiteI18n({ i18nSrc, websiteSrc, mainJsSrc = "" }) {
 if (process.argv[1] && pathToFileURL(realpathSync(process.argv[1])).href === import.meta.url) {
   const root = join(dirname(fileURLToPath(import.meta.url)), "..");
   const websiteSrc = readFileSync(join(root, "website/index.html"), "utf8");
+  const releaseSrc = readFileSync(join(root, ".github/workflows/release.yml"), "utf8");
   const errors = [
     ...checkAssetNames({
-      releaseSrc: readFileSync(join(root, ".github/workflows/release.yml"), "utf8"),
+      releaseSrc,
       websiteSrc,
       readmeSrc: readFileSync(join(root, "README.md"), "utf8"),
+    }),
+    ...checkCliAssetNames({
+      releaseSrc,
+      installSrc: readFileSync(join(root, "integrations/raycast/src/install.ts"), "utf8"),
     }),
     ...checkWebsiteI18n({
       i18nSrc: readFileSync(join(root, "website/i18n.js"), "utf8"),
@@ -131,5 +185,7 @@ if (process.argv[1] && pathToFileURL(realpathSync(process.argv[1])).href === imp
     console.error(`\n发布资产名 / website i18n parity check FAILED (${errors.length}).`);
     process.exit(1);
   }
-  console.log("✓ release assets OK — 稳定资产名三处一致，website 字典键双语齐全且无悬空引用");
+  console.log(
+    "✓ release assets OK — 安装包与 CLI 的稳定资产名各方一致，website 字典键双语齐全且无悬空引用",
+  );
 }

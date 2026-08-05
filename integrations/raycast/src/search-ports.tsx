@@ -21,8 +21,10 @@ import {
   List,
   Toast,
   confirmAlert,
+  environment,
   getPreferenceValues,
   showToast,
+  Keyboard,
 } from "@raycast/api";
 
 import {
@@ -33,15 +35,16 @@ import {
   kill,
   resolveCliPath,
   scan,
+  searchedLocations,
   verifyCli,
   whitelist,
   whitelistKey,
 } from "./cli";
-
-type Prefs = { cliPath?: string };
+import { ChecksumMismatchError, UnsupportedPlatformError, installCli } from "./install";
 
 type State =
   | { kind: "loading" }
+  | { kind: "installing"; step: string }
   | { kind: "ready"; cliPath: string; entries: ProcessEntry[] }
   | { kind: "no-cli"; searched: string[] }
   | { kind: "error"; message: string };
@@ -59,38 +62,66 @@ export default function SearchPorts() {
   const [showDetail, setShowDetail] = useState(true);
 
   async function load() {
-    const prefs = getPreferenceValues<Prefs>();
-    const searched = [
-      prefs.cliPath?.trim() || "(preference not set)",
-      "/Applications/Portreaper.app/Contents/MacOS/portreaper-cli",
-      "~/.cargo/bin/portreaper-cli",
-      "$PATH",
-    ];
+    const prefs = getPreferenceValues<Preferences.SearchPorts>();
+    const supportPath = environment.supportPath;
+    const searched = searchedLocations(prefs.cliPath, supportPath);
     try {
-      const cliPath = resolveCliPath(prefs.cliPath);
+      let cliPath = resolveCliPath(prefs.cliPath, supportPath);
+      if (cliPath === null) {
+        // 首次使用：自己把引擎取回来。Raycast Store 不允许把安装工作丢给用户，
+        // 允许的是「从可信源下载 + 校验完整性」——见 install.ts。
+        setState({ kind: "installing", step: "Preparing…" });
+        cliPath = await installCli(supportPath, (step) => setState({ kind: "installing", step }));
+      }
       await verifyCli(cliPath, searched);
       const report = await scan(cliPath);
       setState({ kind: "ready", cliPath, entries: report.entries });
     } catch (e) {
       if (e instanceof CliNotFoundError) {
         setState({ kind: "no-cli", searched: e.searched });
+      } else if (e instanceof UnsupportedPlatformError) {
+        setState({
+          kind: "error",
+          message: `${e.message}. Portreaper ships macOS (arm64/x64) and Windows x64 builds only.`,
+        });
+      } else if (e instanceof ChecksumMismatchError) {
+        // 校验不过绝不退化成「那就直接用吧」——这是安全边界，不是体验问题。
+        setState({
+          kind: "error",
+          message:
+            "The downloaded engine failed its SHA-256 check and was discarded. " +
+            "Check your network (a proxy may be rewriting the download) and retry.",
+        });
       } else if (e instanceof SchemaMismatchError) {
         setState({
           kind: "error",
           message: `${e.message}. Update this extension (or the CLI) so both speak the same contract.`,
         });
       } else {
-        setState({ kind: "error", message: e instanceof Error ? e.message : String(e) });
+        setState({
+          kind: "error",
+          message: e instanceof Error ? e.message : String(e),
+        });
       }
     }
   }
 
+  // 只在首次挂载时扫描；后续刷新走 Action（避免每次渲染都 spawn 一个进程）
   useEffect(() => {
     void load();
-    // 只在首次挂载时扫描；后续刷新走 Action（避免每次渲染都 spawn 一个进程）
-    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
+  if (state.kind === "installing") {
+    return (
+      <List isLoading>
+        <List.EmptyView
+          icon={Icon.Download}
+          title="Setting up portreaper-cli"
+          description={`${state.step}\n\nDownloading the classification engine from the project's GitHub release and verifying its SHA-256 checksum. This happens once.`}
+        />
+      </List>
+    );
+  }
   if (state.kind === "no-cli") {
     return <NotFoundView searched={state.searched} onRetry={load} />;
   }
@@ -176,7 +207,10 @@ function Row({ entry, ...shared }: { entry: ProcessEntry } & SharedProps) {
   }
   if (entry.is_zombie_suspect) {
     accessories.push({
-      tag: { value: entry.confidence, color: CONFIDENCE_COLOR[entry.confidence] },
+      tag: {
+        value: entry.confidence,
+        color: CONFIDENCE_COLOR[entry.confidence],
+      },
     });
   }
   // 子树 CPU 而非行内 CPU：headless 浏览器把 CPU 全烧在子进程里，
@@ -272,7 +306,10 @@ function Actions({
     });
     if (!ok) return;
 
-    const toast = await showToast({ style: Toast.Style.Animated, title: "Terminating…" });
+    const toast = await showToast({
+      style: Toast.Style.Animated,
+      title: "Terminating…",
+    });
     try {
       await kill(cliPath, entry.pid, entry.start_unix, force);
       toast.style = Toast.Style.Success;
@@ -287,7 +324,10 @@ function Actions({
 
   async function toggleStar() {
     const action = entry.is_whitelisted ? "remove" : "add";
-    const toast = await showToast({ style: Toast.Style.Animated, title: "Saving…" });
+    const toast = await showToast({
+      style: Toast.Style.Animated,
+      title: "Saving…",
+    });
     try {
       await whitelist(cliPath, action, whitelistKey(entry));
       toast.style = Toast.Style.Success;
@@ -321,13 +361,13 @@ function Actions({
         <Action
           title={entry.is_whitelisted ? "Remove Star" : "Star (Exempt from Suspicion)"}
           icon={Icon.Star}
-          shortcut={{ modifiers: ["cmd"], key: "s" }}
+          shortcut={Keyboard.Shortcut.Common.Save}
           onAction={toggleStar}
         />
         <Action
           title="Refresh"
           icon={Icon.ArrowClockwise}
-          shortcut={{ modifiers: ["cmd"], key: "r" }}
+          shortcut={Keyboard.Shortcut.Common.Refresh}
           onAction={onChanged}
         />
         <Action
@@ -348,30 +388,33 @@ function Actions({
   );
 }
 
+/**
+ * 只有在「自动安装也失败了」之后才会看到这一页 —— 正常路径是静默下载并校验。
+ * 到这里说明二进制存在但跑不起来（架构不符 / 被安全策略拦下 / 偏好路径写错）。
+ */
 function NotFoundView({ searched, onRetry }: { searched: string[]; onRetry: () => void }) {
   const md = [
-    "# portreaper-cli not found",
+    "# Could not run portreaper-cli",
     "",
-    "This extension drives the same engine as the Portreaper desktop app — it needs the",
-    "`portreaper-cli` binary to talk to it.",
-    "",
-    "**Looked in:**",
+    "The extension drives the same engine as the Portreaper desktop app. It tried the",
+    "locations below, and none of them produced a working binary.",
     "",
     ...searched.map((s) => `- \`${s}\``),
     "",
-    "**How to get it:**",
+    "Retrying will re-download the engine and verify its checksum. If that keeps failing,",
+    "build it yourself and point the extension preference at the result:",
     "",
-    "- Build from the repo: `cargo build --release -p portreaper-cli`, then point the",
-    "  extension preference at `target/release/portreaper-cli`",
-    "- Or install it on your `PATH`: `cargo install --path crates/portreaper-cli`",
+    "```",
+    "cargo build --release -p portreaper-cli",
+    "```",
   ].join("\n");
 
   return (
-    <List>
-      <List.EmptyView
+    <List isShowingDetail>
+      <List.Item
         icon={{ source: Icon.QuestionMark, tintColor: Color.Orange }}
-        title="portreaper-cli not found"
-        description={md}
+        title="Could not run portreaper-cli"
+        detail={<List.Item.Detail markdown={md} />}
         actions={
           <ActionPanel>
             <Action title="Retry" icon={Icon.ArrowClockwise} onAction={onRetry} />

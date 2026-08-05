@@ -34,10 +34,30 @@ cargo build --release -p portreaper-cli
 ## 开发
 
 ```bash
-pnpm install --ignore-workspace   # 本目录独立于主仓库的 pnpm workspace
-pnpm exec tsc --noEmit            # 类型检查
-pnpm dev                          # ray develop（需要本机装有 Raycast）
+npm install            # 本目录独立于主仓库的 pnpm workspace
+npm run typecheck      # tsc --noEmit
+npm run dev            # ray develop（需要本机装有 Raycast）
+npm run build          # ray build —— 提交 Store 前必须通过
 ```
+
+**为什么这里用 npm 而主仓库用 pnpm**：Raycast Store 要求扩展提交 `package-lock.json`
+（官方 CI 用 npm 构建）。这是唯一的例外，不影响仓库其余部分。
+
+**为什么不装 ESLint / Prettier**：本仓库的格式与 lint 统一由 Vite+ 工具链
+（`vp check` = oxfmt + oxlint）负责，扩展代码也在其覆盖范围内。Raycast 官方模板
+默认带 ESLint + Prettier，但两者都**不是** Store 的硬性要求 —— 未安装时
+`ray lint` 只会 warn 一句并跳过格式检查，真正的硬指标（`package.json` 字段、
+图标规格）照常校验，`ray build` 也照常通过。
+
+装上它们的代价是实打实的：Prettier 与 oxfmt 功能重叠、换行风格不同，同管一批文件
+会在 `vp check --fix` 和 `ray lint --fix` 之间来回改写，逼得整个目录必须从主仓库的
+格式门禁里排除 —— 在一个把「格式门禁统一」当教训写进 CLAUDE.md 的仓库里凿一个飞地，
+不划算。（另注：Prettier 是被 `@raycast/eslint-config` 当传递依赖拖进来的，
+只卸 prettier 没用，得连 eslint 一起去掉才会真正消失。）
+
+**残余风险**：官方文档提到 lint 检查「之后也会通过 GitHub 自动检查跑一遍」。若
+Store 的 CI 用它自带的 Prettier 检查代码风格，PR 可能被标记格式问题。届时的处置是
+提交前单跑一次 `ray lint --fix`，而不是把这套工具链常驻进仓库。
 
 ## 与桌面版共享状态
 

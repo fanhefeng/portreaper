@@ -11,6 +11,8 @@ import { existsSync } from "node:fs";
 import { homedir } from "node:os";
 import { promisify } from "node:util";
 
+import { installedCliPath } from "./install";
+
 const execFileAsync = promisify(execFile);
 
 /** CLI 的 JSON 契约主版本。不匹配时停下并提示升级，绝不照着渲染错乱的行。 */
@@ -83,17 +85,25 @@ export class SchemaMismatchError extends Error {
  * 二进制发现阶梯，顺序即优先级：
  *
  * 1. 用户在扩展偏好里显式指定的路径 —— 永远最高，用于非常规安装位置；
- * 2. 已安装的桌面版 `.app` 内 —— 装了 Portreaper 就自动具备（打包尚未落地，
- *    见 docs/ARCHITECTURE-CORE-SPLIT.md 步骤 4；路径先留着，补上打包即生效）；
- * 3. 从源码构建的产物 —— 开发者在本仓库 `cargo build` 后立刻可用；
- * 4. `PATH` 里的 `portreaper-cli` —— `cargo install` / 未来的 brew tap。
+ * 2. 扩展自己下载并校验过的副本（supportPath）—— 常规用户走的就是这条；
+ * 3. 已安装的桌面版 `.app` 内 —— 打包尚未落地，路径先留着，补上即生效；
+ * 4. 从源码构建的产物 —— 开发者在本仓库 `cargo build` 后立刻可用；
+ * 5. `cargo install` 的产物 / `PATH`。
  *
- * 全部落空时抛 CliNotFoundError 并带上找过的位置，让引导页能说清「我找过哪儿」。
+ * 全部落空时返回 null，由调用方触发自动安装（Raycast Store 不允许把安装工作
+ * 丢给用户，见 install.ts 的说明）。
  */
-export function resolveCliPath(preferredPath: string | undefined, repoRoot?: string): string {
+export function resolveCliPath(
+  preferredPath: string | undefined,
+  supportPath?: string,
+  repoRoot?: string,
+): string | null {
   const candidates: string[] = [];
   if (preferredPath && preferredPath.trim() !== "") {
     candidates.push(preferredPath.trim());
+  }
+  if (supportPath) {
+    candidates.push(installedCliPath(supportPath));
   }
   candidates.push("/Applications/Portreaper.app/Contents/MacOS/portreaper-cli");
   if (repoRoot) {
@@ -105,12 +115,20 @@ export function resolveCliPath(preferredPath: string | undefined, repoRoot?: str
   for (const c of candidates) {
     if (existsSync(c)) return c;
   }
-  // 最后一搏：交给 PATH 解析（execFile 会自行查找）。这里无法用 existsSync 判断，
-  // 故不加入 candidates 的存在性检查，而是直接返回裸名字让 spawn 去试。
-  return "portreaper-cli";
+  return null;
 }
 
-/** 裸名字意味着「指望 PATH 能找到」——用它跑一次 --version 来确认真的能跑。 */
+/** 候选位置的人类可读清单 —— 引导页据此说清「我找过哪儿」。 */
+export function searchedLocations(preferredPath: string | undefined, supportPath?: string) {
+  return [
+    preferredPath?.trim() || "(preference not set)",
+    supportPath ? installedCliPath(supportPath) : "(extension support path)",
+    "/Applications/Portreaper.app/Contents/MacOS/portreaper-cli",
+    `${homedir()}/.cargo/bin/portreaper-cli`,
+  ];
+}
+
+/** 路径存在 ≠ 能跑（架构不符、文件损坏、缺执行位）——用一次 --version 确认。 */
 export async function verifyCli(cliPath: string, searched: string[]): Promise<void> {
   try {
     await execFileAsync(cliPath, ["--version"], { timeout: 5000 });
