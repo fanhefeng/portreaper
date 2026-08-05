@@ -101,8 +101,77 @@ pub(crate) fn legacy_whitelist_key(exe_path: &str, command: &str) -> String {
     }
 }
 
-pub fn scan(whitelist: &[String]) -> Vec<ProcessEntry> {
-    let collected = platform_impl::collect();
+/// CPU 百分比的采样策略 —— 只对 Windows 有实际影响。
+///
+/// Windows 的 `cpu_percent` 是 sysinfo **两次 refresh 之间**的增量：常驻 GUI 每
+/// 2 秒轮询一次，采样区间由轮询本身天然提供（首屏显示 0% 是既定设计）。但一次性
+/// 调用者（CLI / Raycast）冷启动只会 refresh 一次 —— 不预热的话**每一行的 CPU
+/// 都恒为 0%**，而「这个残留进程正在烧 CPU」恰是用户最想看到的信息之一。
+///
+/// macOS 不受影响：`pcpu` 由 `ps` 直接给出，与采样区间无关。
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum CpuSampling {
+    /// 不预热，最快。Windows 上 CPU 一律为 0%。
+    Skip,
+    /// 先刷一次进程表，等待 `interval` 后再正式采集。200ms 足够拿到可信读数。
+    Interval(std::time::Duration),
+}
+
+impl Default for CpuSampling {
+    fn default() -> Self {
+        Self::Interval(std::time::Duration::from_millis(200))
+    }
+}
+
+/// 一个可复用的扫描器 —— **持有平台状态**，连续调用之间的间隔即 Windows 的
+/// CPU 采样区间。
+///
+/// 常驻前端（桌面 GUI）应当持有一个实例反复 `scan()`，语义与拆分前的进程级
+/// `OnceLock<Mutex<System>>` 完全一致；一次性调用者用 [`scan_once`] 更省心。
+pub struct Scanner {
+    state: platform_impl::PlatformState,
+}
+
+impl Scanner {
+    pub fn new() -> Self {
+        Self {
+            state: platform_impl::PlatformState::new(),
+        }
+    }
+
+    /// 预热 CPU 采样基线（Windows 有效，macOS 是 no-op）。
+    /// 通常不用手动调用 —— [`scan_once`] 会按 [`CpuSampling`] 代劳。
+    pub fn warm_up(&mut self) {
+        self.state.warm_up();
+    }
+
+    pub fn scan(&mut self, whitelist: &[String]) -> Vec<ProcessEntry> {
+        let collected = self.state.collect();
+        scan_from(collected, whitelist)
+    }
+}
+
+impl Default for Scanner {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+/// 一次性扫描：建临时 [`Scanner`]，按 `cpu` 决定要不要为 CPU 读数付预热成本。
+///
+/// 这是 CLI / 脚本的入口。常驻前端**不要**用它 —— 每次新建 Scanner 会丢掉
+/// Windows 的采样区间，CPU 列会永远是 0%。
+pub fn scan_once(whitelist: &[String], cpu: CpuSampling) -> Vec<ProcessEntry> {
+    let mut scanner = Scanner::new();
+    if let CpuSampling::Interval(d) = cpu {
+        scanner.warm_up();
+        std::thread::sleep(d);
+    }
+    scanner.scan(whitelist)
+}
+
+/// 纯编排：从一次已完成的平台采集产出最终行集合。与采集解耦，便于两个入口共用。
+fn scan_from(collected: Collected, whitelist: &[String]) -> Vec<ProcessEntry> {
     let procs = &collected.procs;
 
     let mut entries = Vec::new();
@@ -692,7 +761,8 @@ mod live_smoke {
     #[test]
     #[ignore]
     fn live_scan() {
-        let entries = super::scan(&[]);
+        // 走 scan_once + 预热：真机冒烟应当看到与 CLI 相同的读数（含 CPU）
+        let entries = super::scan_once(&[], super::CpuSampling::default());
         // 「行」而非「监听者」：v0.6.0 起第二条扫描路径会带进无端口的孤儿 dev 进程
         let orphans = entries.iter().filter(|e| e.ports.is_empty()).count();
         println!(

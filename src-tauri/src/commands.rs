@@ -1,15 +1,31 @@
-use portreaper_core::{platform, scanner};
+use std::sync::{Mutex, PoisonError};
+
+use portreaper_core::{platform, scanner, Scanner};
+use tauri::{AppHandle, Manager};
 
 use crate::whitelist;
+
+/// 常驻扫描器 —— 由 `lib.rs` 注册为 Tauri 托管状态。
+///
+/// **必须跨轮询存活**：Windows 的 CPU 百分比是 sysinfo 两次 refresh 之间的增量，
+/// 前端每 2 秒的轮询正是它的采样区间。若改成每次新建 Scanner，Windows 上每一行
+/// 的 CPU 都会永远是 0%（拆分前这份状态是 scanner 内部的进程级 static，语义相同、
+/// 只是不可见）。
+pub struct ScannerState(pub Mutex<Scanner>);
 
 /// async + spawn_blocking（评审发现）：Tauri 2 的非 async 命令在主线程执行，
 /// scan() 每 2s shell 出 lsof + 两次 ps + launchctl（几十到几百毫秒）会周期性
 /// 阻塞事件循环（托盘/窗口事件卡顿）。挪到阻塞线程池，主线程零占用。
 #[tauri::command]
-pub async fn scan_ports() -> Result<Vec<scanner::ProcessEntry>, String> {
-    tauri::async_runtime::spawn_blocking(|| {
+pub async fn scan_ports(app: AppHandle) -> Result<Vec<scanner::ProcessEntry>, String> {
+    tauri::async_runtime::spawn_blocking(move || {
         let wl = whitelist::get_all();
-        scanner::scan(&wl)
+        // 毒化恢复：scan 中途 panic 一次不应让后续每轮轮询永久 panic（前端表现为
+        // 永远 ERR_SCAN_TIMEOUT）。Scanner 内部只是采集缓存，半更新状态可安全续用
+        // —— 拆分前这段恢复逻辑在 windows.rs 的 System 锁上，语义原样搬来。
+        let state = app.state::<ScannerState>();
+        let mut scanner = state.0.lock().unwrap_or_else(PoisonError::into_inner);
+        scanner.scan(&wl)
     })
     .await
     .map_err(|e| format!("scan task failed: {e}"))

@@ -278,82 +278,103 @@ fn cmd_output(program: &str, args: &[&str]) -> Option<String> {
     Some(String::from_utf8_lossy(&output.stdout).into_owned())
 }
 
-pub(crate) fn collect() -> Collected {
-    let now = SystemTime::now()
-        .duration_since(UNIX_EPOCH)
-        .map(|d| d.as_secs())
-        .unwrap_or(0);
+/// 一次扫描会话的平台状态 —— macOS 侧无需持有任何东西。
+///
+/// 与 Windows 的 [`super::windows::PlatformState`] 保持相同的形状（编译期多态，
+/// 无 trait）：那边持有 `sysinfo::System` 是因为 CPU 百分比来自两次 refresh 的
+/// 增量；这边的 `pcpu` 由 `ps` 每次直接给出，天生无状态，故 `warm_up` 是 no-op。
+pub(crate) struct PlatformState;
 
-    let listeners = parse_lsof(
-        &cmd_output("lsof", &["-iTCP", "-sTCP:LISTEN", "-P", "-n", "-FpcLn"]).unwrap_or_default(),
-    );
-    let comm_map = parse_comm(&cmd_output("ps", &["-A", "-o", "pid=,comm="]).unwrap_or_default());
-    let procs = parse_ps(
-        &cmd_output(
-            "ps",
-            &[
-                "-A",
-                "-o",
-                "pid=,ppid=,state=,tty=,etime=,pcpu=,rss=,user=,command=",
-            ],
-        )
-        .unwrap_or_default(),
-        &comm_map,
-        now,
-    );
-    let launchd_pids = parse_launchctl(&cmd_output("launchctl", &["list"]).unwrap_or_default());
+impl PlatformState {
+    pub(crate) fn new() -> Self {
+        Self
+    }
 
-    // 仅查监听者的 cwd（一次 lsof，~15 个 PID）：重复 dev server 检测的证据
-    let pid_csv = listeners
-        .iter()
-        .map(|l| l.pid.to_string())
-        .collect::<Vec<_>>()
-        .join(",");
-    let cwds = if pid_csv.is_empty() {
-        HashMap::new()
-    } else {
-        parse_cwd(
-            &cmd_output("lsof", &["-a", "-p", &pid_csv, "-d", "cwd", "-Fpn"]).unwrap_or_default(),
-        )
-    };
+    /// macOS 的 CPU 读数不依赖采样区间，无需预热。
+    pub(crate) fn warm_up(&mut self) {}
+}
 
-    // 自动化实例的存活性证据（KNOWN-GAPS Gap 1/A2）：调试端口只 LISTEN、零
-    // ESTABLISHED 才是真正的「无人认领」。**只对命令行呈现为自动化实例的 PID**
-    // 再查一次 lsof —— 日常这个集合为空 ⇒ 零额外开销；刻意不放宽上面那次
-    // `-sTCP:LISTEN` 过滤：那会把全机所有 TCP 连接拉进本项目最贵的一次调用。
-    let automation_csv = procs
-        .iter()
-        .filter(|(_, m)| super::identify::is_automation_instance(&m.full_command))
-        .map(|(pid, _)| pid.to_string())
-        .collect::<Vec<_>>()
-        .join(",");
-    let established_local_ports = if automation_csv.is_empty() {
-        HashMap::new()
-    } else {
-        parse_established(
+impl PlatformState {
+    pub(crate) fn collect(&mut self) -> Collected {
+        let now = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .map(|d| d.as_secs())
+            .unwrap_or(0);
+
+        let listeners = parse_lsof(
+            &cmd_output("lsof", &["-iTCP", "-sTCP:LISTEN", "-P", "-n", "-FpcLn"])
+                .unwrap_or_default(),
+        );
+        let comm_map =
+            parse_comm(&cmd_output("ps", &["-A", "-o", "pid=,comm="]).unwrap_or_default());
+        let procs = parse_ps(
             &cmd_output(
-                "lsof",
+                "ps",
                 &[
-                    "-a",
-                    "-p",
-                    &automation_csv,
-                    "-iTCP",
-                    "-sTCP:ESTABLISHED",
-                    "-P",
-                    "-n",
-                    "-Fpn",
+                    "-A",
+                    "-o",
+                    "pid=,ppid=,state=,tty=,etime=,pcpu=,rss=,user=,command=",
                 ],
             )
             .unwrap_or_default(),
-        )
-    };
+            &comm_map,
+            now,
+        );
+        let launchd_pids = parse_launchctl(&cmd_output("launchctl", &["list"]).unwrap_or_default());
 
-    Collected {
-        listeners,
-        procs,
-        launchd_pids,
-        cwds,
-        established_local_ports,
+        // 仅查监听者的 cwd（一次 lsof，~15 个 PID）：重复 dev server 检测的证据
+        let pid_csv = listeners
+            .iter()
+            .map(|l| l.pid.to_string())
+            .collect::<Vec<_>>()
+            .join(",");
+        let cwds = if pid_csv.is_empty() {
+            HashMap::new()
+        } else {
+            parse_cwd(
+                &cmd_output("lsof", &["-a", "-p", &pid_csv, "-d", "cwd", "-Fpn"])
+                    .unwrap_or_default(),
+            )
+        };
+
+        // 自动化实例的存活性证据（KNOWN-GAPS Gap 1/A2）：调试端口只 LISTEN、零
+        // ESTABLISHED 才是真正的「无人认领」。**只对命令行呈现为自动化实例的 PID**
+        // 再查一次 lsof —— 日常这个集合为空 ⇒ 零额外开销；刻意不放宽上面那次
+        // `-sTCP:LISTEN` 过滤：那会把全机所有 TCP 连接拉进本项目最贵的一次调用。
+        let automation_csv = procs
+            .iter()
+            .filter(|(_, m)| super::identify::is_automation_instance(&m.full_command))
+            .map(|(pid, _)| pid.to_string())
+            .collect::<Vec<_>>()
+            .join(",");
+        let established_local_ports = if automation_csv.is_empty() {
+            HashMap::new()
+        } else {
+            parse_established(
+                &cmd_output(
+                    "lsof",
+                    &[
+                        "-a",
+                        "-p",
+                        &automation_csv,
+                        "-iTCP",
+                        "-sTCP:ESTABLISHED",
+                        "-P",
+                        "-n",
+                        "-Fpn",
+                    ],
+                )
+                .unwrap_or_default(),
+            )
+        };
+
+        Collected {
+            listeners,
+            procs,
+            launchd_pids,
+            cwds,
+            established_local_ports,
+        }
     }
 }
 

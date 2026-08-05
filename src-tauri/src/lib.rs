@@ -375,6 +375,11 @@ pub fn run() {
                 dir,
                 quit: quit_item,
             });
+            // 常驻扫描器：必须跨轮询存活，否则 Windows 的 CPU 列恒为 0%
+            // （采样区间就是两次 scan 之间的间隔，详见 commands::ScannerState）
+            app.manage(commands::ScannerState(Mutex::new(
+                portreaper_core::Scanner::new(),
+            )));
 
             // 托盘图标：macOS 用专用单色 template 图（纯黑+透明，系统按菜单栏明暗自动反色）。
             // 复用彩色应用图标会被 icon_as_template 压成糊在一起的剪影，故单独嵌入 tray.png；

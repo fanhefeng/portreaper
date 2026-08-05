@@ -16,5 +16,5 @@ pub mod scanner;
 pub mod whitelist;
 
 pub use platform::{kill, KillError};
-pub use scanner::{scan, ProcessEntry};
+pub use scanner::{scan_once, CpuSampling, ProcessEntry, Scanner};
 pub use whitelist::Whitelist;
