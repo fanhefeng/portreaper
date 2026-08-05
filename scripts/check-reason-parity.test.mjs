@@ -63,6 +63,7 @@ test("枚举变体带行内注释仍能被解析（旧正则的静默漏检面�
     /^(\s+)Defunct,\s*$/m,
     "$1Defunct, // inline comment",
   );
+  assert.notEqual(classifySrc, real.classifySrc, "突变未生效：Defunct 的行形态已变，用例形同虚设");
   // 解析未漏 Defunct ⇒ 校验结果与基线一致（仍为空）
   assert.deepEqual(checkParity({ ...real, classifySrc }), []);
 });
@@ -70,7 +71,24 @@ test("枚举变体带行内注释仍能被解析（旧正则的静默漏检面�
 test("末位变体不带尾逗号仍能被解析（旧正则的静默漏检面）", () => {
   // 把 JustReparented 的尾逗号去掉（手写常见形态，rustfmt 跑过才会补回）
   const classifySrc = real.classifySrc.replace(/JustReparented,/, "JustReparented");
+  assert.notEqual(classifySrc, real.classifySrc, "突变未生效：JustReparented 已改名，用例形同虚设");
   assert.deepEqual(checkParity({ ...real, classifySrc }), []);
+});
+
+test("连续大写变体按 serde 规则转键（每个大写字母前都断词）", () => {
+  // serde 的 SnakeCase 对 TTYOrphaned 产出 t_t_y_orphaned；「小写后接大写」那类
+  // 正则会给出 ttyorphaned —— 守卫据此去查字典就是在查一个引擎永不产出的键
+  const classifySrc = real.classifySrc.replace(
+    /pub enum ReasonCode \{/,
+    "pub enum ReasonCode {\n    TTYOrphaned,",
+  );
+  assert.notEqual(classifySrc, real.classifySrc, "突变未生效，用例形同虚设");
+  const errors = checkParity({ ...real, classifySrc });
+  assert.ok(
+    errors.some((e) => e.includes("t_t_y_orphaned")),
+    `期望按 serde 规则报 t_t_y_orphaned，实际：${errors.join(" | ")}`,
+  );
+  assert.ok(!errors.some((e) => e.includes("ttyorphaned")), "不得出现退化键 ttyorphaned");
 });
 
 test("带负载 / 显式判别值的变体必须响亮报错而非静默跳过", () => {

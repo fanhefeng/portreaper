@@ -19,7 +19,16 @@ import { readFileSync, realpathSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
 
-const camelToSnake = (s) => s.replace(/([a-z0-9])([A-Z])/g, "$1_$2").toLowerCase();
+/**
+ * 复刻 serde 的 `RenameRule::SnakeCase`：**每个**非首位大写字母前插下划线。
+ *
+ * 不能写成 `([a-z0-9])([A-Z])` 那种「小写后接大写」的常见写法 —— 它在连续大写
+ * 上会退化：serde 把 `TTYOrphaned` 序列化成 `t_t_y_orphaned`，那个正则却给出
+ * `ttyorphaned`。守卫于是拿一个引擎永不产出的键去查字典：字典里有真键、它查的
+ * 假键缺失 ⇒ 报一个不存在的错；反之若两边都缺 ⇒ 静默放行。当前 ReasonCode 里
+ * 尚无连续大写变体（`Ppid1Orphan` 两种写法同解），这是给未来加变体那天备的。
+ */
+const camelToSnake = (s) => s.replace(/(?<!^)([A-Z])/g, "_$1").toLowerCase();
 
 /**
  * 提取 `pub enum <name> { ... }` 块内的变体名。

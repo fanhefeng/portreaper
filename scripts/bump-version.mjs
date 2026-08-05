@@ -51,6 +51,18 @@ function fail(msg) {
   process.exit(1);
 }
 
+/**
+ * 纯改写函数（`setCargo*Version`）的校验失败走 throw，不走 `fail()`。
+ *
+ * 它们是 export 出去给 node:test 用的：`process.exit(1)` 会把整个测试进程带走，
+ * 于是那几条「清单缺 [package] / 缺 version 行必须响亮失败」的分支根本无法被
+ * 断言覆盖 —— 唯一能验证它们的手段反而杀死了验证过程。main() 本就有 try/catch
+ * 把异常转成 `fail()`，CLI 侧的退出码与错误文案完全不变（评审发现）。
+ */
+function invalid(msg) {
+  throw new Error(msg);
+}
+
 function parseArgs(argv) {
   const args = argv.slice(2);
   let check = false;
@@ -134,7 +146,7 @@ function sliceTomlSection(raw, section) {
 export function setCargoTomlVersion(raw, version) {
   const header = /^\[package\]\s*$/m;
   const start = raw.search(header);
-  if (start === -1) fail("could not find [package] section in Cargo.toml");
+  if (start === -1) invalid("could not find [package] section in Cargo.toml");
   const headerLen = raw.match(header)[0].length;
   const sectionStart = start + headerLen;
   const after = raw.slice(sectionStart);
@@ -144,7 +156,7 @@ export function setCargoTomlVersion(raw, version) {
   const section = raw.slice(sectionStart, sectionEnd);
   const replaced = section.replace(/^(\s*version\s*=\s*")[^"]*(")/m, `$1${version}$2`);
   if (replaced === section && !/^\s*version\s*=/m.test(section)) {
-    fail('could not find `version = "..."` in [package] section of Cargo.toml');
+    invalid('could not find `version = "..."` in [package] section of Cargo.toml');
   }
   return raw.slice(0, sectionStart) + replaced + raw.slice(sectionEnd);
 }
@@ -178,11 +190,11 @@ function findCargoLockBlock(raw, crateName) {
 export function setCargoLockVersion(raw, version, crateName = LOCK_CRATE_NAMES[0]) {
   const block = findCargoLockBlock(raw, crateName);
   if (!block) {
-    fail(`could not find [[package]] name = "${crateName}" block in Cargo.lock`);
+    invalid(`could not find [[package]] name = "${crateName}" block in Cargo.lock`);
   }
   const updated = block.text.replace(/^(version\s*=\s*")[^"]*(")/m, `$1${version}$2`);
   if (updated === block.text) {
-    fail(`could not find version line for "${crateName}" in Cargo.lock`);
+    invalid(`could not find version line for "${crateName}" in Cargo.lock`);
   }
   return raw.slice(0, block.start) + updated + raw.slice(block.end);
 }

@@ -37,6 +37,17 @@ test("core 常量被改名时必须响亮失败，而不是静默放行", () => 
   assert.throws(() => checkPathsParity({ ...real, pathsSrc }), /找不到/);
 });
 
+test("注释掉的旧常量不得被当作真值", () => {
+  const pathsSrc = real.pathsSrc.replace(
+    "pub const APP_IDENTIFIER",
+    '// pub const APP_IDENTIFIER: &str = "com.stale.old";\npub const APP_IDENTIFIER',
+  );
+  assert.notEqual(pathsSrc, real.pathsSrc, "突变未生效：常量声明形态已变，用例形同虚设");
+  // 注释行被剔除 ⇒ 仍解析出真常量，校验结果与基线一致（仍为空）
+  assert.deepEqual(checkPathsParity({ ...real, pathsSrc }), []);
+  assert.equal(extractCoreIdentifier(pathsSrc), extractCoreIdentifier(real.pathsSrc));
+});
+
 test("tauri.conf.json 缺 identifier 时必须响亮失败", () => {
   assert.throws(() => extractTauriIdentifier("{}"), /缺少顶层 identifier/);
 });
