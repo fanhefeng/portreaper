@@ -1,6 +1,8 @@
 # DESIGN.md
 
-Design system for the Portreaper app UI (`src/App.tsx` + `src/App.css`).
+Design system for the Portreaper app UI (`src/App.css` + `src/App.tsx` + `src/components/`).
+Row / detail-panel markup that consumes these class names lives in
+`src/components/ProcessRow.tsx` and `src/components/ProcessDetail.tsx`.
 Register: product. Color strategy: **Restrained** (tinted dark neutrals, one
 green accent ≤10%, red strictly semantic).
 

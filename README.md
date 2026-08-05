@@ -110,7 +110,8 @@ Releases are cut by pushing a version tag — see [docs/RELEASING.md](docs/RELEA
 ### Project structure
 
 ```
-src/                  React 19 + TS single-file UI (App.tsx) — polls scan, renders table, kill/whitelist UI
+src/                  React 19 + TS UI — App.tsx (container: polls scan, kill/whitelist flows)
+                      + components/ (row, detail panel, section, confirm modal)
 src-tauri/src/
   lib.rs              tray, window lifecycle, invoke handlers
   commands.rs         Tauri command surface
@@ -259,7 +260,8 @@ cargo test          # 检测 / 分类逻辑的单元测试
 ### 项目结构
 
 ```
-src/                  React 19 + TS 单文件 UI（App.tsx）—— 轮询扫描、渲染表格、kill / 收藏交互
+src/                  React 19 + TS UI —— App.tsx（容器：轮询扫描、kill / 收藏流程）
+                      + components/（行、详情面板、分区、确认弹窗）
 src-tauri/src/
   lib.rs              托盘、窗口生命周期、invoke 处理器
   commands.rs         Tauri 命令入口
