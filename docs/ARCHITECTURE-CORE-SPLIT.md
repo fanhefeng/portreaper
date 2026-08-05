@@ -337,8 +337,30 @@ Raycast 扩展按顺序找：
 
 > **未做：随 `.app` 分发。** Tauri 的 `externalBin` / `bundle.resources` 都要求文件在 **dev 时也存在**，会给日常 `pnpm tauri dev` 加一道「必须先构建 CLI」的脆弱前置；而完整 release 流程本地无法彩排，改坏了只有发版当天才知道。故本次不动打包，改由 Raycast 扩展实现完整的二进制发现阶梯（含引导页）。待某次真机验证 release 流程时再补。
 
-**步骤 5 — Raycast 扩展**
-`integrations/raycast/`。此时 core 与契约已稳定，扩展是纯 TS 工作，不再触碰 Rust。
+**步骤 5 — Raycast 扩展 ✅ 已完成**
+`integrations/raycast/`（独立 npm 包，不进主 pnpm workspace）：`src/cli.ts` 是进程边界，`src/search-ports.tsx` 是 List UI。
+
+原以为「此时扩展是纯 TS 工作，不再触碰 Rust」—— 结果恰恰相反，写扩展时才暴露出引擎缺一个字段：`cli.ts` 最初把 `whitelist_key` 的推导规则在 TS 里重写了一遍，而「每个前端各自实现一遍判定」正是这次拆分要根除的东西。改为**由引擎随每行输出 `whitelist_key`**。这条经验值得记下：**真正的契约缺口只有在写第二个消费者时才会暴露**，纸面设计看不出来。
+
+`src/model.ts` 同步该字段，并加两条测试钉住「前端历史实现 `whitelistKey()` 与引擎产出一致」（含裸解释器名的回退分支）。
+
+验证：`tsc --noEmit` 通过（`@raycast/api` 1.104 的类型全部对上）。**Raycast 内的 UI 交互未真机验证** —— 需要在装有 Raycast 的机器上 `pnpm dev` 走一遍。
+
+## 10. 实施回顾：与原设计的三处出入
+
+原设计写于动手之前，实施中有三处被证据推翻。记下来是因为**推翻的理由比设计本身更有价值**：
+
+1. **§5.5 理由文案下沉到 Rust —— 推翻。** 前提「Raycast 要重写翻译」是错的（同仓库可以 import）。而实施到 Raycast 时又发现 `i18n.ts` 顶层访问 `localStorage`/`navigator`，Node 环境也 import 不进来 —— 于是最终方案是第三条路：**扩展直接显示机器码**。目标用户是开发者，`ppid1_orphan` 比含糊的翻译更有信息量，且零维护、零漂移。
+2. **§6 的 paths 一致性单测 —— 换成运行时断言。** mock app 会拉起窗口，headless CI 不可靠；真实启动是唯一能同时拿到两侧答案的地方。改为静态守卫（查 identifier 常量）+ 运行时断言（查四个目录，debug panic / release log）两层。
+3. **`scanner/mod.rs` 细分 —— 推迟。** 与步骤 3 的 `Scanner` 改造撞同一块代码，先拆再改等于动两遍。至今未做，不阻塞任何前端。
+
+## 11. 遗留事项
+
+- **CI 与 release 流程只在真机验证得了。** 合并后应先单独发一次 tag 走完整 release，再继续任何改动（`target/` 与 `Cargo.lock` 上移、`--workspace` 门禁、rust-cache 键都改过）。
+- **CLI 随 `.app` 分发**（见步骤 4 的说明）。
+- **Raycast UI 真机走查**。
+- **`scanner/mod.rs`（1681 行）细分**成 `entry/chain/duplicates/subtree`。
+- **ts-rs 生成 `contracts/process-entry.d.ts`** 取代 `src/model.ts` 的手工镜像 —— 本次新增 `whitelist_key` 时手工同步了三处夹具（tsc 逐个报错逼出来的），正是这项要解决的痛点。
 
 ## 9. 风险清单
 
