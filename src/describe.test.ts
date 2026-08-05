@@ -31,6 +31,7 @@ function entry(over: Partial<ProcessEntry>): ProcessEntry {
     confidence: "confirmed",
     zombie_reasons: [],
     is_whitelisted: false,
+    whitelist_key: "/opt/homebrew/bin/node",
     duplicate_of: null,
     ...over,
   };

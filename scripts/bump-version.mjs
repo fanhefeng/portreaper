@@ -9,7 +9,12 @@
 //   package.json                 .version          (JSON)
 //   src-tauri/tauri.conf.json     .version          (JSON)
 //   src-tauri/Cargo.toml          [package] version (TOML, first match only)
-//   src-tauri/Cargo.lock          [[package]] name="portreaper" -> version
+//   Cargo.lock                    [[package]] name="portreaper" -> version
+//
+// Cargo.lock 住在仓库根（workspace 根也在那里），而 Cargo.toml 仍在 src-tauri/ ——
+// 这不是笔误：src-tauri 只是 workspace 的一个成员 crate，lockfile 属于整个
+// workspace。同理，crates/portreaper-core 的版本**不**归本脚本管（它是不发布的
+// 内部 crate，版本与应用版本解耦）。
 //
 // Zero dependencies. Requires Node >= 18 (ESM, fs/promises).
 
@@ -23,7 +28,7 @@ const ROOT = join(__dirname, "..");
 const PKG_JSON = join(ROOT, "package.json");
 const TAURI_CONF = join(ROOT, "src-tauri", "tauri.conf.json");
 const CARGO_TOML = join(ROOT, "src-tauri", "Cargo.toml");
-const CARGO_LOCK = join(ROOT, "src-tauri", "Cargo.lock");
+const CARGO_LOCK = join(ROOT, "Cargo.lock"); // workspace 根，非 src-tauri/
 
 // semver-ish: major.minor.patch with an optional pre-release/build suffix.
 // 每个数字段禁前导零（0 | [1-9]\d*），与 cargo 一致 —— 否则 01.2.3 能写进 JSON
@@ -182,7 +187,7 @@ async function collect() {
     { name: "package.json", version: pkg },
     { name: "src-tauri/tauri.conf.json", version: conf },
     { name: "src-tauri/Cargo.toml", version: findCargoTomlVersion(tomlRaw) },
-    { name: "src-tauri/Cargo.lock", version: findCargoLockVersion(lockRaw) },
+    { name: "Cargo.lock", version: findCargoLockVersion(lockRaw) },
   ];
 }
 
@@ -215,7 +220,7 @@ async function runBump(version) {
   console.log("  package.json");
   console.log("  src-tauri/tauri.conf.json");
   console.log("  src-tauri/Cargo.toml");
-  console.log("  src-tauri/Cargo.lock");
+  console.log("  Cargo.lock");
 }
 
 async function main() {

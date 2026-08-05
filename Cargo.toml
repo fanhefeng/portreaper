@@ -1,0 +1,23 @@
+# Cargo workspace 根。
+#
+# 成员是**平级**的兄弟 crate：判定引擎（crates/portreaper-core）与消费它的前端
+# （src-tauri = 桌面 GUI 壳）。把 workspace 根放在仓库根，而不是让 src-tauri 反过来
+# 包含 ../crates/*，是因为后续还会加入 crates/portreaper-cli 等成员 —— 只有平级
+# 布局能自然表达「引擎不属于任何一个前端」。
+#
+# 代价（迁移时已一并处理，改动这里前请确认三处仍同步）：
+#   - target/ 从 src-tauri/target/ 移到仓库根 → .gitignore、CI 的 rust-cache
+#     workspaces 键、release.yml 的产物路径；
+#   - Cargo.lock 从 src-tauri/ 移到仓库根 → scripts/bump-version.mjs 的 CARGO_LOCK。
+[workspace]
+resolver = "2"
+members = ["crates/portreaper-core", "crates/portreaper-cli", "src-tauri"]
+
+# 版本号刻意**不**用 workspace 继承：scripts/bump-version.mjs 靠正则在
+# src-tauri/Cargo.toml 的 [package] 段里定点改 `version = "..."`，继承写法
+# （version.workspace = true）会让它找不到目标而响亮失败。各成员各自声明版本。
+[workspace.package]
+edition = "2021"
+license = "MIT"
+authors = ["fhf"]
+repository = "https://github.com/fanhefeng/portreaper"

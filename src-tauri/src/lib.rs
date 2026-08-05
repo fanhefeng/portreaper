@@ -1,7 +1,7 @@
+// 扫描 / 分类 / 终止住在 portreaper-core（无 GUI 依赖的判定引擎）——
+// 本 crate 只是它的桌面前端：托盘、窗口生命周期、命令入口、白名单落盘。
 mod commands;
 mod paths;
-mod platform;
-mod scanner;
 mod whitelist;
 
 use std::sync::Mutex;
@@ -330,6 +330,10 @@ pub fn run() {
                 paths::env_label()
             );
 
+            // 引擎自解析的目录必须与 Tauri 的解析一致，否则 GUI 与 CLI/Raycast
+            // 会各写各的白名单。紧跟在日志初始化之后 —— 这条告警必须能落盘。
+            paths::assert_matches_tauri(app.handle());
+
             // Accessory 激活策略：无 Dock 图标、不进 ⌘Tab —— 身份与「常驻托盘」的
             // 产品定位对齐。此前用默认 Regular 策略（有 Dock 图标）却把 ⌘Q 劫持成
             // 隐藏，普通 App 的外观配菜单栏工具的行为，用户会按 HIG 预期 ⌘Q 退出
@@ -345,8 +349,11 @@ pub fn run() {
             #[cfg(target_os = "macos")]
             app.set_activation_policy(tauri::ActivationPolicy::Accessory);
 
-            if let Ok(dir) = paths::config_dir(app.handle()) {
-                whitelist::init(dir.join("whitelist.json"));
+            // 白名单路径由引擎决定（CLI / Raycast 读的是同一个函数）——
+            // 桌面版绝不自己拼一份，那正是两边分家的起点。
+            match portreaper_core::paths::whitelist_path() {
+                Some(path) => whitelist::init(path),
+                None => log::error!("could not resolve whitelist path; 收藏将无法持久化"),
             }
 
             let lang = detect_lang();
@@ -368,6 +375,11 @@ pub fn run() {
                 dir,
                 quit: quit_item,
             });
+            // 常驻扫描器：必须跨轮询存活，否则 Windows 的 CPU 列恒为 0%
+            // （采样区间就是两次 scan 之间的间隔，详见 commands::ScannerState）
+            app.manage(commands::ScannerState(Mutex::new(
+                portreaper_core::Scanner::new(),
+            )));
 
             // 托盘图标：macOS 用专用单色 template 图（纯黑+透明，系统按菜单栏明暗自动反色）。
             // 复用彩色应用图标会被 icon_as_template 压成糊在一起的剪影，故单独嵌入 tray.png；

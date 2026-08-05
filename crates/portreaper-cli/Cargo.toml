@@ -1,0 +1,21 @@
+[package]
+name = "portreaper-cli"
+version = "0.1.0"
+description = "Portreaper 的命令行前端 —— 供 Raycast / 脚本 / CI 消费的 JSON 契约"
+authors = ["fhf"]
+license = "MIT"
+repository = "https://github.com/fanhefeng/portreaper"
+edition = "2021"
+publish = false
+
+[[bin]]
+name = "portreaper-cli"
+path = "src/main.rs"
+
+[dependencies]
+portreaper-core = { path = "../portreaper-core" }
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+# 刻意不引入 clap：四个子命令、十来个 flag，手写解析约 100 行且能给出贴合本工具
+# 语义的错误信息（例如「kill 缺 --start-unix」要顺带解释身份令牌为什么是强制的）。
+# 这个二进制随 .app 分发，每一个依赖都会进用户的下载包。

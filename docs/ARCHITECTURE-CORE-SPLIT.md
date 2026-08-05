@@ -1,7 +1,10 @@
 # 架构规划：引擎下沉为 core，适配多前端（Raycast 等）
 
-> 状态：设计稿，待评审。落地前不改代码。
+> 状态：**步骤 1 已落地**（见 §8 的进度标记），步骤 2–5 待做。
 > 目标读者：本仓库维护者。阅读前建议先看 `CLAUDE.md` 的「Architecture」一节。
+>
+> §4 的目录结构是**目标态**。当前 `crates/portreaper-core/src/` 下仍是搬迁来的
+> 原始布局（`scanner/` 六个文件 + `platform.rs`），子模块细分属于步骤 2。
 
 ## 1. 目标与非目标
 
@@ -114,7 +117,15 @@ portreaper/
 └── docs/
 ```
 
-**为什么 workspace 根放仓库根**：`crates/` 与 `src-tauri/` 是平级的兄弟 crate，只有根 workspace 能自然表达。代价是 `target/` 从 `src-tauri/target/` 移到 `target/`，需要同步改 `.gitignore`、CI 缓存 key、`release.yml` 的产物路径 —— 列入 §8 的 checklist。
+**为什么 workspace 根放仓库根**：`crates/` 与 `src-tauri/` 是平级的兄弟 crate，只有根 workspace 能自然表达。代价是 `target/` **和 `Cargo.lock`** 都从 `src-tauri/` 上移到仓库根，牵动五处（步骤 1 已全部处理）：
+
+- `.gitignore`（根新增 `/target/`；`src-tauri/.gitignore` 的那条**要留着**，见下）；
+- 两个 workflow 的 `Swatinem/rust-cache` 键 `". -> target"`；
+- `release.yml` 的 dmg 后处理产物路径；
+- `scripts/bump-version.mjs` 的 `CARGO_LOCK`（`Cargo.toml` 仍在 `src-tauri/` —— 这个不对称是刻意的：lockfile 属于整个 workspace，版本号属于应用 crate）；
+- 所有 `cargo` 调用从 `--manifest-path src-tauri/Cargo.toml` 改成 `--all` / `--workspace`。**这条最危险**：旧写法在 workspace 下依然「成功」，只是把引擎整个跳过 —— 门禁绿着，而判定逻辑一行没查。
+
+**踩到的坑：`src-tauri/.gitignore` 的 `/target/` 不能删。** oxfmt 按 gitignore 决定扫描范围；删掉那行后，拆分前遗留的 `src-tauri/target/`（本机 5.2 GB）立刻涌进 `vp check`，它开始格式化 cargo 的 fingerprint JSON。规则保留 + 清掉遗留目录，两件都要做。
 
 ## 5. core 的公开 API 设计
 
@@ -202,9 +213,23 @@ pub fn env_label() -> &'static str;
 
 防漂移靠 `src-tauri` 侧的一致性测试钉死（见 §6）。
 
-### 5.5 理由文案下沉
+### 5.5 理由文案 —— ~~下沉到 core~~ **方案已推翻，留在 i18n.ts**
 
-`reasons.rs` 成为 ReasonCode 文案的唯一真相源：
+> **实施时推翻了原设计。** 原方案基于「Raycast 要重写一遍翻译」这个前提，而这个
+> 前提是错的：Raycast 扩展住在**同一个仓库**（`integrations/raycast/`），可以直接
+> `import` `src/i18n.ts`。把文案再复制一份进 Rust，等于凭空造出第二份真相源和
+> 第二条漂移路径，还要新写一套守卫去看住它 —— 净负收益。
+>
+> 现行分工：**引擎只输出机器码**（`ReasonCode` / `Confidence` 的 snake_case），
+> 文案是「表达」，属于前端。`check-reason-parity.mjs` 已经保证 Rust 枚举 ↔
+> `i18n.ts` ↔ `model.ts` 三方齐全，新增消费者不改变这个闭环。
+>
+> 只有当出现**非 TypeScript 的前端**（shell 脚本、Alfred workflow）时才需要重开此题，
+> 届时正确的做法多半也是让 CLI 出一个 `reasons --json`，而不是在 Rust 里写死双语文案。
+>
+> 以下为已作废的原设计，保留以便追溯决策过程。
+
+~~`reasons.rs` 成为 ReasonCode 文案的唯一真相源：~~
 
 ```rust
 pub enum Lang { Zh, En }
@@ -278,26 +303,71 @@ Raycast 扩展按顺序找：
 
 **步骤 0 — 前置**：当前工作区有未提交改动（`scanner/` 四个文件、`src/components/` 未跟踪、四份文档），先落定提交，让拆分 diff 纯净可读。
 
-**步骤 1 — 机械搬迁（零逻辑变更）**
-建根 `Cargo.toml` workspace；`scanner/` + `platform.rs` 原样搬进 `crates/portreaper-core`；`src-tauri` 改为依赖它。判定代码一行不改，`cargo test` 的 35+ 用例必须全绿。改 `.gitignore` / CI 缓存 / `release.yml` 的 `target/` 路径。这一步的验收标准是「产物 diff 为空」。
+**步骤 1 — 机械搬迁（零逻辑变更）✅ 已完成**
+建根 `Cargo.toml` workspace；`scanner/` + `platform.rs` 原样搬进 `crates/portreaper-core`；`src-tauri` 改为依赖它。判定代码一行不改。
 
-**步骤 2 — 解开三处 GUI 耦合**
-`paths.rs` 去 Tauri 化 + 加一致性测试；`whitelist.rs` 改值类型，GUI 侧包 static；`KillError` 枚举化，GUI IPC 保留 `ERR_*` 字符串兼容层。同时把 `scan/mod.rs`（1681 行）按 §4 拆成 `entry/chain/duplicates/subtree`。
+实测记录：`cargo test --workspace` 72 passed（core 71 + shell 1，与拆分前逐个对齐，2 个 live smoke 仍 ignored）；`cargo fmt --all --check` / `clippy --workspace -D warnings` / 前端 28 passed / 四个守卫脚本全绿；`pnpm tauri build` 实跑通过，产物落在 `target/release/bundle/`，证实 tauri-action 的路径假设成立。`serde_json` 从主依赖降为 core 的 dev-dependency（只有 classify 的 serde 键名断言用它 —— 引擎自身不产出 JSON）。
+
+`src-tauri` 侧 `sysinfo` / `windows` 依赖一并移走：GUI 壳不该直接碰平台 API。
+
+**步骤 2 — 解开三处 GUI 耦合 ✅ 已完成**
+`paths.rs` 去 Tauri 化；`whitelist.rs` 改值类型，GUI 侧包 static；`KillError` 枚举化，GUI IPC 保留 `ERR_*` 字符串兼容层。
+
+一致性保障做成了**两层**（原计划只有单测一层，实施时发现单测覆盖不到真正危险的那一半）：
+
+- 静态层 `scripts/check-paths-parity.mjs` —— 只查 `APP_IDENTIFIER` 常量与 `tauri.conf.json` 是否一致，不需要启动应用，进 CI 与 pre-push；
+- 运行时层 `src-tauri/src/paths.rs::assert_matches_tauri` —— 逐一比对四个目录与 `app.path().app_*_dir()`，debug 下 panic、release 下记 `log::error!`。**放弃了原计划的 mock-app 单测**：Tauri 的路径解析需要活的 AppHandle，而 mock app 会拉起窗口，在 headless CI 上并不可靠；真实启动是唯一能同时拿到两侧答案的地方。
+
+实测：`cargo run -p portreaper`（debug）启动无 panic，目录落在 `~/Library/Application Support/com.fhf.portreaper/dev` 与 `~/Library/Logs/com.fhf.portreaper/dev`，与拆分前一致。`cargo test --workspace` 82 passed（core 71 → 82：paths 4 + whitelist 4 + KillError 契约 3）。
+
+> **计划调整**：原定在本步顺带做的 `scanner/mod.rs`（1681 行）细分**推迟到步骤 3 之后**。步骤 3 的 `Scanner` 结构体会重写 `scan()` 的入口与 Windows 侧的 `System` 持有方式，先拆再改等于同一块代码动两遍、review 两遍。拆分本身是纯代码组织，不阻塞任何前端。
 
 **步骤 3 — 契约化**
 `Scanner` + `CpuSampling`；ts-rs 生成 `contracts/process-entry.d.ts`，`src/model.ts` 改为导入类型、只留纯函数；`reasons.rs` + parity 脚本升级。
 
-**步骤 4 — CLI**
-`portreaper-cli` 四个子命令；`tauri.conf.json` 打包；release 资产校验扩展；`docs/` 补 CLI 用法。
+**步骤 4 — CLI ✅ 已完成（分发方式另议，见下）**
+`portreaper-cli` 四个子命令，手写参数解析（不引入 clap —— 这个二进制要随 `.app` 分发，每个依赖都进用户的下载包；四个子命令手写约 100 行，还能给出贴合语义的错误信息）。
 
-**步骤 5 — Raycast 扩展**
-`integrations/raycast/`。此时 core 与契约已稳定，扩展是纯 TS 工作，不再触碰 Rust。
+实测（本机真实进程）：
+- `scan` 列出 13 行，揪出 2 个真实的 `http.server · Python` 残留（confirmed，reasons = `ppid1_orphan` + `dev_server_keyword` + `duplicate_dev_server`）；
+- `kill` 三条路径逐一验证：缺 `--start-unix` → exit 2 + 解释为什么它是强制的；错误令牌 → exit 1 + stderr `{"code":"pid_reused"}`；正确令牌 → 进程真正终止；
+- `whitelist add` 落盘到 `~/Library/Application Support/com.fhf.portreaper/dev/whitelist.json` —— **与桌面版同一个文件**，这是整次拆分最关键的一条证明。
+
+实测抓到一个契约 bug：外层 `ScanReport` 起初用了 `rename_all = "camelCase"`，而 `entries` 里的 `ProcessEntry` 是引擎的 serde 输出（snake_case，`src/model.ts` 镜像的正是它）—— 同一份 JSON 两种命名风格。已统一为 snake_case，附带好处是 Raycast 可以直接复用 `src/model.ts` 的类型。
+
+> **未做：随 `.app` 分发。** Tauri 的 `externalBin` / `bundle.resources` 都要求文件在 **dev 时也存在**，会给日常 `pnpm tauri dev` 加一道「必须先构建 CLI」的脆弱前置；而完整 release 流程本地无法彩排，改坏了只有发版当天才知道。故本次不动打包，改由 Raycast 扩展实现完整的二进制发现阶梯（含引导页）。待某次真机验证 release 流程时再补。
+
+**步骤 5 — Raycast 扩展 ✅ 已完成**
+`integrations/raycast/`（独立 npm 包，不进主 pnpm workspace）：`src/cli.ts` 是进程边界，`src/search-ports.tsx` 是 List UI。
+
+原以为「此时扩展是纯 TS 工作，不再触碰 Rust」—— 结果恰恰相反，写扩展时才暴露出引擎缺一个字段：`cli.ts` 最初把 `whitelist_key` 的推导规则在 TS 里重写了一遍，而「每个前端各自实现一遍判定」正是这次拆分要根除的东西。改为**由引擎随每行输出 `whitelist_key`**。这条经验值得记下：**真正的契约缺口只有在写第二个消费者时才会暴露**，纸面设计看不出来。
+
+`src/model.ts` 同步该字段，并加两条测试钉住「前端历史实现 `whitelistKey()` 与引擎产出一致」（含裸解释器名的回退分支）。
+
+验证：`tsc --noEmit` 通过（`@raycast/api` 1.104 的类型全部对上）。**Raycast 内的 UI 交互未真机验证** —— 需要在装有 Raycast 的机器上 `pnpm dev` 走一遍。
+
+## 10. 实施回顾：与原设计的三处出入
+
+原设计写于动手之前，实施中有三处被证据推翻。记下来是因为**推翻的理由比设计本身更有价值**：
+
+1. **§5.5 理由文案下沉到 Rust —— 推翻。** 前提「Raycast 要重写翻译」是错的（同仓库可以 import）。而实施到 Raycast 时又发现 `i18n.ts` 顶层访问 `localStorage`/`navigator`，Node 环境也 import 不进来 —— 于是最终方案是第三条路：**扩展直接显示机器码**。目标用户是开发者，`ppid1_orphan` 比含糊的翻译更有信息量，且零维护、零漂移。
+2. **§6 的 paths 一致性单测 —— 换成运行时断言。** mock app 会拉起窗口，headless CI 不可靠；真实启动是唯一能同时拿到两侧答案的地方。改为静态守卫（查 identifier 常量）+ 运行时断言（查四个目录，debug panic / release log）两层。
+3. **`scanner/mod.rs` 细分 —— 推迟。** 与步骤 3 的 `Scanner` 改造撞同一块代码，先拆再改等于动两遍。至今未做，不阻塞任何前端。
+
+## 11. 遗留事项
+
+- **CI 与 release 流程只在真机验证得了。** 合并后应先单独发一次 tag 走完整 release，再继续任何改动（`target/` 与 `Cargo.lock` 上移、`--workspace` 门禁、rust-cache 键都改过）。
+- **CLI 随 `.app` 分发**（见步骤 4 的说明）。
+- **Raycast UI 真机走查**。
+- **`scanner/mod.rs`（1681 行）细分**成 `entry/chain/duplicates/subtree`。
+- **ts-rs 生成 `contracts/process-entry.d.ts`** 取代 `src/model.ts` 的手工镜像 —— 本次新增 `whitelist_key` 时手工同步了三处夹具（tsc 逐个报错逼出来的），正是这项要解决的痛点。
 
 ## 9. 风险清单
 
 | 风险 | 缓解 |
 |---|---|
-| `target/` 迁移打断 CI 缓存与 release 产物路径 | 步骤 1 单独发一次 tag 验证完整 release 流程再继续 |
+| `target/` 与 `Cargo.lock` 迁移打断 CI 缓存、release 产物路径与版本脚本 | 步骤 1 已改全五处并本地实跑 `tauri build`；**CI/release 只能在真机验证** —— 合并后单独发一次 tag 走完整 release 流程再继续步骤 2 |
+| 旧写法 `--manifest-path src-tauri/Cargo.toml` 在 workspace 下静默跳过引擎 | 所有门禁（CI、pre-push、文档命令清单）已改 `--all`/`--workspace`；新增 cargo 步骤时必须同样处理 |
 | core 与 Tauri 的目录算法漂移 → 白名单分家 | `check-paths-parity` 单测，五个目录逐一断言 |
 | Windows 无手工 QA，拆分放大回归面 | 步骤 1 严格零逻辑变更；`sysinfo::System` 从 static 改 `Scanner` 字段是 Windows 侧唯一实质改动，单独一个 commit 便于回滚 |
 | CLI 让 kill 能力脚本化 | 身份令牌 fail-closed 已强制「先 scan 后 kill」，不加旁路即可 |

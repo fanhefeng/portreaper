@@ -1,13 +1,31 @@
-use crate::{platform, scanner, whitelist};
+use std::sync::{Mutex, PoisonError};
+
+use portreaper_core::{platform, scanner, Scanner};
+use tauri::{AppHandle, Manager};
+
+use crate::whitelist;
+
+/// 常驻扫描器 —— 由 `lib.rs` 注册为 Tauri 托管状态。
+///
+/// **必须跨轮询存活**：Windows 的 CPU 百分比是 sysinfo 两次 refresh 之间的增量，
+/// 前端每 2 秒的轮询正是它的采样区间。若改成每次新建 Scanner，Windows 上每一行
+/// 的 CPU 都会永远是 0%（拆分前这份状态是 scanner 内部的进程级 static，语义相同、
+/// 只是不可见）。
+pub struct ScannerState(pub Mutex<Scanner>);
 
 /// async + spawn_blocking（评审发现）：Tauri 2 的非 async 命令在主线程执行，
 /// scan() 每 2s shell 出 lsof + 两次 ps + launchctl（几十到几百毫秒）会周期性
 /// 阻塞事件循环（托盘/窗口事件卡顿）。挪到阻塞线程池，主线程零占用。
 #[tauri::command]
-pub async fn scan_ports() -> Result<Vec<scanner::ProcessEntry>, String> {
-    tauri::async_runtime::spawn_blocking(|| {
+pub async fn scan_ports(app: AppHandle) -> Result<Vec<scanner::ProcessEntry>, String> {
+    tauri::async_runtime::spawn_blocking(move || {
         let wl = whitelist::get_all();
-        scanner::scan(&wl)
+        // 毒化恢复：scan 中途 panic 一次不应让后续每轮轮询永久 panic（前端表现为
+        // 永远 ERR_SCAN_TIMEOUT）。Scanner 内部只是采集缓存，半更新状态可安全续用
+        // —— 拆分前这段恢复逻辑在 windows.rs 的 System 锁上，语义原样搬来。
+        let state = app.state::<ScannerState>();
+        let mut scanner = state.0.lock().unwrap_or_else(PoisonError::into_inner);
+        scanner.scan(&wl)
     })
     .await
     .map_err(|e| format!("scan task failed: {e}"))
@@ -16,11 +34,18 @@ pub async fn scan_ports() -> Result<Vec<scanner::ProcessEntry>, String> {
 /// 终止进程。`start_unix` 是扫描时捕获的创建时间 —— kill 前重新核对，
 /// 防止 scan 与点击之间 PID 被复用导致误杀（Windows 复用尤其激进）。
 /// async 理由同 scan_ports（macOS 分支 shell 出 ps + kill 两个子进程）。
+///
+/// 引擎返回结构化的 `KillError`，这里降级成旧的 `ERR_*:` 字符串形态过 IPC ——
+/// 前端 `src/model.ts` 仍以 `includes("ERR_…")` 分派本地化文案。**兼容层是
+/// 过渡性的**：待前端改吃 `{code, message}` 后，这里直接返回 KillError 的
+/// serde 形态，`to_legacy_string` 随之删除（token 由 core 的
+/// legacy_contract_tests 钉住，改动前先看那组测试）。
 #[tauri::command]
 pub async fn kill_process(pid: u32, force: bool, start_unix: Option<u64>) -> Result<(), String> {
     tauri::async_runtime::spawn_blocking(move || platform::kill(pid, force, start_unix))
         .await
         .map_err(|e| format!("kill task failed: {e}"))?
+        .map_err(|e| e.to_legacy_string())
 }
 
 /// 前端平台感知（驱动平台分叉的文案与按钮布局），不引入额外 JS 插件。

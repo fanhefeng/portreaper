@@ -6,13 +6,14 @@ import { readFileSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 
-import { checkAssetNames, checkWebsiteI18n } from "./check-release-assets.mjs";
+import { checkAssetNames, checkCliAssetNames, checkWebsiteI18n } from "./check-release-assets.mjs";
 
 const root = join(dirname(fileURLToPath(import.meta.url)), "..");
 const real = {
   releaseSrc: readFileSync(join(root, ".github/workflows/release.yml"), "utf8"),
   websiteSrc: readFileSync(join(root, "website/index.html"), "utf8"),
   readmeSrc: readFileSync(join(root, "README.md"), "utf8"),
+  installSrc: readFileSync(join(root, "integrations/raycast/src/install.ts"), "utf8"),
   i18nSrc: readFileSync(join(root, "website/i18n.js"), "utf8"),
   mainJsSrc: readFileSync(join(root, "website/main.js"), "utf8"),
 };
@@ -79,4 +80,43 @@ test("main.js 引用不存在的字典键必须被拦截（version.label / copy.
   const mainJsSrc = real.mainJsSrc.replace('t("version.label")', 't("version.ghost_key")');
   const errors = checkWebsiteI18n({ ...real, mainJsSrc });
   assert.ok(errors.some((e) => e.includes('"version.ghost_key"') && e.includes("main.js")));
+});
+
+// ---- portreaper-cli 的稳定资产名（release.yml ↔ Raycast 扩展）----
+// 这组名字是跨机器的契约：扩展在用户电脑上按它们去 GitHub Release 下载引擎，
+// 对不上不是「下载按钮坏了」，而是「扩展装好却起不来」。
+
+test("CLI 资产名当前必须一致", () => {
+  assert.deepEqual(checkCliAssetNames(real), []);
+});
+
+test("release.yml 改了 cli_asset 而扩展没跟，必须被拦截", () => {
+  const releaseSrc = real.releaseSrc.replace(
+    "portreaper-cli-macos-arm64",
+    "portreaper-cli-macos-aarch64",
+  );
+  const errors = checkCliAssetNames({ ...real, releaseSrc });
+  assert.ok(
+    errors.some((e) => /资产名不一致/.test(e)),
+    `应报资产名不一致，实际: ${JSON.stringify(errors)}`,
+  );
+});
+
+test("release.yml 不再产出 SHA256SUMS，必须被拦截", () => {
+  const releaseSrc = real.releaseSrc.replaceAll("portreaper-cli-SHA256SUMS", "checksums.txt");
+  const errors = checkCliAssetNames({ ...real, releaseSrc });
+  assert.ok(
+    errors.some((e) => /未产出 portreaper-cli-SHA256SUMS/.test(e)),
+    `应报缺校验和文件，实际: ${JSON.stringify(errors)}`,
+  );
+});
+
+// 守卫自身的 bug 同样会让门禁说谎：裸 `cli_asset:` 正则会把**解释该字段的注释行**
+// 也当成一条配置（实际踩到过，抓出个 "the"）。这条钉住「注释不算数」。
+test("解释 cli_asset 的注释行不得被当成一条资产名", () => {
+  const releaseSrc = real.releaseSrc.replace(
+    "        # cli_asset:",
+    "        # cli_asset: bogus-name-from-a-comment\n        # cli_asset:",
+  );
+  assert.deepEqual(checkCliAssetNames({ ...real, releaseSrc }), []);
 });

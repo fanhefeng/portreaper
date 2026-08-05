@@ -24,13 +24,17 @@ pnpm exec vp test run
 pnpm exec vp build
 
 # ---- Rust ----
-cargo fmt --manifest-path src-tauri/Cargo.toml --check
-cargo clippy --manifest-path src-tauri/Cargo.toml --all-targets -- -D warnings
-cargo test --manifest-path src-tauri/Cargo.toml
+# --all / --workspace 而非 --manifest-path：workspace 根在仓库根，成员有
+# crates/portreaper-core（判定引擎）与 src-tauri（GUI 壳）。只查单个成员的写法
+# 会让引擎的 fmt/clippy/测试全部漏检 —— 而引擎恰是判定逻辑所在。
+cargo fmt --all --check
+cargo clippy --workspace --all-targets -- -D warnings
+cargo test --workspace
 
 # ---- 守卫脚本 ----
 node --test scripts/*.test.mjs
 node scripts/check-reason-parity.mjs
 node scripts/check-release-assets.mjs
+node scripts/check-paths-parity.mjs
 
 echo "pre-push: 全部通过"

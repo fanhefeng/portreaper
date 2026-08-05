@@ -2734,18 +2734,38 @@ dependencies = [
 
 [[package]]
 name = "portreaper"
-version = "0.7.2"
+version = "0.8.0"
 dependencies = [
  "log",
  "once_cell",
+ "portreaper-core",
  "serde",
  "serde_json",
  "sys-locale",
- "sysinfo",
  "tauri",
  "tauri-build",
  "tauri-plugin-log",
  "tauri-plugin-opener",
+]
+
+[[package]]
+name = "portreaper-cli"
+version = "0.1.0"
+dependencies = [
+ "portreaper-core",
+ "serde",
+ "serde_json",
+]
+
+[[package]]
+name = "portreaper-core"
+version = "0.1.0"
+dependencies = [
+ "dirs",
+ "log",
+ "serde",
+ "serde_json",
+ "sysinfo",
  "windows 0.58.0",
 ]
 

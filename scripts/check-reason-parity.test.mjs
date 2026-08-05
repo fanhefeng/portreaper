@@ -12,7 +12,7 @@ import { checkParity } from "./check-reason-parity.mjs";
 
 const root = join(dirname(fileURLToPath(import.meta.url)), "..");
 const real = {
-  classifySrc: readFileSync(join(root, "src-tauri/src/scanner/classify.rs"), "utf8"),
+  classifySrc: readFileSync(join(root, "crates/portreaper-core/src/scanner/classify.rs"), "utf8"),
   i18nSrc: readFileSync(join(root, "src/i18n.ts"), "utf8"),
   modelSrc: readFileSync(join(root, "src/model.ts"), "utf8"),
 };

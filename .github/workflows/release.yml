@@ -136,16 +136,22 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
+        # cli_asset: the STABLE name portreaper-cli ships under. The Raycast
+        # extension downloads it by this exact name, so treat it as a public
+        # contract — check-release-assets.mjs guards it against drift.
         include:
           - os: macos-latest
             target: aarch64-apple-darwin
             bundles: dmg
+            cli_asset: portreaper-cli-macos-arm64
           - os: macos-latest
             target: x86_64-apple-darwin
             bundles: dmg
+            cli_asset: portreaper-cli-macos-x64
           - os: windows-latest
             target: ""
             bundles: nsis
+            cli_asset: portreaper-cli-windows-x64.exe
     steps:
       - name: Checkout
         uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6
@@ -172,10 +178,12 @@ jobs:
           toolchain: 1.96.0
           targets: ${{ matrix.target }}
 
+      # workspace 根在仓库根（成员：crates/portreaper-core + src-tauri），
+      # target/ 随之上移 —— 拆出 core 之前这里是 "src-tauri -> target"。
       - name: Cache Rust
         uses: Swatinem/rust-cache@e18b497796c12c097a38f9edb9d0641fb99eee32 # v2
         with:
-          workspaces: "src-tauri -> target"
+          workspaces: ". -> target"
 
       - name: Install dependencies
         run: pnpm install --frozen-lockfile
@@ -234,7 +242,14 @@ jobs:
           TAG: ${{ github.ref_name }}
         run: |
           set -euo pipefail
-          dmg="$(ls src-tauri/target/${{ matrix.target }}/release/bundle/dmg/*.dmg)"
+          # Bundle path moved with the Cargo workspace root (repo root since the
+          # portreaper-core split), but tauri-action resolves the target dir via
+          # `cargo metadata` — which we cannot rehearse locally. Try the workspace
+          # location first and fall back to the pre-split one; if NEITHER exists
+          # the second `ls` fails and `set -e` aborts the leg loudly (we must never
+          # publish a release whose dmg was silently not post-processed).
+          dmg="$(ls target/${{ matrix.target }}/release/bundle/dmg/*.dmg 2>/dev/null \
+                 || ls src-tauri/target/${{ matrix.target }}/release/bundle/dmg/*.dmg)"
           echo "Post-processing $dmg"
           work="$(mktemp -d)"
           hdiutil convert "$dmg" -format UDRW -o "$work/rw.dmg" -quiet
@@ -248,6 +263,44 @@ jobs:
           # Replace the already-uploaded asset on the draft release
           gh release upload "$TAG" "$dmg" --clobber
           echo "Replaced $(basename "$dmg") on draft release $TAG"
+
+      # portreaper-cli — the engine's process boundary, consumed by the Raycast
+      # extension (and any script). It ships as its OWN release asset rather than
+      # being bundled inside the .app: Tauri's externalBin/resources require the
+      # file to exist at *dev* time too, which would put a "build the CLI first"
+      # tripwire in front of every `pnpm tauri dev`.
+      #
+      # The Raycast Store rules explicitly allow "download from trusted sources
+      # with hash verification" but disallow making the user install things
+      # themselves — hence stable names here plus a SHA256SUMS file produced by
+      # the publish job.
+      #
+      # Cheap: portreaper-core is already compiled by the tauri build above, so
+      # this only links the CLI binary itself.
+      - name: Build portreaper-cli
+        shell: bash
+        run: |
+          set -euo pipefail
+          if [ -n "${{ matrix.target }}" ]; then
+            cargo build --release -p portreaper-cli --target "${{ matrix.target }}"
+            built="target/${{ matrix.target }}/release/portreaper-cli"
+          else
+            cargo build --release -p portreaper-cli
+            built="target/release/portreaper-cli.exe"
+          fi
+          if [ ! -f "$built" ]; then
+            echo "::error::portreaper-cli was not produced at $built"
+            exit 1
+          fi
+          cp "$built" "${{ matrix.cli_asset }}"
+          echo "Built ${{ matrix.cli_asset }} ($(wc -c < "${{ matrix.cli_asset }}") bytes)"
+
+      - name: Upload portreaper-cli to draft release
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          TAG: ${{ github.ref_name }}
+        shell: bash
+        run: gh release upload "$TAG" "${{ matrix.cli_asset }}" --clobber
 
   # --------------------------------------------------------------------------
   # 4. Verify the 3 expected assets exist on the draft release, re-upload them
@@ -294,6 +347,11 @@ jobs:
           check "macOS arm64 dmg"  '^Portreaper_.*_aarch64\.dmg$'
           check "macOS x64 dmg"    '^Portreaper_.*_x64\.dmg$'
           check "Windows x64 nsis" '^Portreaper_.*_x64-setup\.exe$'
+          # portreaper-cli 已由 build job 以稳定名上传（无需改名）。仍要逐个核对：
+          # Raycast 扩展按这些名字下载，缺一个就是「扩展装了但用不了」。
+          check "cli macOS arm64"  '^portreaper-cli-macos-arm64$'
+          check "cli macOS x64"    '^portreaper-cli-macos-x64$'
+          check "cli Windows x64"  '^portreaper-cli-windows-x64\.exe$'
 
           if [ "$missing" -ne 0 ]; then
             echo "::error::One or more bundles are missing; leaving release as draft."
@@ -325,6 +383,25 @@ jobs:
             "dist/Portreaper-macos-arm64.dmg" \
             "dist/Portreaper-macos-x64.dmg" \
             "dist/Portreaper-windows-x64-setup.exe"
+
+      # 校验和：Raycast Store 要求「从可信源下载并校验完整性」。扩展先取这个
+      # 文件，再据它核对下载到的 CLI 二进制 —— 一份汇总文件而非每个资产一个
+      # .sha256，扩展少一次往返。放在 publish job 是因为要汇总三条 build 腿的产物。
+      - name: Publish SHA256SUMS for portreaper-cli
+        run: |
+          set -euo pipefail
+          mkdir -p cli
+          gh release download "$TAG" --dir cli \
+            --pattern "portreaper-cli-macos-arm64" \
+            --pattern "portreaper-cli-macos-x64" \
+            --pattern "portreaper-cli-windows-x64.exe"
+          (cd cli && sha256sum \
+            portreaper-cli-macos-arm64 \
+            portreaper-cli-macos-x64 \
+            portreaper-cli-windows-x64.exe > portreaper-cli-SHA256SUMS)
+          echo "Checksums:"
+          cat cli/portreaper-cli-SHA256SUMS
+          gh release upload "$TAG" "cli/portreaper-cli-SHA256SUMS" --clobber
 
       - name: Publish release (un-draft)
         run: |

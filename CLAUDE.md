@@ -19,15 +19,19 @@ pnpm tauri build       # produce a .app/.dmg (macOS) or NSIS .exe (Windows)
 pnpm build             # tsc --noEmit + vp build (used by tauri build)
 pnpm exec vp check     # oxfmt + oxlint gate (CI-enforced); --fix to apply; md excluded (see below)
 
-cd src-tauri && cargo fmt --check           # rustfmt gate — CI-enforced, and NOT covered by `vp check` (which is JS/TS only)
-cd src-tauri && cargo test                 # 35+ unit tests incl. classify fixtures
-cd src-tauri && cargo clippy --all-targets -- -D warnings
+# Cargo commands run from the REPO ROOT (workspace root) and must be workspace-wide:
+# members are crates/portreaper-core (the engine) + src-tauri (the GUI shell).
+# A bare `--manifest-path src-tauri/Cargo.toml` silently skips the engine — i.e. skips
+# every line of logic these gates exist to protect.
+cargo fmt --all --check                    # rustfmt gate — CI-enforced, and NOT covered by `vp check` (which is JS/TS only)
+cargo test --workspace                     # 70+ unit tests incl. classify fixtures
+cargo clippy --workspace --all-targets -- -D warnings
 cargo test live_scan -- --ignored --nocapture   # real-machine smoke: scan this Mac
 
 pnpm test                                  # frontend regression tests (vp test run: bundled vitest + happy-dom)
 
 # Windows cross-compile check from macOS (needs `brew install llvm` for llvm-rc):
-PATH="/opt/homebrew/opt/llvm/bin:$PATH" cargo check --target x86_64-pc-windows-msvc
+PATH="/opt/homebrew/opt/llvm/bin:$PATH" cargo check --workspace --target x86_64-pc-windows-msvc
 
 node scripts/check-reason-parity.mjs       # Rust ReasonCode <-> i18n/render-path guard
 node scripts/check-release-assets.mjs      # stable asset names (release.yml/website/README) + website i18n keys
@@ -35,31 +39,36 @@ node --test scripts/*.test.mjs             # guard-script self-tests
 node scripts/bump-version.mjs --check 0.1.0
 ```
 
-The Rust toolchain is pinned by `rust-toolchain.toml` (constrains local dev, CI, and release builds alike; the upgrade steps are documented in that file — keep the workflow files in sync). CI (`.github/workflows/ci.yml`) runs the full gate on macOS + Windows. Release is tag-triggered (`v*`, see `docs/RELEASING.md`). The Rust crate is `portreaper_lib` (see `Cargo.toml [lib]`); `main.rs` is a thin entry point calling `portreaper_lib::run()`.
+The Rust toolchain is pinned by `rust-toolchain.toml` (constrains local dev, CI, and release builds alike; the upgrade steps are documented in that file — keep the workflow files in sync). CI (`.github/workflows/ci.yml`) runs the full gate on macOS + Windows. Release is tag-triggered (`v*`, see `docs/RELEASING.md`). The GUI crate is `portreaper_lib` (see `src-tauri/Cargo.toml [lib]`); `main.rs` is a thin entry point calling `portreaper_lib::run()`.
+
+**Cargo workspace layout** (roadmap + rationale: `docs/ARCHITECTURE-CORE-SPLIT.md`). The workspace root is the *repo root*; `target/` and `Cargo.lock` live there, **not** under `src-tauri/`. Three consequences that bite if you forget them: `Swatinem/rust-cache` keys on `". -> target"` in both workflows; `release.yml`'s dmg post-processing globs `target/<triple>/release/bundle/…`; and `scripts/bump-version.mjs` reads `Cargo.lock` from the root while still reading `Cargo.toml` from `src-tauri/` (that asymmetry is deliberate — the lockfile belongs to the whole workspace, the version belongs to the app crate). `src-tauri/.gitignore` **keeps** its `/target/` line on purpose: oxfmt scopes itself by gitignore, and a pre-split checkout with a leftover `src-tauri/target/` would otherwise make `vp check` crawl into cargo's fingerprint JSON.
 
 ## Architecture
 
 ### Two-process structure
 
 - **Frontend** (`src/App.tsx` + `src/components/` + `src/model.ts` + `src/describe.ts` + `src/i18n.ts`): polls `scan_ports` every 2 seconds, renders the table, owns the kill-confirm modals and search/filter, pushes counts into the tray via `update_tray_title`. `App.tsx` is the container (state, polling, kill/sweep/whitelist flows); presentation lives in `src/components/`: `ProcessRow.tsx` (the memoized row + `RowProps` + `rowPropsEqual`), `ProcessDetail.tsx` (expanded panel: chain, resources, evidence/exemption lists), `Section.tsx` (the suspect/healthy/starred group wrapper), `ConfirmModal.tsx` (the destructive-confirm skeleton + Tab focus trap). All strings go through the typed i18n dict — a missing English key is a tsc error. Pure logic lives outside the component file so it is unit-testable: `model.ts` holds the `ProcessEntry` serde mirror, `whitelistKey`/`legacyWhitelistKey`, `REASON_PRIORITY`/`EXEMPT_REASONS` (read by check-reason-parity) and format/error helpers; `describe.ts` holds the "what is this" knowledge base — its **brand-scoped patterns are skipped for `dev-script` and `automation-instance` rows** (a project dir named `spotify-clone` lands in `app_label`, and a real brand process is never one of those categories — their identity comes from the command line).
-- **Rust backend** (`src-tauri/src/`): owns scanning, classification, the whitelist file, the tray, and window lifecycle. Beyond `scanner/`: `commands.rs` (all `#[tauri::command]` fns — thin wrappers over the modules below), `whitelist.rs` (persisted whitelist file I/O), `paths.rs` (per-environment directory resolution, see below), `lib.rs` (builder, tray, menus, window events).
+- **Engine** (`crates/portreaper-core/`): scanning, classification, and process termination — **zero GUI dependency** (its reference count for `tauri` is 0 and must stay 0). This crate is the single source of truth for the zombie/orphan verdict; the desktop shell, and any future frontend (CLI, Raycast), consume it rather than re-deriving anything. It is also where every invariant below lives.
+- **Desktop shell** (`src-tauri/src/`): owns the whitelist file, the tray, and window lifecycle — no verdict logic. `commands.rs` (all `#[tauri::command]` fns — thin wrappers over the engine + the modules below), `whitelist.rs` (persisted whitelist file I/O), `paths.rs` (per-environment directory resolution, see below), `lib.rs` (builder, tray, menus, window events).
 
 All frontend↔backend communication is Tauri `invoke()` calls: implement in `src-tauri/src/commands.rs`, register in `lib.rs` (`invoke_handler![...]`). Permissions (`src-tauri/capabilities/default.json`) are an **exact whitelist guarded by `src/security-config.test.ts`** — that test also pins the strict CSP (no `unsafe-inline` anywhere, `connect-src` must keep both Tauri IPC carriers). Adding any permission or touching the CSP requires updating those assertions deliberately.
 
-### Scanner module layout (`src-tauri/src/scanner/`)
+### Scanner module layout (`crates/portreaper-core/src/scanner/`)
 
 Platform variance is isolated in two leaf files with **identical cfg-gated function signatures** (compile-time polymorphism, no traits):
 
 ```
-scanner/mod.rs       orchestration: collect → (per-PID) build_entry [snapshot → classify → chain walk] → sort
+crates/portreaper-core/src/
+  lib.rs             crate facade: pub use scan / kill / ProcessEntry
+  scanner/mod.rs     orchestration: collect → (per-PID) build_entry [snapshot → classify → chain walk] → sort
                      two scan paths share build_entry: (1) listeners from lsof/GetExtendedTcpTable;
                      (2) orphan dev processes — full-process-table rows that hold no port
-scanner/model.rs     ProcessEntry (serde contract with src/model.ts), ProcMeta, ProcessSnapshot
-scanner/classify.rs  PURE classifier + ReasonCode/Confidence enums + fixture tests
-scanner/identify.rs  shared, separator-agnostic path/project/script helpers
-scanner/macos.rs     lsof + ps + launchctl list; macOS path ladder
-scanner/windows.rs   GetExtendedTcpTable + sysinfo; SHGetKnownFolderPath path ladder
-platform.rs          kill with start-time identity check (PID-reuse guard)
+  scanner/model.rs   ProcessEntry (serde contract with src/model.ts), ProcMeta, ProcessSnapshot
+  scanner/classify.rs  PURE classifier + ReasonCode/Confidence enums + fixture tests
+  scanner/identify.rs  shared, separator-agnostic path/project/script helpers
+  scanner/macos.rs   lsof + ps + launchctl list; macOS path ladder
+  scanner/windows.rs GetExtendedTcpTable + sysinfo; SHGetKnownFolderPath path ladder
+  platform.rs        kill with start-time identity check (PID-reuse guard)
 ```
 
 Data sources: macOS = `lsof -iTCP -sTCP:LISTEN -P -n -FpcLn` + `ps -A -o pid=,ppid=,state=,tty=,etime=,pcpu=,rss=,user=,command=` (user fills the otherwise-empty column for port-less orphans; listeners still prefer the lsof `L` field) + a second `ps -A -o pid=,comm=` (comm is the authoritative exe path — it survives spaces in paths, unlike splitting the command line) + `launchctl list` (managed-PID set). Session leaders are identified by the `s` flag in the ps *state* column — **never** use `ps -o sess=`: on macOS it prints 0 for every process (review-caught bug that made every terminal process look session-orphaned). Windows = `GetExtendedTcpTable` with `TCP_TABLE_OWNER_PID_ALL` (IPv4+IPv6, no subprocess), split by `dwState` into LISTEN + ESTABLISHED rows, + a long-lived `sysinfo::System` (the 2s poll provides the CPU sampling interval; first scan shows 0% CPU by design). `LANG=en_US.UTF-8` is forced on all macOS subprocesses.

@@ -1,12 +1,13 @@
 //! Windows 数据采集与路径规则。
 //! 端口：GetExtendedTcpTable（IPv4 + IPv6，无子进程、无 locale 依赖、普通权限可用）。
-//! 元数据：sysinfo（长生命周期 System，前端 2s 轮询天然提供 CPU 采样间隔）。
+//! 元数据：sysinfo（长生命周期 `System`，由 [`PlatformState`] 持有 —— 相邻两次
+//! refresh 之间的间隔**就是** CPU 百分比的采样区间，见 `scanner::CpuSampling`）。
 //! 孤儿语义：Windows 不收养孤儿 —— 父 PID 变「悬空」且可能被复用，
 //! 因此以「父不存在」+「父创建时间晚于子（槽位复用）」为判定信号。
 
 use std::collections::HashMap;
 use std::ffi::c_void;
-use std::sync::{Mutex, OnceLock};
+use std::sync::OnceLock; // KnownPaths 的一次性探测缓存（System 已改由 PlatformState 持有）
 
 use sysinfo::{Pid, ProcessRefreshKind, ProcessesToUpdate, System, UpdateKind, Users};
 use windows::Win32::Foundation::{ERROR_INSUFFICIENT_BUFFER, NO_ERROR};
@@ -388,9 +389,52 @@ fn first_segment_after(exe_path: &str, normalized: &str, prefix_len: usize) -> O
 // 采集
 // ---------------------------------------------------------------------------
 
-fn system() -> &'static Mutex<System> {
-    static SYSTEM: OnceLock<Mutex<System>> = OnceLock::new();
-    SYSTEM.get_or_init(|| Mutex::new(System::new()))
+/// 一次扫描会话的平台状态。
+///
+/// Windows 侧持有 `sysinfo::System`：CPU 百分比是**两次 refresh 之间**的增量，
+/// 所以这份状态必须跨扫描存活。此前它是进程级 `OnceLock<Mutex<System>>`，
+/// 贴合「常驻 GUI 每 2 秒轮询」的唯一场景；改成显式持有后，短命的 CLI 也能
+/// 自己决定要不要付采样的代价（见 `scanner::CpuSampling`）——冷启动只 refresh
+/// 一次的话，Windows 上每一行的 CPU 都会是 0%。
+pub(crate) struct PlatformState {
+    sys: System,
+}
+
+impl PlatformState {
+    pub(crate) fn new() -> Self {
+        Self { sys: System::new() }
+    }
+
+    /// 只刷新进程表、不做完整采集：为随后的 `collect()` 建立 CPU 采样基线。
+    pub(crate) fn warm_up(&mut self) {
+        refresh_processes(&mut self.sys);
+    }
+}
+
+/// 必须用 `_specifics` + 显式 refresh_kind（评审发现的 Windows 核心失效）：便捷的
+/// `refresh_processes(All, true)` 内部固定为 `nothing().with_memory().with_cpu()`
+/// `.with_disk_usage().with_exe(OnlyIfNotSet)` —— 不含 cmd/cwd/user。Windows 上
+/// 这三项受 refresh_kind 门控并提前 return，导致 `proc_.cmd()` 恒空、`cwd()` 恒 None、
+/// `user_id()` 恒 None：full_command 退化为纯 exe（无参数）⇒ extract_script_arg /
+/// extract_module_arg 拿不到脚本/模块 ⇒ `node.exe vite.js`、`python.exe -m
+/// http.server` 永远走不到 dev-script、被路径阶梯当 installed-app 豁免，
+/// CLAUDE.md 的核心检测目标在 Windows 上整体失效；cwd 缺失还让重复检测哑火。
+///
+/// 只勾选实际读取的字段（cmd/cwd/exe/user/memory/cpu），不用 `everything()`：后者
+/// 每 2s 还会为全机进程拉取磁盘 IO 计数器、线程列表、完整 environ 块 —— 全部即取即弃
+///（评审发现的浪费）。start_time/run_time/ppid/name 随基础进程信息返回，无需开关。
+fn refresh_processes(sys: &mut System) {
+    sys.refresh_processes_specifics(
+        ProcessesToUpdate::All,
+        true,
+        ProcessRefreshKind::nothing()
+            .with_cmd(UpdateKind::Always)
+            .with_cwd(UpdateKind::Always)
+            .with_exe(UpdateKind::OnlyIfNotSet)
+            .with_user(UpdateKind::OnlyIfNotSet)
+            .with_memory()
+            .with_cpu(),
+    );
 }
 
 /// 创建时间 / 运行时长的净化：start_time()==0 表示读取失败（句柄受限），
@@ -407,140 +451,116 @@ fn sanitize_times(start: u64, run: u64) -> (Option<u64>, u64) {
     }
 }
 
-pub(crate) fn collect() -> Collected {
-    let TcpTables {
-        listeners: ports_by_pid,
-        mut established_local,
-    } = tcp_tables();
+impl PlatformState {
+    pub(crate) fn collect(&mut self) -> Collected {
+        let TcpTables {
+            listeners: ports_by_pid,
+            mut established_local,
+        } = tcp_tables();
 
-    // 毒化恢复：scan 中途 panic 一次不应让后续每轮轮询永久 panic
-    //（前端表现为永远 ERR_SCAN_TIMEOUT）。System 只是缓存，半更新状态可安全续用。
-    let mut sys = system()
-        .lock()
-        .unwrap_or_else(std::sync::PoisonError::into_inner);
-    // 必须用 _specifics + 显式 refresh_kind（评审发现的 Windows 核心失效）：便捷的
-    // refresh_processes(All, true) 内部固定为 nothing().with_memory().with_cpu()
-    // .with_disk_usage().with_exe(OnlyIfNotSet) —— 不含 cmd/cwd/user。Windows 上
-    // 这三项受 refresh_kind 门控并提前 return，导致 proc_.cmd() 恒空、cwd() 恒 None、
-    // user_id() 恒 None：full_command 退化为纯 exe（无参数）⇒ extract_script_arg /
-    // extract_module_arg 拿不到脚本/模块 ⇒ `node.exe vite.js`、`python.exe -m
-    // http.server` 永远走不到 dev-script、被路径阶梯当 installed-app 豁免，
-    // CLAUDE.md 的核心检测目标在 Windows 上整体失效；cwd 缺失还让重复检测哑火。
-    //
-    // 只勾选实际读取的字段（cmd/cwd/exe/user/memory/cpu），不用 everything()：后者
-    // 每 2s 还会为全机进程拉取磁盘 IO 计数器、线程列表、完整 environ 块 —— 全部即取即弃
-    // （评审发现的浪费）。start_time/run_time/ppid/name 随基础进程信息返回，无需开关。
-    sys.refresh_processes_specifics(
-        ProcessesToUpdate::All,
-        true,
-        ProcessRefreshKind::nothing()
-            .with_cmd(UpdateKind::Always)
-            .with_cwd(UpdateKind::Always)
-            .with_exe(UpdateKind::OnlyIfNotSet)
-            .with_user(UpdateKind::OnlyIfNotSet)
-            .with_memory()
-            .with_cpu(),
-    );
-    let users = Users::new_with_refreshed_list();
+        refresh_processes(&mut self.sys);
+        let sys = &self.sys;
+        let users = Users::new_with_refreshed_list();
 
-    let mut procs: HashMap<u32, ProcMeta> = HashMap::new();
-    let mut names: HashMap<u32, String> = HashMap::new();
+        let mut procs: HashMap<u32, ProcMeta> = HashMap::new();
+        let mut names: HashMap<u32, String> = HashMap::new();
 
-    for (pid, proc_) in sys.processes() {
-        let pid_u32 = pid.as_u32();
-        let exe_path = proc_
-            .exe()
-            .map(|p| p.to_string_lossy().into_owned())
-            .unwrap_or_default();
-        let cmd_parts: Vec<String> = proc_
-            .cmd()
-            .iter()
-            .map(|s| s.to_string_lossy().into_owned())
-            .collect();
-        let full_command = if cmd_parts.is_empty() {
-            exe_path.clone()
-        } else {
-            cmd_parts.join(" ")
-        };
-        let user = proc_
-            .user_id()
-            .and_then(|uid| users.get_user_by_id(uid))
-            .map(|u| u.name().to_string())
-            .unwrap_or_default();
+        for (pid, proc_) in sys.processes() {
+            let pid_u32 = pid.as_u32();
+            let exe_path = proc_
+                .exe()
+                .map(|p| p.to_string_lossy().into_owned())
+                .unwrap_or_default();
+            let cmd_parts: Vec<String> = proc_
+                .cmd()
+                .iter()
+                .map(|s| s.to_string_lossy().into_owned())
+                .collect();
+            let full_command = if cmd_parts.is_empty() {
+                exe_path.clone()
+            } else {
+                cmd_parts.join(" ")
+            };
+            let user = proc_
+                .user_id()
+                .and_then(|uid| users.get_user_by_id(uid))
+                .map(|u| u.name().to_string())
+                .unwrap_or_default();
 
-        names.insert(pid_u32, proc_.name().to_string_lossy().into_owned());
-        // 句柄受限（受保护/提权）进程 sysinfo 读不到创建时间时返回 0 ——
-        // 必须净化（评审发现）：start_unix=Some(0) 会让 kill 身份校验恒以
-        // ERR_PID_REUSED 误拒（语义应为缺令牌的 ERR_IDENTITY_UNKNOWN）、
-        // elapsed 变成 ~56 年的荒谬时长、并污染 direct_orphan 的槽位复用
-        // 比较（start=0 的父或子会伪造时间倒挂）。None 走 fail-closed 语义。
-        let (start_unix, elapsed_secs) = sanitize_times(proc_.start_time(), proc_.run_time());
-        procs.insert(
-            pid_u32,
-            ProcMeta {
-                ppid: proc_.parent().map(|p| p.as_u32()).unwrap_or(0),
-                exe_path,
-                full_command,
-                user,
-                start_unix,
-                elapsed_secs,
-                // 与 macOS ps pcpu 同口径：单核百分比，多线程可超 100%
-                cpu_percent: proc_.cpu_usage(),
-                rss_kb: proc_.memory() / 1024, // sysinfo 0.33 memory() 为字节
-                tty: None,
-                state: None,
-                tty_orphaned: false,
-            },
-        );
-    }
-
-    // 仅监听者的 cwd：重复 dev server 检测的证据（MSIX/提权进程读不到时缺席）
-    let mut cwds: HashMap<u32, String> = HashMap::new();
-    for pid in ports_by_pid.keys() {
-        if let Some(p) = sys.process(Pid::from_u32(*pid)).and_then(|p| p.cwd()) {
-            cwds.insert(*pid, p.to_string_lossy().to_lowercase());
+            names.insert(pid_u32, proc_.name().to_string_lossy().into_owned());
+            // 句柄受限（受保护/提权）进程 sysinfo 读不到创建时间时返回 0 ——
+            // 必须净化（评审发现）：start_unix=Some(0) 会让 kill 身份校验恒以
+            // ERR_PID_REUSED 误拒（语义应为缺令牌的 ERR_IDENTITY_UNKNOWN）、
+            // elapsed 变成 ~56 年的荒谬时长、并污染 direct_orphan 的槽位复用
+            // 比较（start=0 的父或子会伪造时间倒挂）。None 走 fail-closed 语义。
+            let (start_unix, elapsed_secs) = sanitize_times(proc_.start_time(), proc_.run_time());
+            procs.insert(
+                pid_u32,
+                ProcMeta {
+                    ppid: proc_.parent().map(|p| p.as_u32()).unwrap_or(0),
+                    exe_path,
+                    full_command,
+                    user,
+                    start_unix,
+                    elapsed_secs,
+                    // 与 macOS ps pcpu 同口径：单核百分比，多线程可超 100%
+                    cpu_percent: proc_.cpu_usage(),
+                    rss_kb: proc_.memory() / 1024, // sysinfo 0.33 memory() 为字节
+                    tty: None,
+                    state: None,
+                    tty_orphaned: false,
+                },
+            );
         }
-    }
 
-    let listeners = ports_by_pid
-        .into_iter()
-        .map(|(pid, mut ports)| {
+        // 仅监听者的 cwd：重复 dev server 检测的证据（MSIX/提权进程读不到时缺席）
+        let mut cwds: HashMap<u32, String> = HashMap::new();
+        for pid in ports_by_pid.keys() {
+            if let Some(p) = sys.process(Pid::from_u32(*pid)).and_then(|p| p.cwd()) {
+                cwds.insert(*pid, p.to_string_lossy().to_lowercase());
+            }
+        }
+
+        let listeners = ports_by_pid
+            .into_iter()
+            .map(|(pid, mut ports)| {
+                ports.sort_unstable();
+                ports.dedup();
+                Listener {
+                    pid,
+                    ports,
+                    user: procs.get(&pid).map(|m| m.user.clone()).unwrap_or_default(),
+                    command: names.get(&pid).cloned().unwrap_or_default(),
+                }
+            })
+            .collect();
+
+        // 存活性证据只对自动化实例有意义（唯一消费者是 automation-instance 的
+        // DebuggerAttached 否决）。全表已在手，这里只做一次收窄：普通应用的成百上千条
+        // 出站连接留在 Collected 里既无用途，又要跨整次扫描持有（与 macOS 侧
+        // 「只查候选 PID」的口径对齐 —— 两平台交给 mod.rs 的是同一种稀疏数据）。
+        established_local.retain(|pid, _| {
+            procs
+                .get(pid)
+                .is_some_and(|m| super::identify::is_automation_instance(&m.full_command))
+        });
+        // 去重，与 macOS 侧 parse_established 的数据形状对齐：调试端口上的每一条入站
+        // 连接都是同一个本地端口，10 个客户端会推 10 个 9222。消费方只做 contains
+        // 判定、语义不受影响，但两平台交给 mod.rs 的数据必须同形，否则任何未来按
+        // 「连接数」做判定的改动都会在两个平台上得出不同结论。放在 retain 之后：
+        // 此时只剩极少数自动化 PID，排序去重的成本可忽略。
+        for ports in established_local.values_mut() {
             ports.sort_unstable();
             ports.dedup();
-            Listener {
-                pid,
-                ports,
-                user: procs.get(&pid).map(|m| m.user.clone()).unwrap_or_default(),
-                command: names.get(&pid).cloned().unwrap_or_default(),
-            }
-        })
-        .collect();
+        }
 
-    // 存活性证据只对自动化实例有意义（唯一消费者是 automation-instance 的
-    // DebuggerAttached 否决）。全表已在手，这里只做一次收窄：普通应用的成百上千条
-    // 出站连接留在 Collected 里既无用途，又要跨整次扫描持有（与 macOS 侧
-    // 「只查候选 PID」的口径对齐 —— 两平台交给 mod.rs 的是同一种稀疏数据）。
-    established_local.retain(|pid, _| {
-        procs
-            .get(pid)
-            .is_some_and(|m| super::identify::is_automation_instance(&m.full_command))
-    });
-    // 去重，与 macOS 侧 parse_established 的数据形状对齐：调试端口上的每一条入站
-    // 连接都是同一个本地端口，10 个客户端会推 10 个 9222。消费方只做 contains
-    // 判定、语义不受影响，但两平台交给 mod.rs 的数据必须同形，否则任何未来按
-    // 「连接数」做判定的改动都会在两个平台上得出不同结论。放在 retain 之后：
-    // 此时只剩极少数自动化 PID，排序去重的成本可忽略。
-    for ports in established_local.values_mut() {
-        ports.sort_unstable();
-        ports.dedup();
-    }
-
-    Collected {
-        listeners,
-        procs,
-        launchd_pids: Default::default(),
-        cwds,
-        established_local_ports: established_local,
+        Collected {
+            listeners,
+            procs,
+            launchd_pids: Default::default(),
+            cwds,
+            established_local_ports: established_local,
+        }
     }
 }
 

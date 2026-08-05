@@ -12,6 +12,10 @@ dist
 dist-ssr
 *.local
 
+# Cargo：workspace 根在仓库根，故 target/ 也落在这里
+# （拆出 crates/portreaper-core 之前它在 src-tauri/target/）
+/target/
+
 # Design scratch（图标/概念草稿，未被构建引用，仅本地保留）
 design/
 
