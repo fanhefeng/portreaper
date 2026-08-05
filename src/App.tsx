@@ -11,7 +11,6 @@ import {
   localizeKillError,
   localizeScanError,
   sweepableEntries,
-  whitelistKey,
   withTimeout,
   type Filter,
   type Os,
@@ -240,7 +239,8 @@ function App() {
 
   const handleToggleWhitelist = useCallback(
     async (e: ProcessEntry) => {
-      const key = whitelistKey(e);
+      // 引擎随每行产出的键，前端不再重推（见 model.ts ProcessEntry.whitelist_key）
+      const key = e.whitelist_key;
       await runAction(
         async () => {
           if (e.is_whitelisted) {

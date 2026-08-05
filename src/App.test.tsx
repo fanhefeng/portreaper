@@ -45,6 +45,8 @@ function suspectEntry(over: Record<string, unknown> = {}) {
     confidence: "confirmed",
     zombie_reasons: ["ppid1_orphan", "dev_server_keyword"],
     is_whitelisted: false,
+    // 引擎随每行产出的白名单键（前端直读、不重推）。exe_path 含路径分隔符 ⇒ 用它。
+    whitelist_key: "/opt/homebrew/bin/node",
     duplicate_of: null,
     ...over,
   };
@@ -250,11 +252,13 @@ describe("error channels", () => {
     const added: string[] = [];
     route({
       get_platform: () => "macos",
-      // exe_path 是裸名 "node"（PATH/shebang 启动），不含路径分隔符
+      // exe_path 是裸名 "node"（PATH/shebang 启动），不含路径分隔符 ⇒ 引擎给出的
+      // whitelist_key 是完整命令行，前端原样转发
       scan_ports: () => [
         suspectEntry({
           exe_path: "node",
           full_command: "node /Users/x/proj/server.js",
+          whitelist_key: "node /Users/x/proj/server.js",
         }),
       ],
       add_whitelist: (args) => {
@@ -267,7 +271,7 @@ describe("error channels", () => {
     fireEvent.click(screen.getByText("☆")); // 收藏
     await advance(0);
 
-    // 键必须是完整命令行，而非塌缩的裸 "node"（前后端镜像一致性）
+    // 键必须是完整命令行，而非塌缩的裸 "node"
     expect(added).toEqual(["node /Users/x/proj/server.js"]);
   });
 
@@ -365,11 +369,13 @@ describe("error channels", () => {
     const removed: string[] = [];
     route({
       get_platform: () => "macos",
-      // exe_path 是裸名（PATH/shebang 启动）：新键=完整命令行，旧键=裸 "node"
+      // exe_path 是裸名（PATH/shebang 启动）：新键=完整命令行（引擎产出），
+      // 旧键=裸 "node"（legacyWhitelistKey 在前端推导 —— 引擎不产出 v0.4.0 键）
       scan_ports: () => [
         suspectEntry({
           exe_path: "node",
           full_command: "node /Users/x/proj/server.js",
+          whitelist_key: "node /Users/x/proj/server.js",
           is_whitelisted: true,
           is_zombie_suspect: false,
           confidence: "none",

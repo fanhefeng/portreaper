@@ -39,9 +39,13 @@ export type ProcessEntry = {
   zombie_reasons: string[];
   is_whitelisted: boolean;
   /**
-   * 白名单键，由引擎直接产出（Rust `scanner::whitelist_key`）。
-   * 新前端一律读它；下方的 `whitelistKey()` 是历史实现，两者必须给出同一结果 ——
-   * 由 `whitelist_key_matches_frontend` 单测钉住。
+   * 白名单键，由引擎直接产出（Rust `scanner::whitelist_key`）—— **直接读它，
+   * 绝不在 TS 里重推**。推导规则有条反直觉的分支（`exe_path` 仅在含路径分隔符时
+   * 可用，否则回退全命令行：`ps -o comm=` 对 PATH 解析出的裸解释器名只返回
+   * `node`，拿它当键会把全机同名监听者一起加白）。本文件一度重写过一遍那条规则，
+   * 于是要靠单测钉住两份实现一致；改为读本字段后，「在 Raycast 加的星标桌面版
+   * 认不出来」这类 bug 从结构上不可能发生。Raycast 侧同一约定见
+   * `integrations/raycast/src/cli.ts whitelistKey`。
    */
   whitelist_key: string;
   duplicate_of: number | null;
@@ -98,16 +102,6 @@ export const REASON_PRIORITY = [
 export function primaryReason(reasons: string[]): string | null {
   for (const r of REASON_PRIORITY) if (reasons.includes(r)) return r;
   return reasons[0] ?? null;
-}
-
-/**
- * 白名单键 —— 必须与后端 scanner::mod::whitelist_key 逐字一致（评审发现）：
- * exe_path 含路径分隔符（绝对路径）时用它；否则是 PATH 解析的裸解释器名
- * （"node"），单独加白会塌缩匹配全机同名监听者 —— 回退完整命令行。
- */
-export function whitelistKey(e: ProcessEntry): string {
-  if (e.exe_path.includes("/") || e.exe_path.includes("\\")) return e.exe_path;
-  return e.full_command || e.command;
 }
 
 /**
