@@ -103,6 +103,11 @@ pub(crate) fn is_live_session_root(_exe_path: &str) -> bool {
 /// 链回溯的「用户可见 App」终点：installed-app 之外还包括任何 .app bundle ——
 /// 系统自带 Terminal.app 位于 /System/Applications/（类别 system），
 /// 若不在它处停下，链会一路走到 launchd，把活终端里的 dev server 误报成孤儿链。
+///
+/// `.app/` 兜底**刻意不看 category**，即使 dev 工具自带的运行时
+/// （node_modules/electron/dist/Electron.app、ms-playwright 的 Chromium.app，
+/// 类别 dev-script / automation-instance）也照停 —— 见
+/// `chain_stopper_stops_at_dev_runtimes_on_purpose` 的理由。
 pub(crate) fn is_chain_stopper(exe_path: &str, category: &str) -> bool {
     category == "installed-app" || exe_path.contains(".app/")
 }
@@ -920,6 +925,47 @@ n[::1]:9333->[::1]:60123
         let (label, cat) = identify_app(pw, "Chromium", pw);
         assert_eq!(label, "Chromium");
         assert_eq!(cat, "dev-script");
+    }
+
+    /// `.app/` 兜底刻意**不**服从 `identify_app` 的身份判定 —— 这与
+    /// 「dev 工具运行时归 dev-script 而非 installed-app」不矛盾，两者管的是
+    /// 不同的事：那条不变量防的是**豁免**（别让 Electron 吃 installed-app
+    /// 硬豁免），这里管的是**链终点**（helper 的父就是它，父健在就不该把每个
+    /// helper 摊成独立一行）。
+    ///
+    /// 评审建议过在此按 category 早退（dev-script / automation-instance 不停），
+    /// 会直接击穿 `busy_helper_under_live_parent_is_not_listed_separately`：
+    /// helper 的链穿过健在的主进程一路走到 ppid=1，判成 chain_orphan，Gap 1
+    /// 主案的每个 GPU/renderer 子进程都会变成独立可疑行。真正的孤儿 dev 运行时
+    /// 由它**自己那一行**（ppid=1 ⇒ direct_orphan）呈现，不依赖链回溯。
+    #[test]
+    fn chain_stopper_stops_at_dev_runtimes_on_purpose() {
+        const CHROME: &str = "/Applications/Google Chrome.app/Contents/MacOS/Google Chrome";
+
+        // 真实用户可见 App：照常终止链
+        assert!(is_chain_stopper(CHROME, "installed-app"));
+        // 系统自带 Terminal.app 类别是 system，靠 .app/ 兜住
+        assert!(is_chain_stopper(
+            "/System/Applications/Utilities/Terminal.app/Contents/MacOS/Terminal",
+            "system"
+        ));
+
+        // node_modules 里的 Electron：身份是 dev-script，但**照样**是链终点
+        let electron =
+            "/Users/x/proj/node_modules/electron/dist/Electron.app/Contents/MacOS/Electron";
+        assert_eq!(identify_app(electron, "Electron", electron).1, "dev-script");
+        assert!(
+            is_chain_stopper(electron, "dev-script"),
+            "父健在的 Electron 主进程必须终止链，否则其 renderer 会被误报为孤儿"
+        );
+
+        // Playwright 的 Chromium.app、headless 自动化实例：同理
+        let pw = "/Users/x/Library/Caches/ms-playwright/chromium-1148/chrome-mac/Chromium.app/Contents/MacOS/Chromium";
+        assert!(is_chain_stopper(pw, "dev-script"));
+        assert!(is_chain_stopper(CHROME, super::super::AUTOMATION_CATEGORY));
+
+        // 但非 .app 形态的 dev 进程不是链终点（原有行为不变）
+        assert!(!is_chain_stopper("/opt/homebrew/bin/node", "dev-script"));
     }
 
     /// 豁免谓词与事实谓词必须在 App Translocation 目录上**给出相反答案** ——
