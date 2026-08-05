@@ -10,8 +10,11 @@
 //!
 //! 模块地图见 `docs/ARCHITECTURE-CORE-SPLIT.md`。
 
+pub mod paths;
 pub mod platform;
 pub mod scanner;
+pub mod whitelist;
 
-pub use platform::kill;
+pub use platform::{kill, KillError};
 pub use scanner::{scan, ProcessEntry};
+pub use whitelist::Whitelist;

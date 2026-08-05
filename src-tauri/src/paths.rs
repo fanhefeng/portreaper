@@ -1,73 +1,134 @@
-//! 分环境目录解析 —— 开发版与生产版的所有持久化数据彻底隔离，互不污染。
+//! 目录解析的 **Tauri 侧适配**。
 //!
-//! 隔离用编译期 `cfg(debug_assertions)` 而非运行期开关：`pnpm tauri dev` 产出的是
-//! debug 构建、安装包是 release 构建，二者天然对应「开发 / 生产」，无需任何环境变量。
-//! debug 构建把数据放进各 Tauri 基目录下的 `dev/` 子目录（白名单、日志……），
-//! release 直接用基目录。于是开发时随手测试加的白名单、刷出的报错日志，绝不会
-//! 混进日常使用的正式版数据里（反之亦然）。
+//! 算法本体已下沉到 `portreaper_core::paths`（不依赖 Tauri，CLI / Raycast 共用）。
+//! 本模块只做两件事：
 //!
-//! 注：webview 的 localStorage（语言偏好）已天然按 origin 隔离（dev = localhost:1430，
-//! prod = tauri://localhost），WKWebView 缓存同理 —— 本模块只需管 Rust 侧自建的目录。
+//! 1. 把引擎的 `Option<PathBuf>` 适配成 Tauri 命令惯用的 `tauri::Result`；
+//! 2. **一致性断言**（`assert_matches_tauri`）—— 逐一比对引擎自解析的结果与
+//!    `app.path().app_*_dir()`，不一致就喊出来。
+//!
+//! 第 2 条是整次拆分里最要命的一环。白名单文件是所有前端共享的状态：用户在
+//! Raycast 里加的星标，桌面版下一轮扫描必须立刻看见。两边的目录算法只要差一个
+//! 字符，就会各写各的 whitelist.json —— 症状是「星标加了但对面看不到」，不报错、
+//! 不崩溃，只让人怀疑自己记错了。所以宁可在启动时吵闹。
+//!
+//! 断言放在**运行时**而非单元测试：Tauri 的路径解析需要一个活的 AppHandle，
+//! 而 mock app 会拉起窗口，在 headless CI 上并不可靠。真实启动是唯一能同时拿到
+//! 两侧答案的地方。debug 构建直接 panic（开发时立刻发现），release 只记
+//! `log::error!` —— 用户的进程管理器不该因为日志目录算错就打不开。
+//!
+//! 分环境隔离（debug → `dev/` 子目录）的语义见 `portreaper_core::paths`。
 
 use std::path::PathBuf;
 
 use tauri::{AppHandle, Manager};
 
-/// debug 构建的隔离子目录名；release 为 `None`（直接用基目录）。
-#[cfg(debug_assertions)]
-const ENV_SUBDIR: Option<&str> = Some("dev");
-#[cfg(not(debug_assertions))]
-const ENV_SUBDIR: Option<&str> = None;
+pub use portreaper_core::paths::{env_label, log_file_name};
 
-/// 当前环境的人类可读标签（用于日志首行 / 文件名）。
-pub fn env_label() -> &'static str {
-    if cfg!(debug_assertions) {
-        "dev"
-    } else {
-        "prod"
-    }
-}
-
-fn scoped(base: PathBuf) -> PathBuf {
-    match ENV_SUBDIR {
-        Some(sub) => base.join(sub),
-        None => base,
+fn required(opt: Option<PathBuf>, what: &str) -> tauri::Result<PathBuf> {
+    match opt {
+        Some(p) => Ok(p),
+        None => {
+            log::error!("could not resolve {what} directory");
+            Err(tauri::Error::UnknownPath)
+        }
     }
 }
 
 /// 分环境后的配置目录（白名单 whitelist.json 落此处）。
-pub fn config_dir(app: &AppHandle) -> tauri::Result<PathBuf> {
-    Ok(scoped(app.path().app_config_dir()?))
+pub fn config_dir(_app: &AppHandle) -> tauri::Result<PathBuf> {
+    required(portreaper_core::paths::config_dir(), "config")
 }
 
 /// 分环境后的日志目录（tauri-plugin-log 的 Folder target 指向此处）。
-pub fn log_dir(app: &AppHandle) -> tauri::Result<PathBuf> {
-    Ok(scoped(app.path().app_log_dir()?))
+pub fn log_dir(_app: &AppHandle) -> tauri::Result<PathBuf> {
+    required(portreaper_core::paths::log_dir(), "log")
 }
 
 /// 分环境后的缓存目录（可重建的临时性数据，OS 可能在空间紧张时回收）。
-pub fn cache_dir(app: &AppHandle) -> tauri::Result<PathBuf> {
-    Ok(scoped(app.path().app_cache_dir()?))
+pub fn cache_dir(_app: &AppHandle) -> tauri::Result<PathBuf> {
+    required(portreaper_core::paths::cache_dir(), "cache")
 }
 
 /// 分环境后的数据（文件存储）目录。
-pub fn data_dir(app: &AppHandle) -> tauri::Result<PathBuf> {
-    Ok(scoped(app.path().app_data_dir()?))
+pub fn data_dir(_app: &AppHandle) -> tauri::Result<PathBuf> {
+    required(portreaper_core::paths::data_dir(), "data")
 }
 
 /// 分环境后的应用专属临时目录。
-/// `temp_dir()` 是所有进程共享的系统临时根（macOS `$TMPDIR`、Windows `%TEMP%`），
-/// 直接打开会暴露整个系统 temp，故先落到 bundle id 专属子目录、再按环境隔离。
-/// 子目录名复用 `config.identifier`（即 `com.fhf.portreaper`，与 cache/data/log
-/// 所用的 `app_*_dir` 内部一致），改产品名时不会只有 temp 漏同步。
-pub fn temp_dir(app: &AppHandle) -> tauri::Result<PathBuf> {
-    Ok(scoped(
-        app.path().temp_dir()?.join(&app.config().identifier),
-    ))
+pub fn temp_dir(_app: &AppHandle) -> tauri::Result<PathBuf> {
+    Ok(portreaper_core::paths::temp_dir())
 }
 
-/// 日志文件主名（不含扩展名，tauri-plugin-log 追加 `.log`）。
-/// 即便日后两个环境的目录被指到一处，文件名也带环境后缀、不会互相覆盖 —— 双保险。
-pub fn log_file_name() -> String {
-    format!("portreaper-{}", env_label())
+/// 启动时校验：引擎自解析的目录必须与 Tauri 的解析逐字节相同。
+///
+/// 覆盖两类漂移：
+/// - **identifier 漂移** —— `tauri.conf.json` 改了 bundle id 而 core 的常量没跟；
+/// - **算法漂移** —— 升级 tauri 后它换了 `dirs` 的 major，或改了某个目录的平台分叉
+///   （macOS 的日志目录走 `home_dir()/Library/Logs` 而非 data_local_dir，是最容易
+///   被抄错的一处）。
+///
+/// temp_dir 不在比对之列：Tauri 侧是 `std::env::temp_dir()` 再由本项目 join
+/// identifier，两边同源，没有独立的第三方实现可供背离。
+pub fn assert_matches_tauri(app: &AppHandle) {
+    let identifier = &app.config().identifier;
+    if identifier != portreaper_core::paths::APP_IDENTIFIER {
+        report(&format!(
+            "bundle identifier 漂移：tauri.conf.json = {identifier}，\
+             portreaper_core::paths::APP_IDENTIFIER = {}",
+            portreaper_core::paths::APP_IDENTIFIER
+        ));
+        return; // identifier 已经不一致，逐目录比对只会刷屏
+    }
+
+    let cases: [(&str, Option<PathBuf>, tauri::Result<PathBuf>); 4] = [
+        (
+            "config",
+            portreaper_core::paths::config_dir(),
+            app.path().app_config_dir(),
+        ),
+        (
+            "data",
+            portreaper_core::paths::data_dir(),
+            app.path().app_data_dir(),
+        ),
+        (
+            "cache",
+            portreaper_core::paths::cache_dir(),
+            app.path().app_cache_dir(),
+        ),
+        (
+            "log",
+            portreaper_core::paths::log_dir(),
+            app.path().app_log_dir(),
+        ),
+    ];
+
+    for (name, ours, theirs) in cases {
+        // Tauri 侧是未分环境的基目录，补上同样的 dev/ 作用域再比
+        let theirs = theirs.map(scoped_like_core);
+        match (ours, theirs) {
+            (Some(a), Ok(b)) if a == b => {}
+            (a, b) => report(&format!(
+                "{name} 目录漂移：portreaper_core = {a:?}，tauri = {b:?}"
+            )),
+        }
+    }
+}
+
+/// 复刻 core 的分环境作用域，用于把 Tauri 的基目录调到可比状态。
+fn scoped_like_core(base: PathBuf) -> PathBuf {
+    if cfg!(debug_assertions) {
+        base.join("dev")
+    } else {
+        base
+    }
+}
+
+fn report(msg: &str) {
+    log::error!("[paths] {msg}");
+    // 开发期直接炸掉：这类漂移一旦流到用户手里，表现是「白名单莫名其妙分家」，
+    // 排查成本远高于启动即失败。release 只记录，不让用户打不开进程管理器。
+    #[cfg(debug_assertions)]
+    panic!("[paths] {msg}");
 }

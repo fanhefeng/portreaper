@@ -35,5 +35,6 @@ cargo test --workspace
 node --test scripts/*.test.mjs
 node scripts/check-reason-parity.mjs
 node scripts/check-release-assets.mjs
+node scripts/check-paths-parity.mjs
 
 echo "pre-push: 全部通过"

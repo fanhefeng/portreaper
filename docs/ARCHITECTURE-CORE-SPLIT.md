@@ -296,8 +296,17 @@ Raycast 扩展按顺序找：
 
 `src-tauri` 侧 `sysinfo` / `windows` 依赖一并移走：GUI 壳不该直接碰平台 API。
 
-**步骤 2 — 解开三处 GUI 耦合**
-`paths.rs` 去 Tauri 化 + 加一致性测试；`whitelist.rs` 改值类型，GUI 侧包 static；`KillError` 枚举化，GUI IPC 保留 `ERR_*` 字符串兼容层。同时把 `scan/mod.rs`（1681 行）按 §4 拆成 `entry/chain/duplicates/subtree`。
+**步骤 2 — 解开三处 GUI 耦合 ✅ 已完成**
+`paths.rs` 去 Tauri 化；`whitelist.rs` 改值类型，GUI 侧包 static；`KillError` 枚举化，GUI IPC 保留 `ERR_*` 字符串兼容层。
+
+一致性保障做成了**两层**（原计划只有单测一层，实施时发现单测覆盖不到真正危险的那一半）：
+
+- 静态层 `scripts/check-paths-parity.mjs` —— 只查 `APP_IDENTIFIER` 常量与 `tauri.conf.json` 是否一致，不需要启动应用，进 CI 与 pre-push；
+- 运行时层 `src-tauri/src/paths.rs::assert_matches_tauri` —— 逐一比对四个目录与 `app.path().app_*_dir()`，debug 下 panic、release 下记 `log::error!`。**放弃了原计划的 mock-app 单测**：Tauri 的路径解析需要活的 AppHandle，而 mock app 会拉起窗口，在 headless CI 上并不可靠；真实启动是唯一能同时拿到两侧答案的地方。
+
+实测：`cargo run -p portreaper`（debug）启动无 panic，目录落在 `~/Library/Application Support/com.fhf.portreaper/dev` 与 `~/Library/Logs/com.fhf.portreaper/dev`，与拆分前一致。`cargo test --workspace` 82 passed（core 71 → 82：paths 4 + whitelist 4 + KillError 契约 3）。
+
+> **计划调整**：原定在本步顺带做的 `scanner/mod.rs`（1681 行）细分**推迟到步骤 3 之后**。步骤 3 的 `Scanner` 结构体会重写 `scan()` 的入口与 Windows 侧的 `System` 持有方式，先拆再改等于同一块代码动两遍、review 两遍。拆分本身是纯代码组织，不阻塞任何前端。
 
 **步骤 3 — 契约化**
 `Scanner` + `CpuSampling`；ts-rs 生成 `contracts/process-entry.d.ts`，`src/model.ts` 改为导入类型、只留纯函数；`reasons.rs` + parity 脚本升级。

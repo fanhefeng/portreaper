@@ -18,11 +18,18 @@ pub async fn scan_ports() -> Result<Vec<scanner::ProcessEntry>, String> {
 /// 终止进程。`start_unix` 是扫描时捕获的创建时间 —— kill 前重新核对，
 /// 防止 scan 与点击之间 PID 被复用导致误杀（Windows 复用尤其激进）。
 /// async 理由同 scan_ports（macOS 分支 shell 出 ps + kill 两个子进程）。
+///
+/// 引擎返回结构化的 `KillError`，这里降级成旧的 `ERR_*:` 字符串形态过 IPC ——
+/// 前端 `src/model.ts` 仍以 `includes("ERR_…")` 分派本地化文案。**兼容层是
+/// 过渡性的**：待前端改吃 `{code, message}` 后，这里直接返回 KillError 的
+/// serde 形态，`to_legacy_string` 随之删除（token 由 core 的
+/// legacy_contract_tests 钉住，改动前先看那组测试）。
 #[tauri::command]
 pub async fn kill_process(pid: u32, force: bool, start_unix: Option<u64>) -> Result<(), String> {
     tauri::async_runtime::spawn_blocking(move || platform::kill(pid, force, start_unix))
         .await
         .map_err(|e| format!("kill task failed: {e}"))?
+        .map_err(|e| e.to_legacy_string())
 }
 
 /// 前端平台感知（驱动平台分叉的文案与按钮布局），不引入额外 JS 插件。

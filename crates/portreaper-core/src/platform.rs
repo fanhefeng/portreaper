@@ -2,31 +2,89 @@
 //! scan 时捕获的 start_unix 在 kill 前重新核对，创建时间对不上即拒绝 ——
 //! 杀错一个无辜的复用 PID 属于数据损失级事故，宁可让用户重新扫描。
 //!
-//! 错误信息以 `ERR_*:` 前缀开头的是本应用语义错误（前端可 i18n 映射），
-//! 其余为操作系统原文。
+//! 失败以 [`KillError`] 返回：语义分支是**枚举**而非字符串前缀。多一个前端就
+//! 多一份 `startsWith("ERR_…")` 解析、且没有任何编译期保护 —— 加一个变体时
+//! 漏改某个前端，那里只会安静地把语义错误当成 OS 原文透传。
+//!
+//! 旧的 `ERR_*:` 字符串形态由 [`KillError::to_legacy_string`] 保留，供尚未
+//! 迁移到结构化错误的 IPC 边界使用（见 `src-tauri/src/commands.rs`）。
+
+use std::fmt;
+
+use serde::Serialize;
 
 /// 创建时间容差（秒）：macOS 两侧都由 `now - etime` 推导，存在 ±1~2s 抖动；
 /// 被复用的 PID 创建时间必然晚于扫描时刻，远超此容差。
 const START_TOLERANCE_SECS: u64 = 5;
 
+/// 终止进程失败的原因。
+///
+/// 前四个变体是**应用语义**，各前端据此分叉 UI 与本地化文案；`Os` 是无语义的
+/// 系统原文兜底，只能原样展示。
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+#[serde(tag = "code", rename_all = "snake_case")]
+pub enum KillError {
+    /// 前端没带扫描时的身份令牌 —— fail-closed，绝不盲杀
+    IdentityUnknown,
+    /// 目标进程已不存在
+    ProcessGone,
+    /// 创建时间对不上：PID 已被复用，杀下去就是误伤
+    PidReused,
+    /// 进程仍在，但被策略 / EDR / 受保护进程拒绝
+    AccessDenied,
+    /// 操作系统原文，无语义
+    Os { message: String },
+}
+
+impl KillError {
+    fn os(message: impl Into<String>) -> Self {
+        Self::Os {
+            message: message.into(),
+        }
+    }
+
+    /// 旧 IPC 契约的字符串形态。前端以 `includes("ERR_…")` 匹配，故这些 token
+    /// **必须逐字保留**（`src/model.ts` 的 killErrorText 依赖它们）。
+    pub fn to_legacy_string(&self) -> String {
+        match self {
+            Self::IdentityUnknown => {
+                "ERR_IDENTITY_UNKNOWN: missing identity token, rescan first".to_string()
+            }
+            Self::ProcessGone => "ERR_PROCESS_GONE: process no longer exists".to_string(),
+            Self::PidReused => {
+                "ERR_PID_REUSED: process identity changed (PID was reused), rescan and retry"
+                    .to_string()
+            }
+            Self::AccessDenied => {
+                "ERR_ACCESS_DENIED: not permitted to terminate (protected process?)".to_string()
+            }
+            Self::Os { message } => message.clone(),
+        }
+    }
+}
+
+impl fmt::Display for KillError {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.write_str(&self.to_legacy_string())
+    }
+}
+
+impl std::error::Error for KillError {}
+
 #[cfg(target_os = "macos")]
-pub fn kill(pid: u32, force: bool, expected_start: Option<u64>) -> Result<(), String> {
+pub fn kill(pid: u32, force: bool, expected_start: Option<u64>) -> Result<(), KillError> {
     use std::process::Command;
 
     // fail-closed：没有身份令牌就拒绝（scan() 保证每行都带 start_unix，
     // 走到这里说明前端数据异常 —— 宁可让用户重扫，绝不盲杀）
-    let expected = expected_start
-        .ok_or_else(|| "ERR_IDENTITY_UNKNOWN: missing identity token, rescan first".to_string())?;
+    let expected = expected_start.ok_or(KillError::IdentityUnknown)?;
     // 探针工具本身失败（ps 起不来）≠ 进程消失：前者以 OS 原文上抛，
-    // 不映射成 ERR_PROCESS_GONE 误导用户「进程已不在」（评审发现）。
+    // 不映射成 ProcessGone 误导用户「进程已不在」（评审发现）。
     let current = current_start_unix(pid)
-        .map_err(|e| format!("verify process identity: {e}"))?
-        .ok_or_else(|| "ERR_PROCESS_GONE: process no longer exists".to_string())?;
+        .map_err(|e| KillError::os(format!("verify process identity: {e}")))?
+        .ok_or(KillError::ProcessGone)?;
     if current.abs_diff(expected) > START_TOLERANCE_SECS {
-        return Err(
-            "ERR_PID_REUSED: process identity changed (PID was reused), rescan and retry"
-                .to_string(),
-        );
+        return Err(KillError::PidReused);
     }
     // 已知残余竞态：ps 校验与 kill 是两个独立子进程，二者之间存在亚毫秒级
     // 窗口（macOS 无法像 Windows 那样用同一句柄钉住身份）。PID 在该窗口内
@@ -39,16 +97,19 @@ pub fn kill(pid: u32, force: bool, expected_start: Option<u64>) -> Result<(), St
     let output = Command::new(crate::scanner::system_bin("kill"))
         .args([signal, &pid.to_string()])
         .output()
-        .map_err(|e| e.to_string())?;
+        .map_err(|e| KillError::os(e.to_string()))?;
     if !output.status.success() {
         let stderr = String::from_utf8_lossy(&output.stderr);
         let stderr = stderr.trim();
         // /bin/kill 失败但 stderr 为空（个别 EPERM 场景）时给出带退出码的兜底
         // 文案 —— 否则前端错误横幅展示空字符串（评审发现）。
         if stderr.is_empty() {
-            return Err(format!("kill {pid} failed with {}", output.status));
+            return Err(KillError::os(format!(
+                "kill {pid} failed with {}",
+                output.status
+            )));
         }
-        return Err(stderr.to_string());
+        return Err(KillError::os(stderr));
     }
     Ok(())
 }
@@ -82,7 +143,7 @@ fn current_start_unix(pid: u32) -> Result<Option<u64>, String> {
 }
 
 #[cfg(windows)]
-pub fn kill(pid: u32, _force: bool, expected_start: Option<u64>) -> Result<(), String> {
+pub fn kill(pid: u32, _force: bool, expected_start: Option<u64>) -> Result<(), KillError> {
     use windows::Win32::Foundation::{CloseHandle, FILETIME, HANDLE};
     use windows::Win32::System::Threading::{
         GetProcessTimes, OpenProcess, TerminateProcess, PROCESS_QUERY_LIMITED_INFORMATION,
@@ -106,8 +167,7 @@ pub fn kill(pid: u32, _force: bool, expected_start: Option<u64>) -> Result<(), S
     }
 
     // fail-closed：没有身份令牌就拒绝（与 macOS 分支一致）
-    let expected = expected_start
-        .ok_or_else(|| "ERR_IDENTITY_UNKNOWN: missing identity token, rescan first".to_string())?;
+    let expected = expected_start.ok_or(KillError::IdentityUnknown)?;
 
     unsafe {
         let handle = OpenProcess(
@@ -120,13 +180,13 @@ pub fn kill(pid: u32, _force: bool, expected_start: Option<u64>) -> Result<(), S
             // ERROR_INVALID_PARAMETER (87) = PID 已不存在 → 进程已消失。
             // ERROR_ACCESS_DENIED (5) = 进程仍在、但被策略/EDR/受保护进程拒绝 —— 绝不能
             // 谎称「已消失/身份已变」误导用户，给出语义准确的本地化「无权终止」。
-            // 两者都映射为 ERR_ 语义码供前端 i18n；其余透传 Win32 原文。
+            // 两者都映射为语义变体供前端 i18n；其余透传 Win32 原文。
             if e.code() == ERROR_INVALID_PARAMETER.to_hresult() {
-                "ERR_PROCESS_GONE: process no longer exists".to_string()
+                KillError::ProcessGone
             } else if e.code() == ERROR_ACCESS_DENIED.to_hresult() {
-                "ERR_ACCESS_DENIED: not permitted to terminate (protected process?)".to_string()
+                KillError::AccessDenied
             } else {
-                format!("OpenProcess({pid}) failed: {e}")
+                KillError::os(format!("OpenProcess({pid}) failed: {e}"))
             }
         })?;
         let _guard = Guard(handle);
@@ -138,18 +198,59 @@ pub fn kill(pid: u32, _force: bool, expected_start: Option<u64>) -> Result<(), S
         let mut kernel = FILETIME::default();
         let mut user = FILETIME::default();
         GetProcessTimes(handle, &mut creation, &mut exit, &mut kernel, &mut user)
-            .map_err(|e| format!("GetProcessTimes({pid}) failed: {e}"))?;
+            .map_err(|e| KillError::os(format!("GetProcessTimes({pid}) failed: {e}")))?;
         let current = filetime_to_unix(creation);
         if current.abs_diff(expected) > START_TOLERANCE_SECS {
-            return Err(
-                "ERR_PID_REUSED: process identity changed (PID was reused), rescan and retry"
-                    .to_string(),
-            );
+            return Err(KillError::PidReused);
         }
 
-        TerminateProcess(handle, 1).map_err(|e| format!("TerminateProcess({pid}) failed: {e}"))?;
+        TerminateProcess(handle, 1)
+            .map_err(|e| KillError::os(format!("TerminateProcess({pid}) failed: {e}")))?;
     }
     Ok(())
+}
+
+#[cfg(test)]
+mod legacy_contract_tests {
+    use super::KillError;
+
+    /// `src/model.ts` 的 killErrorText 用 `err.includes("ERR_…")` 分派本地化文案。
+    /// 这些 token 是**跨进程契约**：改一个字母，前端不会报错，只会安静地把语义
+    /// 错误当成 OS 原文原样吐给用户（英文、且带实现细节）。故逐条钉死。
+    #[test]
+    fn legacy_tokens_match_frontend_matchers() {
+        let cases = [
+            (KillError::IdentityUnknown, "ERR_IDENTITY_UNKNOWN"),
+            (KillError::ProcessGone, "ERR_PROCESS_GONE"),
+            (KillError::PidReused, "ERR_PID_REUSED"),
+            (KillError::AccessDenied, "ERR_ACCESS_DENIED"),
+        ];
+        for (err, token) in cases {
+            let s = err.to_legacy_string();
+            assert!(
+                s.contains(token),
+                "{err:?} 的兼容字符串必须含 {token}，实际: {s}"
+            );
+        }
+    }
+
+    /// OS 原文不得被套上任何 `ERR_` 前缀 —— 那会让前端把一条无语义的系统错误
+    /// 误判成某个语义分支（`includes` 是子串匹配，不看位置）。
+    #[test]
+    fn os_errors_pass_through_verbatim() {
+        let err = KillError::os("Operation not permitted");
+        assert_eq!(err.to_legacy_string(), "Operation not permitted");
+        assert!(!err.to_legacy_string().contains("ERR_"));
+    }
+
+    /// 结构化形态的 serde 键名同样是契约（未来的 CLI/Raycast 直接吃 JSON）。
+    #[test]
+    fn serializes_as_tagged_snake_case() {
+        let json = serde_json::to_string(&KillError::PidReused).unwrap();
+        assert_eq!(json, r#"{"code":"pid_reused"}"#);
+        let json = serde_json::to_string(&KillError::os("boom")).unwrap();
+        assert_eq!(json, r#"{"code":"os","message":"boom"}"#);
+    }
 }
 
 #[cfg(all(test, target_os = "macos"))]
@@ -173,11 +274,11 @@ mod live_tests {
 
         // 1. 缺令牌 → fail-closed
         let err = super::kill(pid, false, None).unwrap_err();
-        assert!(err.contains("ERR_IDENTITY_UNKNOWN"), "got: {err}");
+        assert_eq!(err, super::KillError::IdentityUnknown);
 
         // 2. 错误令牌（伪造一个 1 小时前的创建时间）→ 拒绝
         let err = super::kill(pid, false, Some(now - 3600)).unwrap_err();
-        assert!(err.contains("ERR_PID_REUSED"), "got: {err}");
+        assert_eq!(err, super::KillError::PidReused);
 
         // 3. 正确令牌（刚创建，约 now-1）→ 放行并终止。
         //    被杀的直接子进程在父 wait() 回收前是 defunct，先 reap 再断言。

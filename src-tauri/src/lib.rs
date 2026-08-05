@@ -330,6 +330,10 @@ pub fn run() {
                 paths::env_label()
             );
 
+            // 引擎自解析的目录必须与 Tauri 的解析一致，否则 GUI 与 CLI/Raycast
+            // 会各写各的白名单。紧跟在日志初始化之后 —— 这条告警必须能落盘。
+            paths::assert_matches_tauri(app.handle());
+
             // Accessory 激活策略：无 Dock 图标、不进 ⌘Tab —— 身份与「常驻托盘」的
             // 产品定位对齐。此前用默认 Regular 策略（有 Dock 图标）却把 ⌘Q 劫持成
             // 隐藏，普通 App 的外观配菜单栏工具的行为，用户会按 HIG 预期 ⌘Q 退出
@@ -345,8 +349,11 @@ pub fn run() {
             #[cfg(target_os = "macos")]
             app.set_activation_policy(tauri::ActivationPolicy::Accessory);
 
-            if let Ok(dir) = paths::config_dir(app.handle()) {
-                whitelist::init(dir.join("whitelist.json"));
+            // 白名单路径由引擎决定（CLI / Raycast 读的是同一个函数）——
+            // 桌面版绝不自己拼一份，那正是两边分家的起点。
+            match portreaper_core::paths::whitelist_path() {
+                Some(path) => whitelist::init(path),
+                None => log::error!("could not resolve whitelist path; 收藏将无法持久化"),
             }
 
             let lang = detect_lang();

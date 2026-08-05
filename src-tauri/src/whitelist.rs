@@ -1,159 +1,51 @@
-//! 白名单持久化。三层防护（评审发现，曾经全部静默吞错）：
-//! - 原子写：同目录临时文件 + rename，崩溃中途不会留下半个 JSON；
-//! - 损坏备份：解析失败的旧文件先挪到 .corrupt，绝不让后续首次保存覆盖旧数据；
-//! - 失败回滚：持久化失败时回滚内存修改并上抛错误 —— 内存与磁盘永远一致，
-//!   前端星标弹回 + 错误横幅，而不是「看起来成功、重启后消失」。
+//! GUI 侧的白名单缓存 —— 逻辑本体在 `portreaper_core::Whitelist`，这里只提供
+//! 桌面版需要的那层「进程级单例」。
 //!
-//! 锁序：add/remove 持 WHITELIST 期间在 save_locked 内短暂取 WHITELIST_PATH；
-//! init 改为顺序取锁（先 PATH 后 WHITELIST，互不嵌套），不构成 AB-BA 倒置。
+//! 为什么还需要这一层：桌面版每 2 秒扫描一次，每轮都要读白名单。引擎的
+//! `Whitelist` 是值类型（短命的 CLI/Raycast 进程用起来才自然），常驻 GUI 则
+//! 希望它加载一次、活到退出 —— 这个差异属于**前端的生命周期策略**，不属于引擎。
+//!
+//! 锁：单把 `Mutex`，且从毒化中恢复。恢复策略与 scanner 的 System 锁同源 ——
+//! `Whitelist` 的 add/remove 有显式回滚，不存在半写入的结构失效；若不恢复，
+//! 持锁 panic 一次会让此后每轮 scan_ports（内部 get_all）在 spawn_blocking 里
+//! 跟着 panic，前端永久收到 "scan task failed"（评审发现：拒绝服务比脏读更糟）。
 
-use once_cell::sync::Lazy;
-use serde::{Deserialize, Serialize};
-use std::fs;
 use std::path::PathBuf;
-use std::sync::{Mutex, MutexGuard, PoisonError};
+use std::sync::{Mutex, MutexGuard, OnceLock, PoisonError};
 
-/// 取锁并从毒化中恢复（与 windows.rs 的 System 锁同一策略）：这两把锁保护的
-/// 都是「半更新状态也可安全续用」的数据 —— add/remove 有显式回滚、init 只做
-/// 整体赋值，不存在半写入的结构失效。若不恢复，持锁 panic 一次会让此后每轮
-/// scan_ports（内部 get_all）在 spawn_blocking 里跟着 panic，前端永久收到
-/// "scan task failed"（评审发现：拒绝服务比脏读更糟）。
-fn lock_recovering<T>(m: &Mutex<T>) -> MutexGuard<'_, T> {
-    m.lock().unwrap_or_else(PoisonError::into_inner)
+use portreaper_core::Whitelist;
+
+static WHITELIST: OnceLock<Mutex<Whitelist>> = OnceLock::new();
+
+fn cell() -> &'static Mutex<Whitelist> {
+    // init() 未跑（理论上不该发生：lib.rs setup 里第一件事就是它）时的降级形态：
+    // 一个指向空路径的白名单 —— 读永远为空、写响亮失败，绝不静默假成功。
+    WHITELIST.get_or_init(|| Mutex::new(Whitelist::empty(PathBuf::new())))
 }
 
-#[derive(Serialize, Deserialize, Default, Clone)]
-pub struct WhitelistStore {
-    pub entries: Vec<String>,
+fn lock() -> MutexGuard<'static, Whitelist> {
+    cell().lock().unwrap_or_else(PoisonError::into_inner)
 }
 
-static WHITELIST: Lazy<Mutex<WhitelistStore>> = Lazy::new(|| Mutex::new(WhitelistStore::default()));
-static WHITELIST_PATH: Lazy<Mutex<Option<PathBuf>>> = Lazy::new(|| Mutex::new(None));
-
+/// 载入白名单文件。由 `lib.rs` 的 setup 调用一次。
 pub fn init(path: PathBuf) {
-    // 文件 IO 在持锁之外完成；两把锁顺序短暂持有、不嵌套
-    let loaded = match fs::read_to_string(&path) {
-        Ok(data) => match serde_json::from_str::<WhitelistStore>(&data) {
-            Ok(store) => Some(store),
-            Err(e) => {
-                // 损坏的文件备份后让位 —— 用户的旧收藏可从 .corrupt 手工找回
-                log::warn!("whitelist.json corrupted ({e}), backing up to .corrupt");
-                let _ = fs::rename(&path, path.with_extension("json.corrupt"));
-                None
-            }
-        },
-        Err(_) => None, // 不存在/不可读：首次启动的常态
-    };
-    *lock_recovering(&WHITELIST_PATH) = Some(path);
-    if let Some(store) = loaded {
-        *lock_recovering(&WHITELIST) = store;
+    let loaded = Whitelist::load(path);
+    if WHITELIST.set(Mutex::new(loaded.clone())).is_err() {
+        // 已被 get_or_init 抢先（降级形态）——用真正载入的内容覆盖它
+        *lock() = loaded;
     }
 }
 
 pub fn get_all() -> Vec<String> {
-    lock_recovering(&WHITELIST).entries.clone()
+    lock().entries().to_vec()
 }
 
+/// 持久化失败（磁盘满/权限/路径被占）会上抛给前端：星标回弹 + 错误横幅，
+/// 而不是内存假成功、重启后丢收藏（评审发现）。
 pub fn add(key: String) -> Result<(), String> {
-    let mut wl = lock_recovering(&WHITELIST);
-    if wl.entries.contains(&key) {
-        return Ok(());
-    }
-    wl.entries.push(key);
-    if let Err(e) = save_locked(&wl) {
-        wl.entries.pop(); // 回滚：内存与磁盘保持一致
-        return Err(e);
-    }
-    Ok(())
+    lock().add(key)
 }
 
 pub fn remove(key: &str) -> Result<(), String> {
-    let mut wl = lock_recovering(&WHITELIST);
-    let Some(idx) = wl.entries.iter().position(|x| x == key) else {
-        return Ok(());
-    };
-    let removed = wl.entries.remove(idx);
-    if let Err(e) = save_locked(&wl) {
-        wl.entries.insert(idx, removed); // 回滚
-        return Err(e);
-    }
-    Ok(())
-}
-
-/// 原子持久化：写同目录 .tmp 再 rename（同卷 rename 在 macOS/Windows 均为原子替换）。
-/// 刻意不 fsync：断电窗口内最坏丢一次收藏修改（可重建数据），换每次星标零卡顿。
-fn save_locked(store: &WhitelistStore) -> Result<(), String> {
-    let path_guard = lock_recovering(&WHITELIST_PATH);
-    let Some(path) = path_guard.as_ref() else {
-        return Err("whitelist path not initialized".to_string());
-    };
-    if let Some(parent) = path.parent() {
-        fs::create_dir_all(parent).map_err(|e| format!("create config dir: {e}"))?;
-    }
-    let json = serde_json::to_string_pretty(store).map_err(|e| e.to_string())?;
-    let tmp = path.with_extension("json.tmp");
-    fs::write(&tmp, &json).map_err(|e| format!("write whitelist: {e}"))?;
-    fs::rename(&tmp, path).map_err(|e| format!("commit whitelist: {e}"))?;
-    Ok(())
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    /// 全生命周期串成单个 #[test]：WHITELIST/WHITELIST_PATH 是进程级全局量，
-    /// 多个并行 #[test] 会互相踩状态 —— 顺序场景在一个测试体内推进。
-    #[test]
-    fn whitelist_lifecycle() {
-        let dir = std::env::temp_dir().join(format!("portreaper-wl-test-{}", std::process::id()));
-        let _ = fs::remove_dir_all(&dir);
-        fs::create_dir_all(&dir).unwrap();
-        let path = dir.join("whitelist.json");
-
-        // 1. 损坏文件：init 备份为 .corrupt 而非静默丢弃，旧数据可找回
-        fs::write(&path, "{ definitely not json").unwrap();
-        init(path.clone());
-        assert!(get_all().is_empty());
-        assert!(
-            dir.join("whitelist.json.corrupt").exists(),
-            "损坏文件必须备份"
-        );
-        assert!(!path.exists(), "损坏文件应已挪走");
-
-        // 2. add → 原子落盘（无残留 .tmp），重新解析与内存一致
-        add("/usr/bin/x".to_string()).unwrap();
-        assert!(path.exists());
-        assert!(
-            !dir.join("whitelist.json.tmp").exists(),
-            "临时文件必须已被 rename 消费"
-        );
-        let disk: WhitelistStore =
-            serde_json::from_str(&fs::read_to_string(&path).unwrap()).unwrap();
-        assert_eq!(disk.entries, vec!["/usr/bin/x".to_string()]);
-
-        // 3. 重复 add 幂等
-        add("/usr/bin/x".to_string()).unwrap();
-        assert_eq!(get_all().len(), 1);
-
-        // 4. remove 落盘
-        remove("/usr/bin/x").unwrap();
-        let disk: WhitelistStore =
-            serde_json::from_str(&fs::read_to_string(&path).unwrap()).unwrap();
-        assert!(disk.entries.is_empty());
-        // 不存在的 key：no-op 且不报错
-        remove("/never/there").unwrap();
-
-        // 5. 持久化失败 → 上抛错误 + 内存回滚（目标路径是已存在目录 ⇒ rename 失败）
-        let blocked = dir.join("blocked.json");
-        fs::create_dir_all(&blocked).unwrap();
-        init(blocked);
-        let err = add("/usr/bin/y".to_string()).unwrap_err();
-        assert!(!err.is_empty());
-        assert!(
-            !get_all().contains(&"/usr/bin/y".to_string()),
-            "保存失败必须回滚内存"
-        );
-
-        let _ = fs::remove_dir_all(&dir);
-    }
+    lock().remove(key)
 }

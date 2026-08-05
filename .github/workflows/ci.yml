@@ -135,3 +135,10 @@ jobs:
       - name: Release asset name parity check
         if: runner.os == 'macOS'
         run: node scripts/check-release-assets.mjs
+
+      # bundle identifier must agree between portreaper-core's paths.rs and
+      # tauri.conf.json — a split makes the GUI and the CLI/Raycast write
+      # separate whitelist.json files, silently.
+      - name: Paths parity check
+        if: runner.os == 'macOS'
+        run: node scripts/check-paths-parity.mjs
