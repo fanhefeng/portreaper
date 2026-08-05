@@ -393,8 +393,7 @@ A2 结尾建议「配合 `GRACE_SECS` 式的缓冲，避免连接抖动导致行
 基线                          12 个监听者，全部 conf=None（无误报）
 起 headless Chrome + disown   ppid=1，:9339 LISTEN，零 ESTABLISHED
   → 扫描                      conf=Confirmed  automation-instance
-                              reasons=[Ppid1Orphan, OrphanedChain,
-                                       NonstandardPath, AutomationInstance]
+                              reasons=[Ppid1Orphan, AutomationInstance]
                               label "Google Chrome · headless"
 挂一个客户端到 :9339          127.0.0.1:9339->127.0.0.1:58505 (ESTABLISHED)
   → 扫描                      conf=None  reasons=[DebuggerAttached]   ← A2 否决生效
@@ -405,3 +404,22 @@ kill + 清理 profile           → 回到 12 个监听者，0 个 suspect
 
 同一轮里 VS Code / Discord / QQ / WeChat / Warp / Zed 等日常应用的判定与基线
 逐行一致，未被新规则波及。
+
+> **上表的 reasons 一栏已按 2026-08-04 的修正就地更新**，与当天原始快照
+> `[Ppid1Orphan, OrphanedChain, NonstandardPath, AutomationInstance]` 相比少了两条。
+> 两条的消失各有原因，都**只影响详情面板的证据列表**，不影响检出与置信度
+>（`conf=Confirmed` 与 label 与当天一致，五步流程逐步可复现）：
+>
+> - `NonstandardPath` —— 当时被无条件推入，于是 exe 明明住在 `/Applications` 的
+>   headless Chrome 也被贴上「可执行文件不在标准安装位置」。「摘出路径豁免」被
+>   错当成了「路径非标准」的同义词，而这恰是本 Gap 两个身份例外（`dev-script` /
+>   `automation-instance`）的共同特征。现按路径事实取证，且事实谓词
+>   （`is_conventional_install_path`）与豁免谓词（`is_standard_install_path`）
+>   **分开实现** —— 后者刻意向 true 偏（收 `/private/var/folders/` 给 App
+>   Translocation 让路、Windows 对读不到的空 exe 放行），拿它陈述事实，它每放宽
+>   一次就多撒一次谎。这与 `identify.rs is_temp_dir_path` 的注释是同一条教训。
+> - `OrphanedChain` —— 该行 ppid=1，`build_parent_chain` 第一次迭代就终止，一个
+>   真实祖先都没走过，所以「链终止于 init」完全是 `Ppid1Orphan` 的同义反复。
+>   现按「链有没有真的走过祖先」这个结构事实决定是否列出
+>   （`ChainFlags::walked_real_ancestor`）；本体 ppid 正常、链走过 zsh→npm 才撞到
+>   launchd 的那类行仍会照常列出，那里它是唯一的孤儿证据。

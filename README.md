@@ -77,8 +77,8 @@ Processes started (or reparented) less than 10 seconds ago are **downgraded to P
 
 | Confidence | Meaning | In batch sweep? |
 | --- | --- | --- |
-| **Confirmed** | Defunct, or unambiguous orphan in a non-standard path | ✅ |
-| **Likely** | Strong orphan signal + dev-server traits | ✅ |
+| **Confirmed** | Defunct, or an orphan corroborated by a second signal — dev-server traits (or an automation session), or a dead terminal session | ✅ |
+| **Likely** | Orphaned, but with no dev evidence to explain the intent (e.g. a `nohup`-detached non-dev binary) | ✅ |
 | **Possible** | One weaker signal; shown but treated cautiously | ❌ |
 
 The **one-click sweep** only kills `confirmed` + `likely`. Anything in the whitelist is exempt from suspicion, the tray count, and the sweep — it still appears in the list with a ★ chip.
@@ -226,8 +226,8 @@ Portreaper **不是**通用的端口查看器。它常驻托盘，每隔两秒�
 
 | 置信度 | 含义 | 计入一键清扫？ |
 | --- | --- | --- |
-| **确认（confirmed）** | 已 defunct，或在非标准路径下的明确孤儿 | ✅ |
-| **疑似（likely）** | 强孤儿信号 + 开发服务器特征 | ✅ |
+| **确认（confirmed）** | 已 defunct，或孤儿信号有第二条证据互证 —— 开发服务器特征（或自动化会话），或终端会话已死 | ✅ |
+| **疑似（likely）** | 已成孤儿，但没有 dev 证据可以解释它的意图（如 `nohup` 脱离的非 dev 二进制） | ✅ |
 | **可能（possible）** | 仅一个较弱的信号；会显示但谨慎对待 | ❌ |
 
 **一键清扫**只会终止 `confirmed` + `likely`。收藏（白名单）中的进程会被豁免于疑似判断、托盘计数和清扫 —— 它仍会出现在列表中，并带一个 ★ 标记。

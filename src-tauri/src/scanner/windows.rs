@@ -123,6 +123,20 @@ fn is_standard_install_with(kp: &KnownPaths, exe_path: &str) -> bool {
             && p.starts_with(&format!("{}microsoft\\", kp.program_data)))
 }
 
+/// 「这个 exe 确实装在常规安装位置吗」—— **陈述事实**，供 NonstandardPath 取证。
+/// 与 `is_standard_install_path` 的豁免语义严格分开：那个对**空路径**返回 true
+///（MSIX / 提权进程读不到 exe 时保守豁免，见上），而「路径读不到」是**未知**，
+/// 绝不是「装在标准位置」—— 拿它陈述事实会让 Windows 上每个 exe 不可读的孤儿
+/// 都被断言成已正规安装。macOS 侧同名函数排除的是 App Translocation 临时目录，
+/// 两边都是「把豁免的偏向剔掉，只留事实」。
+pub(crate) fn is_conventional_install_path(exe_path: &str) -> bool {
+    is_conventional_install_with(paths(), exe_path)
+}
+
+fn is_conventional_install_with(kp: &KnownPaths, exe_path: &str) -> bool {
+    !exe_path.is_empty() && is_standard_install_with(kp, exe_path)
+}
+
 pub(crate) fn is_brew_service_path(_exe_path: &str) -> bool {
     false
 }
@@ -726,6 +740,37 @@ mod tests {
             &kp,
             "C:\\Users\\fhf\\code\\app\\server.exe"
         ));
+    }
+
+    /// 豁免谓词对**空 exe 路径**放行（MSIX / 提权进程读不到时保守豁免），
+    /// 而事实谓词必须拒绝：「读不到」是未知，不是「装在标准位置」。评审捕获 ——
+    /// 拿豁免谓词陈述事实，Windows 上每个 exe 不可读的孤儿都会被断言成已正规安装，
+    /// 悄悄吞掉 NonstandardPath 证据（Windows 无人工 QA，这类偏差只能靠测试兜）。
+    #[test]
+    fn conventional_path_rejects_the_unreadable_exe_carveout() {
+        let kp = fake_paths();
+        assert!(
+            is_standard_install_with(&kp, ""),
+            "豁免侧必须继续保守放行（既有语义不动）"
+        );
+        assert!(
+            !is_conventional_install_with(&kp, ""),
+            "事实侧必须说「不知道」而非「标准」"
+        );
+
+        // 非空路径上两者必须一致 —— 事实谓词只剔除 carve-out，不另立一套规则
+        for p in [
+            "C:\\Program Files\\Google\\Chrome\\Application\\chrome.exe",
+            "C:\\Windows\\System32\\svchost.exe",
+            "C:\\Users\\fhf\\AppData\\Local\\Programs\\Microsoft VS Code\\Code.exe",
+            "C:\\Users\\fhf\\code\\app\\server.exe",
+        ] {
+            assert_eq!(
+                is_standard_install_with(&kp, p),
+                is_conventional_install_with(&kp, p),
+                "{p}"
+            );
+        }
     }
 
     #[test]

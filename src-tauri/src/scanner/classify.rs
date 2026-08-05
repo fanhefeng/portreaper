@@ -233,13 +233,37 @@ pub(crate) fn classify(s: &ProcessSnapshot) -> Verdict {
     if let Some(code) = s.direct_orphan {
         reasons.push(code);
     }
-    if chain_orphan {
+    // OrphanedChain 只在它**独立于**直接孤儿信号时才算一条证据 —— 判据是「链在
+    // 终止前有没有真的走过祖先」这个结构事实，不是 direct_orphan 的具体变体。
+    //
+    // 每个平台的直接孤儿条件（macOS ppid==1；Windows ppid==0 / 父不在表中）都会让
+    // build_parent_chain 在**第一次迭代**就终止，一个真实祖先都没走过 —— 此时
+    // 「链终止于 init/死根」完全是直接孤儿信号的同义反复，详情面板却把两条并排
+    // 列出，读起来像两份独立佐证（真机实测的 macOS 孤儿行即 [Ppid1Orphan,
+    // OrphanedChain, ...]）。反之，链走过 zsh→npm 才撞到 launchd（本体 ppid 正常）
+    // 时，它是唯一的孤儿证据，必须保留。
+    //
+    // 评审捕获：按变体写成 `!= Some(Ppid1Orphan)` 会漏掉 Windows 的 ParentExited
+    //（它同样蕴含链终止），既留下同样的重复、又把这个 bug 锁进测试；而结构判据
+    // 天然覆盖两个平台，且不再让纯分类器依赖 build_parent_chain 的遍历起点。
+    // 置信度分层读的是 chain_orphan 变量而非 reasons，故此处不影响任何判定。
+    if chain_orphan && s.chain_walked_real_ancestor {
         reasons.push(ReasonCode::OrphanedChain);
     }
     if s.tty_orphaned {
         reasons.push(ReasonCode::OrphanedSession);
     }
-    if direct_orphan || chain_orphan {
+    // 仅当 exe 确实不在常规安装位置时才推 —— 走到这里只说明没吃上路径豁免，
+    // 而 dev-script / automation-instance 是「身份优先于路径」的例外：它们的
+    // exe 常常就装在 /usr/bin、/Applications 里（真机实测：孤儿
+    // `/usr/bin/python3 app.py` 的解释器实际解析到 /Applications/Xcode.app/…）。
+    // 无条件推入会给这两类最常见的 Confirmed 行贴一条与事实相反的证据。
+    //
+    // 注意 Homebrew 不在此列：/opt/homebrew/ 本就不属于
+    // `is_standard_install_path`（brew 服务另走 brew_service_path 豁免通道），
+    // 所以 brew 装的解释器仍会如实拿到这条理由 —— 事实谓词的取证边界完全跟随
+    // 平台侧的路径名单，见 ProcessSnapshot::exe_path_is_standard。
+    if (direct_orphan || chain_orphan) && !s.exe_path_is_standard {
         reasons.push(ReasonCode::NonstandardPath);
     }
     if s.automation_instance {
@@ -426,6 +450,8 @@ mod tests {
                 name: "5 孤儿链 zsh(死)→npm→next：本体 PPID 活着但链根已死 —— 头号漏报修复",
                 snap: ProcessSnapshot {
                     chain_terminates_at_init: true,
+                    // 链真的走过 npm、zsh 两个祖先才撞到 launchd ⇒ 是独立证据
+                    chain_walked_real_ancestor: true,
                     chain_has_orphan_shell: true,
                     dev_keyword: true,
                     dev_category: true,
@@ -499,7 +525,8 @@ mod tests {
                     "22 链孤儿 × 会话已死（非 dev）：dead-session 佐证对直接/链孤儿对称 → Confirmed",
                 snap: ProcessSnapshot {
                     chain_terminates_at_init: true,
-                    chain_has_orphan_shell: true, // 非 dev，靠孤儿 shell 祖先成链
+                    chain_walked_real_ancestor: true, // 走过孤儿 shell 祖先才终止
+                    chain_has_orphan_shell: true,     // 非 dev，靠孤儿 shell 祖先成链
                     tty_orphaned: true,
                     ..snap()
                 },
@@ -578,11 +605,15 @@ mod tests {
                     direct_orphan: Some(Ppid1Orphan),
                     automation_instance: true,
                     debugger_attached: false,
+                    // 浏览器本体就住在 /Applications —— 身份例外让它免于路径豁免，
+                    // 但路径事实不变（NonstandardPath 因此不在 want_reasons 里，
+                    // 专门的不变量见 nonstandard_path_reason_follows_the_actual_exe_path）
+                    exe_path_is_standard: true,
                     ..snap()
                 },
                 want_suspect: true,
                 want_conf: Confirmed,
-                want_reasons: &[Ppid1Orphan, AutomationInstance, NonstandardPath],
+                want_reasons: &[Ppid1Orphan, AutomationInstance],
             },
             Case {
                 // KNOWN-GAPS Gap 1/A2 实测反例：判据全中但**有人正在驱动它**。
@@ -665,6 +696,107 @@ mod tests {
                 );
             }
         }
+    }
+
+    /// 证据去重的判据是**链有没有真的走过祖先**，不是 direct_orphan 的变体。
+    ///
+    /// 两个平台的直接孤儿条件都会让 build_parent_chain 在第一次迭代就终止
+    ///（macOS ppid==1；Windows ppid==0 / 父不在表中），此时 OrphanedChain 只是
+    /// 把直接孤儿信号换句话重说。评审捕获的回归正在此处：初版按
+    /// `!= Some(Ppid1Orphan)` 特判，漏掉 Windows 的 ParentExited 那一半，
+    /// 并把「Windows 必须两条并存」写进了断言 —— 本测试锁的是修正后的语义。
+    #[test]
+    fn orphaned_chain_dedup_keys_on_whether_the_walk_saw_an_ancestor() {
+        use ReasonCode::*;
+
+        // 立即终止（没走过任何真实祖先）：两个平台的三种直接孤儿信号都算同义反复
+        for direct in [Ppid1Orphan, ParentExited, PidSlotReused] {
+            let v = classify(&ProcessSnapshot {
+                direct_orphan: Some(direct),
+                chain_terminates_at_init: true,
+                chain_walked_real_ancestor: false,
+                dev_keyword: true,
+                ..snap()
+            });
+            assert!(v.reasons.contains(&direct));
+            assert!(
+                !v.reasons.contains(&OrphanedChain),
+                "{direct:?} 已完整表达链终止，不应再列一条推论：{:?}",
+                v.reasons
+            );
+        }
+
+        // 走过真实祖先后才撞到 init/死根：这是一份独立证据，必须保留 ——
+        // 含本体 ppid 正常的链孤儿（zsh→npm→launchd），也含 Windows 上父仍在
+        // 进程表、链继续上溯的槽位复用行。
+        let v = classify(&ProcessSnapshot {
+            chain_terminates_at_init: true,
+            chain_walked_real_ancestor: true,
+            chain_has_orphan_shell: true,
+            dev_keyword: true,
+            ..snap()
+        });
+        assert!(v.reasons.contains(&OrphanedChain), "{:?}", v.reasons);
+
+        let v = classify(&ProcessSnapshot {
+            direct_orphan: Some(PidSlotReused),
+            chain_terminates_at_init: true,
+            chain_walked_real_ancestor: true,
+            dev_keyword: true,
+            ..snap()
+        });
+        assert!(v.reasons.contains(&PidSlotReused));
+        assert!(v.reasons.contains(&OrphanedChain), "{:?}", v.reasons);
+    }
+
+    /// `NonstandardPath` 是说给用户听的事实陈述（i18n reasonTip：「可执行文件不在
+    /// 系统 / 应用程序等标准安装位置」），不是「没吃到路径豁免」的同义词。
+    ///
+    /// 真机复现（2026-08-04）：孤儿 `/usr/bin/python3 devsrv.py` 的 exe 实际解析到
+    /// `/Applications/Xcode.app/.../Python` —— 标准得不能再标准，却因 dev-script
+    /// 的身份例外走到了正向信号区，被贴上一条与事实相反的证据。automation-instance
+    /// 完全同构（KNOWN-GAPS Gap 1 的真机记录里 headless Chrome 也带着这条，
+    /// 而它的 exe 就在 /Applications 下）。
+    ///
+    /// 检出能力不受影响：这条理由从不参与置信度分层，且 REASON_PRIORITY 里排在
+    /// 孤儿信号之后 —— 去掉后行内故事与 confidence 都不变，只是详情面板少一条错话。
+    #[test]
+    fn nonstandard_path_reason_follows_the_actual_exe_path() {
+        use Confidence::*;
+        use ReasonCode::*;
+
+        // 路径规则的例外一：解释器在标准位置，身份是脚本 —— 仍须检出，但不得
+        // 声称路径非标准
+        let dev_script_in_standard_path = ProcessSnapshot {
+            direct_orphan: Some(Ppid1Orphan),
+            dev_keyword: true,
+            dev_category: true,
+            exe_path_is_standard: true, // /Applications/Xcode.app/.../Python
+            ..snap()
+        };
+        let v = classify(&dev_script_in_standard_path);
+        assert_eq!(v.confidence, Confirmed, "检出能力不得因此减弱");
+        assert!(v.reasons.contains(&Ppid1Orphan));
+        assert!(
+            !v.reasons.contains(&NonstandardPath),
+            "exe 在标准位置时不得声称非标准路径，实得 {:?}",
+            v.reasons
+        );
+
+        // 路径规则的例外二：automation-instance 的浏览器本体常住 /Applications
+        let automation_in_applications = ProcessSnapshot {
+            direct_orphan: Some(Ppid1Orphan),
+            automation_instance: true,
+            exe_path_is_standard: true,
+            ..snap()
+        };
+        let v = classify(&automation_in_applications);
+        assert_eq!(v.confidence, Confirmed);
+        assert!(v.reasons.contains(&AutomationInstance));
+        assert!(!v.reasons.contains(&NonstandardPath), "{:?}", v.reasons);
+
+        // 反向（exe 真在非标准位置仍须保留这条证据）已由夹具表 case 4/12/17 覆盖，
+        // 此处不再重述 —— 本测试只负责表达式表达不了的「必须缺席」。
     }
 
     #[test]

@@ -104,6 +104,11 @@ pub(crate) struct ProcessSnapshot {
     pub chain_terminates_at_init: bool,
     /// 父链上存在「自己已被收养（ppid=1）/父已死」的 shell —— 死掉的终端会话
     pub chain_has_orphan_shell: bool,
+    /// 链在终止前走过至少一个真实祖先（合成根不算）。为 false 时链终止这件事
+    /// 完全由 direct_orphan 决定，OrphanedChain 只是换句话重说一遍 ——
+    /// 详见 mod.rs `ChainFlags::walked_real_ancestor`。**只影响理由的取舍，
+    /// 不参与置信度分层**（分层读的是 chain_orphan，与本字段无关）。
+    pub chain_walked_real_ancestor: bool,
     /// launchctl 认领（macOS）—— 硬豁免
     pub launchd_managed: bool,
     /// exe 位于 Homebrew 服务路径（/opt/homebrew/opt|Cellar、/usr/local/opt|Cellar）—— 兜底豁免
@@ -114,6 +119,17 @@ pub(crate) struct ProcessSnapshot {
     pub tty_orphaned: bool,
     /// 标准安装路径 或 类别为 installed-app/system —— 永不自动标记的不变量
     pub exe_is_standard_install: bool,
+    /// exe 路径本身是否落在标准安装位置（**未经类别例外修正**）。
+    ///
+    /// 与上一字段的差别正是「路径规则的两个例外」：dev-script 与
+    /// automation-instance 的身份优先于路径，mod.rs 会把它们的
+    /// `exe_is_standard_install` 压成 false 好让判定走到正向信号 —— 但那只说明
+    /// 它们**没吃到路径豁免**，不代表 exe 真的装在非标准位置。
+    /// `NonstandardPath` 是一条**说给用户听**的理由（i18n reasonTip 原文：
+    /// 「可执行文件不在系统 / 应用程序等标准安装位置」），必须按事实推入，
+    /// 否则 `/usr/bin/python3 app.py` 与 /Applications 里的 headless Chrome
+    /// 都会被贴上一条与事实相反的证据（真机实测，两者的 exe 都在标准位置）。
+    pub exe_path_is_standard: bool,
     /// 命令行命中 dev-server 关键字
     pub dev_keyword: bool,
     /// identify_app 类别为 dev-script

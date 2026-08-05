@@ -45,6 +45,22 @@ pub(crate) fn is_standard_install_path(exe_path: &str) -> bool {
             .any(|p| exe_path.starts_with(p))
 }
 
+/// 「这个 exe 确实装在常规安装位置吗」—— **陈述事实**，供 NonstandardPath 那条
+/// 说给用户听的理由取证。刻意与 `is_standard_install_path` 分开：那个是**豁免策略**，
+/// 会刻意向 true 偏（它把 `/private/var/folders/` 也算进去，为 App Translocation
+/// 让路），而临时目录恰恰是「非常规安装位置」最成立的场景 —— `go run` 的临时编译
+/// 产物就住在那里，识别为 dev-script 后正需要这条证据。
+///
+/// 与 identify.rs `is_temp_dir_path` 同源的教训（那里的注释写着「两者语义相反，
+/// 绝不能共用同一个函数」）：豁免谓词的每一次放宽都是为了少杀人，拿它陈述事实，
+/// 放宽一次就多撒一次谎。
+pub(crate) fn is_conventional_install_path(exe_path: &str) -> bool {
+    exe_path.starts_with("/Applications/")
+        || SYSTEM_COMPONENT_PREFIXES
+            .iter()
+            .any(|p| exe_path.starts_with(p))
+}
+
 pub(crate) fn is_brew_service_path(exe_path: &str) -> bool {
     BREW_SERVICE_PREFIXES
         .iter()
@@ -883,6 +899,38 @@ n[::1]:9333->[::1]:60123
         let (label, cat) = identify_app(pw, "Chromium", pw);
         assert_eq!(label, "Chromium");
         assert_eq!(cat, "dev-script");
+    }
+
+    /// 豁免谓词与事实谓词必须在 App Translocation 目录上**给出相反答案** ——
+    /// 这正是评审捕获的坑：拿豁免谓词陈述事实，`go run` 的临时编译产物
+    ///（真住在 /private/var/folders/，identify_app 归 dev-script）会被断言成
+    /// 「装在标准位置」，从而丢掉 NonstandardPath —— 而那恰是这条理由最成立的场景。
+    #[test]
+    fn conventional_path_excludes_the_translocation_carveout() {
+        const GO_RUN: &str = "/private/var/folders/dx/T/go-build123/b001/exe/server";
+        assert!(
+            is_standard_install_path(GO_RUN),
+            "豁免侧必须继续放行（App Translocation 的既有语义不动）"
+        );
+        assert!(
+            !is_conventional_install_path(GO_RUN),
+            "事实侧必须说实话：临时目录不是常规安装位置"
+        );
+
+        // 两者一致的部分：真正的安装位置
+        for p in [
+            "/Applications/Google Chrome.app/Contents/MacOS/Google Chrome",
+            "/usr/bin/python3",
+            "/System/Library/CoreServices/ControlCenter.app/Contents/MacOS/ControlCenter",
+        ] {
+            assert!(is_standard_install_path(p), "{p}");
+            assert!(is_conventional_install_path(p), "{p}");
+        }
+        // 两者一致的部分：确实非标准（brew、用户目录、读不到 exe）
+        for p in ["/opt/homebrew/bin/node", "/Users/x/.vite-plus/node", ""] {
+            assert!(!is_standard_install_path(p), "{p}");
+            assert!(!is_conventional_install_path(p), "{p}");
+        }
     }
 
     #[test]

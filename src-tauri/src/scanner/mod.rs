@@ -45,6 +45,14 @@ struct ChainFlags {
     has_orphan_shell: bool,
     /// 链上存在 pm2 God Daemon
     pm2: bool,
+    /// 链在终止前是否走过至少一个**真实**祖先（合成根 synth_chain_root 不算）。
+    ///
+    /// 为 false 时，「链终止于 init/死根」这件事完全由直接孤儿信号决定、不含任何
+    /// 新信息：macOS 的 ppid==1 与 Windows 的 ppid==0 / 父不在表中，都在本函数
+    /// 第一次迭代就命中终止分支 —— 而那三种情况恰好也正是两个平台的 direct_orphan
+    /// 的全部触发条件。此时 OrphanedChain 只是把 Ppid1Orphan / ParentExited
+    /// 换了句话再说一遍（评审发现：按 ReasonCode 变体特判会漏掉 Windows 这一半）。
+    walked_real_ancestor: bool,
 }
 
 /// pm2 托管识别 —— 用「双标记并存」收紧裸子串误命中（评审发现）：单凭整行
@@ -241,6 +249,14 @@ fn build_entry(
     //    · automation-instance：一次性自动化会话的身份是命令行，不能因浏览器
     //      本体装在 /Applications 而漏报（KNOWN-GAPS Gap 1，与上一条完全对称）。
     let identity_beats_path = app_category == "dev-script" || app_category == AUTOMATION_CATEGORY;
+    // 两个路径判断，语义**刻意不同**，不可互相替代（评审 8/9 个角度独立命中的坑）：
+    //   · is_standard_install_path —— 豁免策略，刻意向 true 偏（macOS 收了
+    //     /private/var/folders/ 给 App Translocation 让路，Windows 对读不到的
+    //     空 exe 直接放行）。判定用它，宁可漏报不可误杀。
+    //   · is_conventional_install_path —— 事实陈述，剔掉上述偏向。只喂给
+    //     NonstandardPath 那条说给用户听的理由：拿豁免谓词陈述事实，它每放宽
+    //     一次就多撒一次谎（`go run` 的临时产物正住在 /private/var/folders/）。
+    let exe_path_is_standard = platform_impl::is_conventional_install_path(&exe_path);
     let exe_is_standard_install = app_category == "installed-app"
         || app_category == "system"
         || (platform_impl::is_standard_install_path(&exe_path) && !identity_beats_path);
@@ -263,11 +279,13 @@ fn build_entry(
         direct_orphan: platform_impl::direct_orphan(ppid, meta, procs),
         chain_terminates_at_init: chain_flags.terminates_at_init,
         chain_has_orphan_shell: chain_flags.has_orphan_shell,
+        chain_walked_real_ancestor: chain_flags.walked_real_ancestor,
         launchd_managed: collected.launchd_pids.contains(&pid),
         brew_service_path,
         pm2_managed: chain_flags.pm2 || is_pm2_container(&full_command),
         tty_orphaned: meta.tty_orphaned,
         exe_is_standard_install,
+        exe_path_is_standard,
         dev_keyword: is_dev_server(&full_command) || is_dev_server(&command),
         dev_category: app_category == "dev-script",
         automation_instance,
@@ -636,6 +654,7 @@ fn build_parent_chain(
                 category,
                 exe_path: parent.exe_path.clone(),
             });
+            flags.walked_real_ancestor = true;
             break;
         }
 
@@ -656,6 +675,7 @@ fn build_parent_chain(
             category,
             exe_path: parent.exe_path.clone(),
         });
+        flags.walked_real_ancestor = true;
         if is_user_visible_app {
             break;
         }
@@ -673,7 +693,13 @@ mod live_smoke {
     #[ignore]
     fn live_scan() {
         let entries = super::scan(&[]);
-        println!("\n==== live scan: {} listeners ====", entries.len());
+        // 「行」而非「监听者」：v0.6.0 起第二条扫描路径会带进无端口的孤儿 dev 进程
+        let orphans = entries.iter().filter(|e| e.ports.is_empty()).count();
+        println!(
+            "\n==== live scan: {} rows ({} 无端口孤儿) ====",
+            entries.len(),
+            orphans
+        );
         for e in &entries {
             println!(
                 "{:>6}  :{:<24} {:<14} conf={:<9} reasons={:?}  [{}] {}",
@@ -1271,6 +1297,14 @@ mod orphan_tests {
             !entry.zombie_reasons.contains(&ReasonCode::InstalledApp),
             "不得再吃 /Applications 路径豁免"
         );
+        // 摘出路径豁免 ≠ 路径变得非标准：exe 就在 /Applications 下，不得反过来
+        // 贴一条「可执行文件不在标准安装位置」的错话（classify 侧不变量见
+        // nonstandard_path_reason_follows_the_actual_exe_path）
+        assert!(
+            !entry.zombie_reasons.contains(&ReasonCode::NonstandardPath),
+            "exe 在 /Applications 下，不得声称非标准路径：{:?}",
+            entry.zombie_reasons
+        );
     }
 
     /// 对照一（防误杀）：同一个 exe、同样 ppid=1，但**不带**自动化开关 ——
@@ -1537,8 +1571,37 @@ mod chain_tests {
         let (chain, flags) = build_parent_chain(300, &procs);
         assert!(flags.terminates_at_init, "链应终止于 launchd");
         assert!(flags.has_orphan_shell, "链上应识别出孤儿 zsh");
+        assert!(
+            flags.walked_real_ancestor,
+            "走过 npm、zsh 才撞到 launchd ⇒ 链是一份独立证据"
+        );
         // 链：npm → zsh → launchd
         assert_eq!(chain.last().unwrap().label, "launchd");
+    }
+
+    /// 锁住 classify 的 OrphanedChain 去重所依赖的**前提**（评审发现：此前只有
+    /// 纯函数侧断言了结论，没有任何测试 pin 住产生该前提的这次遍历）。
+    ///
+    /// 前提是：本体 ppid==1 时，遍历从自己起步、第一次迭代就命中 chain_hits_init，
+    /// 一个真实祖先都没走过。若将来有人把起点改成 meta.ppid、或在 chain_hits_init
+    /// 之前插入别的终止分支，这条断言会先红 —— 否则 classify 会继续默默吞掉一条
+    /// 此时已经变得独立的 OrphanedChain 证据，而全部纯函数测试照样全绿。
+    #[cfg(target_os = "macos")]
+    #[test]
+    fn ppid1_leaf_terminates_before_walking_any_ancestor() {
+        let mut procs = HashMap::new();
+        procs.insert(
+            400,
+            meta(1, "/opt/homebrew/bin/node", "node /Users/x/proj/server.js"),
+        );
+        let (chain, flags) = build_parent_chain(400, &procs);
+        assert!(flags.terminates_at_init, "ppid=1 ⇒ 链终止于 launchd");
+        assert!(
+            !flags.walked_real_ancestor,
+            "ppid=1 时第一次迭代即终止，不得走过任何真实祖先"
+        );
+        assert_eq!(chain.len(), 1, "链上只有合成的 launchd 根");
+        assert_eq!(chain[0].label, "launchd");
     }
 
     /// brew 豁免的「身份路径」矩阵：解释器位置 ≠ 进程身份。
