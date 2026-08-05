@@ -38,6 +38,12 @@ export type ProcessEntry = {
   confidence: Confidence;
   zombie_reasons: string[];
   is_whitelisted: boolean;
+  /**
+   * 白名单键，由引擎直接产出（Rust `scanner::whitelist_key`）。
+   * 新前端一律读它；下方的 `whitelistKey()` 是历史实现，两者必须给出同一结果 ——
+   * 由 `whitelist_key_matches_frontend` 单测钉住。
+   */
+  whitelist_key: string;
   duplicate_of: number | null;
 };
 

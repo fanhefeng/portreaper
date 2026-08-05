@@ -1,0 +1,45 @@
+{
+  "$schema": "https://www.raycast.com/schemas/extension.json",
+  "name": "portreaper",
+  "description": "Find and kill orphaned dev-server processes — the same classification engine as the Portreaper desktop app.",
+  "categories": [
+    "Developer Tools",
+    "System"
+  ],
+  "license": "MIT",
+  "author": "fhf",
+  "scripts": {
+    "dev": "ray develop",
+    "build": "ray build -e dist",
+    "typecheck": "tsc --noEmit"
+  },
+  "dependencies": {
+    "@raycast/api": "^1.83.0"
+  },
+  "devDependencies": {
+    "@types/node": "^22.0.0",
+    "@types/react": "^18.3.0",
+    "typescript": "^5.6.0"
+  },
+  "icon": "command-icon.png",
+  "commands": [
+    {
+      "name": "search-ports",
+      "title": "Search Ports",
+      "subtitle": "Portreaper",
+      "description": "List listening processes and orphaned dev processes, then terminate the ones nobody owns.",
+      "mode": "view"
+    }
+  ],
+  "preferences": [
+    {
+      "name": "cliPath",
+      "title": "portreaper-cli path",
+      "description": "Leave empty to auto-detect. Set this if the binary lives somewhere unusual.",
+      "type": "textfield",
+      "required": false,
+      "default": ""
+    }
+  ],
+  "title": "Portreaper"
+}

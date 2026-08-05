@@ -42,6 +42,13 @@ pub struct ProcessEntry {
     pub confidence: Confidence, // "none" | "possible" | "likely" | "confirmed"
     pub zombie_reasons: Vec<ReasonCode>, // 机器码，前端 i18n 翻译
     pub is_whitelisted: bool,
+    /// 这一行在白名单文件里的键 —— **由引擎产出，前端不要自己再推一遍**。
+    ///
+    /// 推导规则有个反直觉的分支（`exe_path` 仅在含路径分隔符时可用，否则回退
+    /// 全命令行），每多一个前端自行实现，就多一次「在 Raycast 里加的星标桌面版
+    /// 认不出来」的机会。`src/model.ts` 的 `whitelistKey()` 因历史原因仍在，
+    /// 但新前端一律直接读本字段。
+    pub whitelist_key: String,
     /// 同项目重复 dev server 的对端 PID（scan() 后处理填充；前端用于行内故事）
     pub duplicate_of: Option<u32>,
 }

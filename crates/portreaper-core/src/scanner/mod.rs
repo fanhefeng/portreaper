@@ -397,6 +397,7 @@ fn build_entry(
         confidence: verdict.confidence,
         zombie_reasons: verdict.reasons,
         is_whitelisted,
+        whitelist_key: wl_key,
         duplicate_of: None,
     };
     (entry, raw_suspect)
@@ -889,6 +890,8 @@ mod dup_tests {
             confidence: Confidence::None,
             zombie_reasons: vec![],
             is_whitelisted: false,
+            // 夹具用固定 exe 路径，与 build_entry 的推导一致（含分隔符 ⇒ 用 exe_path）
+            whitelist_key: "/opt/homebrew/bin/node".into(),
             duplicate_of: None,
             cpu_percent_tree: 0.0,
         }
