@@ -1752,3 +1752,204 @@ mod chain_tests {
         assert_eq!(chain.last().unwrap().label, "Terminal");
     }
 }
+
+/// Windows 侧的端到端 fixture —— 与上面两个 macOS 模块对称。
+///
+/// 为什么单独写一份而不是把 macOS 那些改成平台中性：`build_entry` /
+/// `build_parent_chain` 全程走 `platform_impl::*`，两个平台的孤儿判据、链终止
+/// 条件、路径阶梯**没有一处相同**。这个 crate 的 Windows 半边没有任何手工 QA，
+/// CI 是唯一的安全网 —— 而 CI 此前只跑得到纯函数 classify 与 windows.rs 的
+/// 单元测试，从 ProcMeta 到 ProcessEntry 的这段组装逻辑在 Windows 上一行未测。
+///
+/// 路径取材刻意只用**全机一致**的位置（`C:\Program Files\`、`C:\Windows\`）与
+/// 显然非标准的开发目录：runner 上的用户名、LOCALAPPDATA 都是变量，拿它们拼
+/// fixture 会做成一条只在某台机器上成立的断言。
+#[cfg(all(test, windows))]
+mod windows_e2e_tests {
+    use super::*;
+
+    fn meta(ppid: u32, exe: &str, cmd: &str, start: u64) -> ProcMeta {
+        ProcMeta {
+            ppid,
+            exe_path: exe.to_string(),
+            full_command: cmd.to_string(),
+            user: String::new(),
+            start_unix: Some(start),
+            elapsed_secs: 3600,
+            cpu_percent: 0.0,
+            rss_kb: 0,
+            tty: None,
+            state: None,
+            tty_orphaned: false,
+        }
+    }
+
+    fn col_of(procs: HashMap<u32, ProcMeta>) -> Collected {
+        Collected {
+            listeners: vec![],
+            procs,
+            launchd_pids: HashSet::new(),
+            cwds: HashMap::new(),
+            established_local_ports: HashMap::new(),
+        }
+    }
+
+    /// 存活的 explorer.exe 是链的合法终点。没有这一条，Windows 上每一个从资源
+    /// 管理器/终端启动的 dev server 都会被判成孤儿链 —— 因为 Windows 的链最终
+    /// 都会走到已退出的 userinit.exe（见 CLAUDE.md 的链走查不变量）。
+    #[test]
+    fn chain_stops_at_live_explorer() {
+        let mut procs = HashMap::new();
+        procs.insert(
+            100,
+            meta(1, "C:\\Windows\\explorer.exe", "explorer.exe", 1000),
+        );
+        procs.insert(
+            200,
+            meta(
+                100,
+                "C:\\Windows\\System32\\cmd.exe",
+                "cmd.exe /c npm run dev",
+                1100,
+            ),
+        );
+        procs.insert(
+            300,
+            meta(
+                200,
+                "C:\\Program Files\\nodejs\\node.exe",
+                "node C:\\dev\\proj\\node_modules\\vite\\bin\\vite.js",
+                1200,
+            ),
+        );
+
+        let (chain, flags) = build_parent_chain(300, &procs);
+        assert!(
+            !flags.terminates_at_init,
+            "活着的 explorer.exe 必须挡住孤儿链判定"
+        );
+        assert!(!flags.has_orphan_shell);
+        assert!(flags.walked_real_ancestor);
+        assert_eq!(
+            chain.last().unwrap().pid,
+            100,
+            "链应停在 explorer.exe 这一层"
+        );
+    }
+
+    /// 装在 `Program Files` 下的应用是 `is_chain_stopper`（category=installed-app）：
+    /// 链走到它就停，不再继续上溯到已死的根。这是「用户正开着的 App 启动的进程
+    /// 不算孤儿」那条不变量在 Windows 上的落点。
+    #[test]
+    fn chain_stops_at_installed_app_ancestor() {
+        let mut procs = HashMap::new();
+        // 祖先自身 ppid 指向一个不存在的 PID —— 若没有 installed-app 终止，
+        // 链会继续上溯并落到「父不在快照 ⇒ 死根」分支
+        procs.insert(
+            100,
+            meta(
+                4242,
+                "C:\\Program Files\\Microsoft VS Code\\Code.exe",
+                "Code.exe",
+                1000,
+            ),
+        );
+        procs.insert(
+            200,
+            meta(
+                100,
+                "C:\\Program Files\\nodejs\\node.exe",
+                "node C:\\dev\\proj\\server.js",
+                1100,
+            ),
+        );
+
+        let (chain, flags) = build_parent_chain(200, &procs);
+        assert!(
+            !flags.terminates_at_init,
+            "链在 installed-app 处停下，不该被记成终止于死根"
+        );
+        assert!(flags.walked_real_ancestor);
+        assert_eq!(chain.last().unwrap().pid, 100);
+        assert_eq!(chain.last().unwrap().category, "installed-app");
+    }
+
+    /// PID 槽位复用（父存在、但创建时间晚于子 ⇒ 真实父早已死）走完整条组装链路：
+    /// 非 dev 的用户二进制只到 Likely，且因 exe 不在常规安装位置带上 NonstandardPath。
+    #[test]
+    fn pid_slot_reused_yields_likely_with_nonstandard_path() {
+        let exe = "C:\\dev\\tools\\myserver.exe";
+        let mut procs = HashMap::new();
+        // 父 50 的创建时间晚于子 900 ⇒ 槽位复用
+        procs.insert(
+            50,
+            meta(1, "C:\\Windows\\System32\\cmd.exe", "cmd.exe", 9000),
+        );
+        procs.insert(900, meta(50, exe, "myserver.exe --serve", 1000));
+
+        let col = col_of(procs);
+        let m = col.procs.get(&900).unwrap();
+        let (entry, raw_suspect) = build_entry(
+            900,
+            m,
+            &col.procs,
+            &col,
+            &[],
+            vec![8080],
+            "myserver.exe".to_string(),
+            String::new(),
+            None,
+        );
+
+        assert!(raw_suspect, "槽位复用是直接孤儿信号");
+        assert!(entry.is_zombie_suspect);
+        assert!(entry.zombie_reasons.contains(&ReasonCode::PidSlotReused));
+        assert!(
+            entry.zombie_reasons.contains(&ReasonCode::NonstandardPath),
+            "C:\\dev\\ 不是常规安装位置，该事实必须出现在证据里"
+        );
+        assert_eq!(
+            entry.confidence,
+            Confidence::Likely,
+            "非 dev 的裸孤儿只到 Likely —— 升到 Confirmed 需要 dev 特征或死会话"
+        );
+    }
+
+    /// 同一条路径上的 dev 特征会把置信度顶到 Confirmed（孤儿 × dev）——
+    /// 与上一条构成对照，锁住 Windows 侧的分档确实生效而不是恒定一档。
+    #[test]
+    fn orphaned_dev_server_reaches_confirmed() {
+        let mut procs = HashMap::new();
+        procs.insert(
+            900,
+            meta(
+                4242, // 父不在快照中 ⇒ ParentExited
+                "C:\\Program Files\\nodejs\\node.exe",
+                "node C:\\dev\\proj\\node_modules\\vite\\bin\\vite.js --port 5173",
+                1000,
+            ),
+        );
+
+        let col = col_of(procs);
+        let m = col.procs.get(&900).unwrap();
+        let (entry, raw_suspect) = build_entry(
+            900,
+            m,
+            &col.procs,
+            &col,
+            &[],
+            vec![5173],
+            "node.exe".to_string(),
+            String::new(),
+            None,
+        );
+
+        assert!(raw_suspect);
+        assert!(entry.zombie_reasons.contains(&ReasonCode::ParentExited));
+        assert_eq!(
+            entry.app_category, "dev-script",
+            "解释器装在 Program Files，身份仍应取自脚本（路径规则例外 #1）"
+        );
+        assert_eq!(entry.confidence, Confidence::Confirmed);
+    }
+}
