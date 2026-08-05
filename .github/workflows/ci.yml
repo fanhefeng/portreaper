@@ -30,6 +30,13 @@ on:
 permissions:
   contents: read
 
+# 同一分支的新提交取消仍在跑的旧运行：一次 push 触发的矩阵是 macOS + Windows
+# 各一台，连推三次就有六台机器在为两份已经过时的代码排队。分组带 ref，故不同
+# PR 之间照常并行。main 上不取消 —— 那里的每个 commit 都要留下自己的结论。
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: ${{ github.ref != 'refs/heads/main' }}
+
 jobs:
   check:
     name: Check (${{ matrix.os }})
