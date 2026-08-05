@@ -249,9 +249,11 @@
       ta.style.opacity = "0";
       document.body.appendChild(ta);
       ta.select();
-      document.execCommand("copy");
+      // execCommand 失败时返回 false 而不是抛错 —— 不看返回值就会在什么都没
+      // 复制的情况下弹出「已复制」，用户去粘贴才发现是空的
+      var ok = document.execCommand("copy");
       document.body.removeChild(ta);
-      done();
+      if (ok) done();
     } catch {
       /* ignore */
     }

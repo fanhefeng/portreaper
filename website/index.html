@@ -38,7 +38,7 @@
           </svg>
           <span class="brand-name">Portreaper</span>
         </a>
-        <nav class="site-nav" aria-label="primary">
+        <nav class="site-nav" aria-label="primary" data-i18n-aria="a11y.nav">
           <a href="#features" data-i18n="nav.features">功能</a>
           <a href="#install" data-i18n="nav.install">安装</a>
           <a href="https://github.com/fanhefeng/portreaper" rel="noopener" data-i18n="nav.github"
@@ -56,7 +56,11 @@
       <section class="hero" id="top">
         <div class="container hero__inner">
           <div class="hero__copy">
-            <div class="hero__badges" aria-label="supported platforms">
+            <div
+              class="hero__badges"
+              aria-label="supported platforms"
+              data-i18n-aria="a11y.platforms"
+            >
               <span class="os-badge">macOS</span>
               <span class="os-badge">Windows</span>
               <span class="os-badge os-badge--soft" data-i18n="hero.langBadge">中 / EN</span>
@@ -376,7 +380,12 @@
             应用未经签名公证。下面是绕过系统拦截的标准步骤。
           </p>
 
-          <div class="tabs" role="tablist" aria-label="install platforms">
+          <div
+            class="tabs"
+            role="tablist"
+            aria-label="install platforms"
+            data-i18n-aria="a11y.installTabs"
+          >
             <button
               class="tab is-active"
               id="tab-mac"
@@ -432,6 +441,7 @@
                 data-i18n="install.copy"
                 data-i18n-aria="install.copyAria"
                 aria-label="复制命令"
+                data-i18n-aria="a11y.copy"
               >
                 复制
               </button>

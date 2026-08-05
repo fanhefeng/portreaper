@@ -5,6 +5,12 @@ window.I18N = {
     "meta.description":
       "Portreaper —— 一个 macOS / Windows 桌面托盘工具，找出占用 TCP 端口的进程，精准识别并清扫孤儿 dev-server 僵尸进程。",
     "a11y.skip": "跳到主要内容",
+    // 读屏器读到的标签也要跟随界面语言 —— 只翻可见文字、留一堆英文（或写死中文的
+    // "复制命令"）aria-label，等于对依赖读屏的用户根本没做这次切换（评审发现）
+    "a11y.nav": "主导航",
+    "a11y.platforms": "支持的平台",
+    "a11y.installTabs": "安装平台",
+    "a11y.copy": "复制命令",
 
     "nav.features": "功能",
     "nav.install": "安装",
@@ -88,6 +94,10 @@ window.I18N = {
     "meta.description":
       "Portreaper — a macOS / Windows desktop tray app that finds processes holding TCP ports and precisely identifies and reaps orphaned dev-server zombies.",
     "a11y.skip": "Skip to main content",
+    "a11y.nav": "primary",
+    "a11y.platforms": "supported platforms",
+    "a11y.installTabs": "install platforms",
+    "a11y.copy": "Copy command",
 
     "nav.features": "Features",
     "nav.install": "Install",
