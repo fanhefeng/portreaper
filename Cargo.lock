@@ -2737,10 +2737,7 @@ name = "portreaper"
 version = "0.8.1"
 dependencies = [
  "log",
- "once_cell",
  "portreaper-core",
- "serde",
- "serde_json",
  "sys-locale",
  "tauri",
  "tauri-build",
