@@ -13,8 +13,10 @@ updates:
     schedule:
       interval: weekly
 
+  # workspace 根是仓库根（Cargo.lock 也在那里）。指到 /src-tauri 会让 updater
+  # 看不见 crates/portreaper-core 的依赖，也读不到共享 lockfile。
   - package-ecosystem: cargo
-    directory: /src-tauri
+    directory: /
     schedule:
       interval: monthly
     ignore:
