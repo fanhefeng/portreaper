@@ -1,0 +1,327 @@
+# yaml-language-server: $schema=https://storage.googleapis.com/coderabbit_public_assets/schema.v2.json
+#
+# CodeRabbit config for Portreaper.
+#
+# Two things this file exists to do:
+#   1. Silence the linters CI already runs (clippy, oxlint) so PRs get one
+#      report, not two. See `tools:` below.
+#   2. Push the classification invariants from CLAUDE.md into the review as
+#      path-scoped instructions. CLAUDE.md is picked up by knowledge_base
+#      automatically, but it is long — the rules that actually cause bugs here
+#      need to be attached to the files they govern.
+
+language: zh-CN
+
+tone_instructions: "Be direct and specific. Skip praise. Cite the invariant a change breaks rather than restating what the code does."
+
+early_access: false
+
+reviews:
+  # Portreaper's core value is a decision tree where a subtly wrong branch
+  # silently mislabels a user's process. Worth the extra comments.
+  profile: assertive
+
+  request_changes_workflow: false
+  high_level_summary: true
+  poem: false
+  review_status: true
+  collapse_walkthrough: false
+
+  auto_review:
+    enabled: true
+    auto_incremental_review: true
+    drafts: false
+    base_branches:
+      - main
+
+  path_filters:
+    - "!pnpm-lock.yaml"
+    - "!Cargo.lock"
+    - "!src-tauri/icons/**"
+    - "!src-tauri/dmg-extras/**"
+    - "!public/**"
+
+  path_instructions:
+    # ---------------------------------------------------------------- engine
+    - path: "crates/portreaper-core/src/scanner/classify.rs"
+      instructions: |
+        This is the product. A wrong branch here mislabels a real process.
+
+        `classify` MUST stay a pure function of `ProcessSnapshot`. Flag any OS
+        probe, syscall, subprocess, filesystem read, clock read, or global
+        state introduced here — every input belongs in the snapshot, built by
+        the platform collectors, or the decision tree stops being table-testable
+        on both platforms.
+
+        Decision order is load-bearing and must not be reordered:
+          1. state contains Z (defunct) -> suspect, Confirmed.
+          2. Hard exemptions, in this order: launchd_managed ->
+             (automation_instance && debugger_attached) -> exe_is_standard_install
+             -> brew_service_path -> pm2_managed.
+          3. Orphan signals: direct_orphan, chain_orphan, tty_orphaned.
+          4. No signal -> not a suspect.
+          5. elapsed_secs < 10 -> Possible + just_reparented (grace period).
+          6. Tiers: orphan x dev or orphan x dead-session -> Confirmed;
+             bare orphan/chain -> Likely; session-only -> Possible.
+
+        Invariants to check every change against:
+        - Standard install path or launchd-managed => never auto-flagged.
+        - `DebuggerAttached` is exemption-only. It must NEVER raise confidence.
+          Connections flap; upgrading on them makes rows flicker in the UI.
+        - `OrphanedChain` is reported only when the walk actually saw an
+          ancestor (`chain_walked_real_ancestor`). Never key this on the
+          ReasonCode variant — matching `!= Some(Ppid1Orphan)` misses Windows'
+          `ParentExited`, which implies chain termination just as much.
+        - Adding a ReasonCode variant is a four-file change: this enum,
+          `src/model.ts` (REASON_PRIORITY for positive codes, EXEMPT_REASONS for
+          exemptions), and zh+en keys in `src/i18n.ts` for the reason./reasonTip./
+          story./verdict. families. `scripts/check-reason-parity.mjs` fails
+          otherwise — if a PR adds a variant without those, say so.
+
+    - path: "crates/portreaper-core/src/scanner/identify.rs"
+      instructions: |
+        Shared, separator-agnostic identity helpers. Both platforms call these,
+        so a change here lands on macOS and Windows at once.
+
+        - `is_temp_dir_path` and `is_standard_install_path` are semantically
+          OPPOSITE and must never be merged or share an implementation.
+          `/private/var/folders/` is an *exemption* in the latter (App
+          Translocation) and *evidence of automation* in the former.
+        - `is_automation_instance` requires `--headless` AND a session marker
+          (--remote-debugging-port / --remote-debugging-pipe / --enable-automation
+          / marionette, or a --user-data-dir / -profile pointing into a temp dir).
+          `--headless` is a NECESSARY condition. Dropping it makes the rule match
+          headed automation — i.e. the browser window the user is looking at
+          right now. Reject any change that weakens this to an OR.
+        - The temp-dir test reads *argument values*, not the exe path.
+        - `is_dev_tool_runtime_path` must stay one shared function, not
+          per-platform literals (they drift). It covers node_modules/electron/dist,
+          ~/Library/Caches/ms-playwright, ~/.cache/puppeteer, and the Windows
+          %LOCALAPPDATA%\ms-playwright equivalent. Without it an orphaned dev
+          runtime looks like an installed app and is exempted forever.
+        - `extract_module_arg`: `python -m http.server` is dev-script regardless
+          of where the interpreter lives.
+
+    - path: "crates/portreaper-core/src/scanner/mod.rs"
+      instructions: |
+        Orchestration: collect -> build_entry (snapshot -> classify -> chain walk)
+        -> sort, plus the cross-entry post-passes.
+
+        - TWO PATH PREDICATES, NEVER INTERCHANGEABLE. `is_standard_install_path`
+          is the *exemption policy* and deliberately errs toward true (macOS
+          counts /private/var/folders/; Windows returns true for an empty exe
+          path). `is_conventional_install_path` is the *factual* one and feeds
+          only the user-facing NonstandardPath reason. Using the exemption
+          predicate to state a fact means every future widening of it silently
+          makes the UI lie. Flag any crossover.
+        - `brew_service_exemption` is decided by the *identity path* — the
+          script's location when there is a script, never the interpreter's for
+          `-m` calls. It returns false outright for automation-instance.
+        - `cpu_percent_tree` (fill_subtree_cpu) is DISPLAY-ONLY and must never
+          enter ProcessSnapshot. The verdict means "unclaimed", not
+          "power-hungry" — a healthy `vite build` pegs a core too. The DFS must
+          keep its `visited` set; a ppid cycle would hang the whole scan.
+        - `mark_duplicates`: cwd is the strongest evidence and a known-different
+          cwd VETOES the pair (hoisted node_modules collapses project names
+          across monorepo sub-packages). A live non-shell, non-user-visible-app
+          parent/grandparent marks intentional multi-instance; a shell ancestor
+          or a user-visible-app ancestor does NOT exempt. `duplicate_of` must
+          point at the smallest peer PID (HashMap order otherwise flickers with
+          >=3 instances). Duplicates only ever reach Possible, never swept.
+        - Orphan scan path (port-less rows): the dev-like gate is what keeps the
+          dozens of normal ppid==1 system daemons out. Do not relax it.
+        - `whitelist_key` uses exe_path ONLY when it contains a path separator;
+          a bare PATH-resolved name (`node`) must fall back to the command line,
+          or one whitelist entry silently whitelists every same-named listener.
+
+    - path: "crates/portreaper-core/src/scanner/{macos,windows}.rs"
+      instructions: |
+        Platform leaves with cfg-gated, identical signatures. A signature change
+        in one requires the same change in the other or the cross-target build
+        breaks (Windows is compile-checked in CI only — there is no Windows dev
+        machine and no manual QA).
+
+        macOS specifics:
+        - NEVER use `ps -o sess=` for session leaders — it prints 0 for every
+          process on macOS. Session leaders come from the `s` flag in the ps
+          *state* column. (This was a real review-caught bug that made every
+          terminal process look session-orphaned.)
+        - `ps -A -o pid=,comm=` is the authoritative exe path; it survives spaces
+          in paths, unlike splitting the command line.
+        - LANG=en_US.UTF-8 must stay forced on all subprocesses.
+        - Do NOT widen the main LISTEN lsof to all states to get ESTABLISHED
+          data. lsof is the single most expensive call in the project; the
+          ESTABLISHED probe is a second, PID-scoped call fired only when the
+          automation-candidate set is non-empty.
+
+        Windows specifics:
+        - Exe path unreadable (MSIX/elevated) => err toward NOT flagging.
+        - Chain walk must stop at live session roots (explorer.exe, services.exe,
+          ...). Without this every cmd-launched dev server is a false positive,
+          since Windows chains all end at the exited userinit.exe.
+
+    - path: "crates/portreaper-core/src/**/*.rs"
+      instructions: |
+        This crate must have ZERO GUI dependency — its reference count for
+        `tauri` is 0 and must stay 0. Flag any tauri import, any dependency that
+        pulls one in, and any verdict logic that leaks out to a frontend.
+
+    - path: "crates/portreaper-core/src/platform.rs"
+      instructions: |
+        Kill path. `kill_process(pid, force, start_unix)` re-reads process
+        creation time and refuses with ERR_PID_REUSED if it moved by >5s —
+        killing a recycled PID is a data-loss bug. Any change that skips,
+        weakens, or widens that tolerance is a serious finding.
+
+        Windows has a single Terminate button on purpose: there is no reliable
+        graceful kill for detached console processes. Do not accept added
+        CTRL_BREAK heuristics — that is a settled product decision.
+
+    # ---------------------------------------------------------- desktop shell
+    - path: "src-tauri/src/**/*.rs"
+      instructions: |
+        Shell only: whitelist file I/O, tray, window lifecycle, per-environment
+        paths. NO verdict logic — if a PR computes or adjusts a suspect/orphan
+        judgement here, that belongs in portreaper-core.
+
+        - `commands.rs` fns must stay thin wrappers; new `#[tauri::command]`
+          fns must be registered in `lib.rs` invoke_handler!.
+        - `paths.rs` scopes every persisted dir by build profile via
+          cfg(debug_assertions) — no env vars — so dev never pollutes installed
+          app data.
+        - The window close button is intercepted (hide + prevent_close). Do not
+          "fix" Cmd+Q by intercepting ExitRequested{code: None}: muda's
+          predefined Quit calls [NSApp terminate:], which tao 0.35 does not
+          route through that event. The custom quit-to-tray item owns the
+          accelerator. Under ActivationPolicy::Accessory the app menu is never
+          displayed but must still be BUILT — AppKit consults mainMenu for key
+          equivalents, so webview Cmd+C/V/W/Q depend on the Edit/Window
+          submenus staying.
+        - Logout/shutdown (AppleEvent quit) must still exit for real.
+
+    - path: "src-tauri/capabilities/**"
+      instructions: |
+        This is an exact permission whitelist guarded by
+        `src/security-config.test.ts`, which also pins a strict CSP (no
+        unsafe-inline anywhere; connect-src must keep both Tauri IPC carriers).
+        Any added permission or CSP edit must come with a deliberate update to
+        those assertions — a PR that widens permissions without touching the
+        test is a finding.
+
+    # -------------------------------------------------------------- frontend
+    - path: "src/**/*.{ts,tsx}"
+      instructions: |
+        - Every user-facing string goes through the typed i18n dict in
+          `src/i18n.ts`. A missing English key is a tsc error; a hardcoded
+          string is a finding.
+        - Pure logic belongs in `model.ts` / `describe.ts`, not in components —
+          it is unit-tested there.
+        - Frontends must NEVER re-derive the verdict or the whitelist key. Read
+          the engine-emitted `ProcessEntry.whitelist_key`. (`legacyWhitelistKey`
+          is the one allowed derivation, only because the engine does not emit
+          the v0.4.0 key.)
+        - `describe.ts` brand-scoped patterns are skipped for `dev-script` and
+          `automation-instance` rows on purpose: a project dir named
+          `spotify-clone` would otherwise be identified as Spotify.
+        - `ProcessEntry` in `model.ts` is a serde mirror of the Rust struct —
+          a field change on either side must land on both.
+        - `logger.ts` log calls MUST swallow their own failures (.catch(() => {})).
+          A rejecting error() call re-enters the unhandledrejection listener and
+          self-excites into an infinite loop (real incident: 46 MB of log, pegged
+          CPU). Never let the logger produce an error it would itself report.
+        - Sweep and the tray count cover Confirmed+Likely only. Possible is
+          never swept.
+
+    # ---------------------------------------------------------------- guards
+    - path: "scripts/*.mjs"
+      instructions: |
+        These are CI-enforced consistency guards with their own self-tests
+        (`node --test scripts/*.test.mjs`). Weakening a check, or adding one
+        without a matching test, defeats the purpose. check-reason-parity keeps
+        Rust ReasonCode in sync with the i18n render paths;
+        check-release-assets pins the stable asset names used by the website
+        and README.
+
+    - path: ".github/workflows/**"
+      instructions: |
+        Adding a CI step means updating TWO more places or main goes red on
+        release day (it did on v0.6.0, v0.7.0, v0.7.2): the `staged` glob config
+        in `vite.config.ts` and the mirror list in `.vite-hooks/pre-push`.
+
+        Cargo commands must be workspace-wide and run from the repo root — a
+        bare `--manifest-path src-tauri/Cargo.toml` silently skips
+        portreaper-core, i.e. every line of logic these gates protect. The
+        workspace root is the REPO root: target/ and Cargo.lock live there, and
+        rust-cache keys on ". -> target".
+
+        Version bumps only via `node scripts/bump-version.mjs X.Y.Z`.
+
+    - path: "integrations/raycast/**"
+      instructions: |
+        A frontend, same rule as the desktop UI: consume the engine's verdict
+        and `whitelist_key`, never re-derive them. This extension used to carry
+        its own copy of the whitelist-key rule, which is exactly the failure the
+        core split exists to kill.
+
+  tools:
+    # Already enforced locally (pre-push) and in CI. Duplicating them here
+    # means two identical reports on every PR.
+    clippy:
+      enabled: false
+    oxc:
+      enabled: false
+    eslint:
+      enabled: false
+    biome:
+      enabled: false
+    # Markdown is deliberately excluded from formatting (oxfmt 0.2.6 corrupted
+    # md content) — a linter nagging about it would fight that decision.
+    markdownlint:
+      enabled: false
+
+    # Kept: these cover ground the local gate does not.
+    semgrep:
+      enabled: true
+    ast-grep:
+      enabled: true
+    gitleaks:
+      enabled: true
+    actionlint:
+      enabled: true
+    yamllint:
+      enabled: true
+    shellcheck:
+      enabled: true
+    osvScanner:
+      enabled: true
+
+chat:
+  auto_reply: true
+
+knowledge_base:
+  opt_out: false
+  learnings:
+    scope: local
+  issues:
+    scope: local
+  pull_requests:
+    scope: local
+  code_guidelines:
+    enabled: true
+    filePatterns:
+      - "**/CLAUDE.md"
+      - "docs/KNOWN-GAPS.md"
+      - "docs/ARCHITECTURE-CORE-SPLIT.md"
+      - "docs/DESIGN.md"
+
+code_generation:
+  docstrings:
+    language: zh-CN
+  unit_tests:
+    path_instructions:
+      - path: "crates/portreaper-core/src/scanner/classify.rs"
+        instructions: |
+          Tests here are fixture-driven table tests over ProcessSnapshot. New
+          cases should assert the tier (Confirmed/Likely/Possible) and the
+          reason set, and must cover both the macOS and Windows shapes of any
+          orphan signal.
