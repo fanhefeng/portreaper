@@ -112,7 +112,9 @@ The macOS group (`APPLE_*`) enables Developer ID signing + notarization for the 
       `crates/portreaper-cli/Cargo.toml`, and the workspace `Cargo.lock`.
       (The five writes are not atomic — if the script dies midway, run
       `--check X.Y.Z` to see which files were left behind, then re-run the bump.)
-- [ ] `cargo build` clean; `Cargo.lock` committed.
+- [ ] `cargo build --workspace` clean; `Cargo.lock` committed. (Bare `cargo build`
+      from the repo root builds the default members only — it must cover
+      `portreaper-core`, `portreaper-cli`, and the desktop shell alike.)
 - [ ] Commit `chore(release): vX.Y.Z` + tag `vX.Y.Z` pushed.
 - [ ] `verify-version` passed.
 - [ ] All three artifacts built and uploaded with stable names.

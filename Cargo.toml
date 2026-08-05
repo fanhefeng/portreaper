@@ -1,9 +1,9 @@
 # Cargo workspace 根。
 #
-# 成员是**平级**的兄弟 crate：判定引擎（crates/portreaper-core）与消费它的前端
-# （src-tauri = 桌面 GUI 壳）。把 workspace 根放在仓库根，而不是让 src-tauri 反过来
-# 包含 ../crates/*，是因为后续还会加入 crates/portreaper-cli 等成员 —— 只有平级
-# 布局能自然表达「引擎不属于任何一个前端」。
+# 成员是**平级**的兄弟 crate：判定引擎（crates/portreaper-core）与消费它的两个前端
+# （crates/portreaper-cli = 命令行 / Raycast 的后端，src-tauri = 桌面 GUI 壳）。
+# 把 workspace 根放在仓库根，而不是让 src-tauri 反过来包含 ../crates/*，是因为只有
+# 平级布局能自然表达「引擎不属于任何一个前端」—— CLI 落地后这一点已经兑现。
 #
 # 代价（迁移时已一并处理，改动这里前请确认三处仍同步）：
 #   - target/ 从 src-tauri/target/ 移到仓库根 → .gitignore、CI 的 rust-cache

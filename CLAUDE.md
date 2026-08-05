@@ -26,7 +26,7 @@ pnpm exec vp check     # oxfmt + oxlint gate (CI-enforced); --fix to apply; md e
 cargo fmt --all --check                    # rustfmt gate — CI-enforced, and NOT covered by `vp check` (which is JS/TS only)
 cargo test --workspace                     # 70+ unit tests incl. classify fixtures
 cargo clippy --workspace --all-targets -- -D warnings
-cargo test live_scan -- --ignored --nocapture   # real-machine smoke: scan this Mac
+cargo test --workspace live_scan -- --ignored --nocapture   # real-machine smoke: scan this Mac
 
 pnpm test                                  # frontend regression tests (vp test run: bundled vitest + happy-dom)
 

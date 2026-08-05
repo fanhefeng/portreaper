@@ -1,10 +1,11 @@
 # 架构规划：引擎下沉为 core，适配多前端（Raycast 等）
 
-> 状态：**步骤 1 已落地**（见 §8 的进度标记），步骤 2–5 待做。
+> 状态：**步骤 1、2、4、5 已落地**，步骤 3（契约化）待做（见 §8 的进度标记）。
 > 目标读者：本仓库维护者。阅读前建议先看 `CLAUDE.md` 的「Architecture」一节。
 >
 > §4 的目录结构是**目标态**。当前 `crates/portreaper-core/src/` 下仍是搬迁来的
-> 原始布局（`scanner/` 六个文件 + `platform.rs`），子模块细分属于步骤 2。
+> 原始布局（`scanner/` 六个文件 + `platform.rs`）；`scanner/mod.rs` 的细分被
+> 刻意推迟到步骤 3 之后（理由见 §8 步骤 2 的「计划调整」）。
 
 ## 1. 目标与非目标
 
@@ -248,7 +249,7 @@ pub fn all_reason_texts(lang: Lang) -> BTreeMap<String, ReasonText>;
 
 | 守卫 | 状态 | 作用 |
 |---|---|---|
-| `check-reason-parity.mjs` | **升级** | 从「Rust enum ↔ i18n.ts ↔ model.ts」扩成四方：再加 `core/reasons.rs` 与 Raycast 的消费点 |
+| `check-reason-parity.mjs` | **不变** | 维持「Rust enum ↔ i18n.ts ↔ model.ts」三方。原计划扩成四方（加 `core/reasons.rs`）已作废 —— 见 §5：文案唯一真相源留在 `i18n.ts`，引擎只出机器码，Raycast 直接显示原始判定码，故没有第四方要校验 |
 | `check-paths-parity`（新） | **新增** | `src-tauri` 的单测：断言 `core::paths::config_dir()` == `app.path().app_config_dir()` 加 `dev/` 后的结果，五个目录逐一比。路径分家 = 白名单分家，必须编译期/测试期就炸 |
 | `contracts/process-entry.d.ts` | **新增** | ts-rs 从 `ProcessEntry` 派生生成（dev-dependency，`cargo test` 时导出）；CI 校验「生成结果与提交版本一致」。取代 `src/model.ts` 的手工镜像 |
 | `schemaVersion` | **新增** | CLI JSON 输出的顶层字段。Raycast 读到不认识的大版本 → 提示升级，而不是渲染出错乱的行 |
@@ -322,8 +323,8 @@ Raycast 扩展按顺序找：
 
 > **计划调整**：原定在本步顺带做的 `scanner/mod.rs`（1681 行）细分**推迟到步骤 3 之后**。步骤 3 的 `Scanner` 结构体会重写 `scan()` 的入口与 Windows 侧的 `System` 持有方式，先拆再改等于同一块代码动两遍、review 两遍。拆分本身是纯代码组织，不阻塞任何前端。
 
-**步骤 3 — 契约化**
-`Scanner` + `CpuSampling`；ts-rs 生成 `contracts/process-entry.d.ts`，`src/model.ts` 改为导入类型、只留纯函数；`reasons.rs` + parity 脚本升级。
+**步骤 3 — 契约化**（唯一待做项）
+`Scanner` + `CpuSampling`；ts-rs 生成 `contracts/process-entry.d.ts`，`src/model.ts` 改为导入类型、只留纯函数。原列在本步的「`reasons.rs` + parity 脚本升级」已作废（§5）：文案不下沉到引擎，parity 守卫维持三方。
 
 **步骤 4 — CLI ✅ 已完成（分发方式另议，见下）**
 `portreaper-cli` 四个子命令，手写参数解析（不引入 clap —— 这个二进制要随 `.app` 分发，每个依赖都进用户的下载包；四个子命令手写约 100 行，还能给出贴合语义的错误信息）。
