@@ -910,7 +910,8 @@ a:hover {
   .site-nav {
     gap: 14px;
   }
-  .site-nav a:not(.lang-toggle) {
+  /* 语言按钮是 <button> 不受此规则影响，窄屏只藏链接 */
+  .site-nav a {
     display: none;
   }
   .downloads {
