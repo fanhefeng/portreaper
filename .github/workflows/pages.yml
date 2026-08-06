@@ -29,7 +29,7 @@ jobs:
       url: ${{ steps.deployment.outputs.page_url }}
     steps:
       - name: Checkout
-        uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v6
 
       # Pin Node via .node-version（与 release.yml 的 verify-version 同一理由）：
       # guard 脚本不应跑在会独立漂移的 runner 默认 Node 上。
