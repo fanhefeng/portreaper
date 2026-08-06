@@ -3,7 +3,6 @@ import react from "@vitejs/plugin-react";
 
 const host = process.env.TAURI_DEV_HOST;
 
-// https://vite.dev/config/
 export default defineConfig(async () => ({
   plugins: lazyPlugins(() => [react()]),
 
@@ -17,8 +16,10 @@ export default defineConfig(async () => ({
   // rustfmt 直接吃文件列表，cargo fmt 不吃。edition 须与各 crate 的 Cargo.toml
   // 同步（crates/portreaper-core 与 src-tauri，目前都是 2021）。
   // "*.rs" 不含 `/`，故按 basename 匹配任意深度 —— crates/ 下的引擎源码同样覆盖。
+  // css/html 同在 oxfmt 的检查范围（0.2.6 实测会报格式错）：glob 缺它们时，
+  // 只改 index.html / *.css 的提交在 pre-commit 层拿不到自动修复。
   staged: {
-    "*.{js,mjs,ts,tsx,json,yml,yaml,toml}": "vp check --fix",
+    "*.{js,mjs,ts,tsx,json,yml,yaml,toml,css,html}": "vp check --fix",
     "*.rs": "rustfmt --edition 2021",
   },
 

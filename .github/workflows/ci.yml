@@ -149,3 +149,10 @@ jobs:
       - name: Paths parity check
         if: runner.os == 'macOS'
         run: node scripts/check-paths-parity.mjs
+
+      # 五处版本清单（package.json / tauri.conf.json / 两个 Cargo.toml / Cargo.lock）
+      # 必须自洽：以 package.json 为基准。此前该检查只在 release.yml 的
+      # verify-version 里跑，手改单个清单造成的漂移要等打 tag 那天才翻红。
+      - name: Version consistency check
+        if: runner.os == 'macOS'
+        run: node scripts/bump-version.mjs --check "$(node -p "require('./package.json').version")"

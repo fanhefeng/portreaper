@@ -24,6 +24,7 @@
 //
 // Zero dependencies. Requires Node >= 18 (ESM, fs/promises).
 
+import { realpathSync } from "node:fs";
 import { readFile, writeFile } from "node:fs/promises";
 import { fileURLToPath, pathToFileURL } from "node:url";
 import { dirname, join } from "node:path";
@@ -193,7 +194,10 @@ export function setCargoLockVersion(raw, version, crateName = LOCK_CRATE_NAMES[0
     invalid(`could not find [[package]] name = "${crateName}" block in Cargo.lock`);
   }
   const updated = block.text.replace(/^(version\s*=\s*")[^"]*(")/m, `$1${version}$2`);
-  if (updated === block.text) {
+  // no-op ≠ 行缺失：版本已是目标值时 replace 结果与原文相同（幂等重跑合法），
+  // 只有 version 行整个缺失才响亮失败 —— 与 setCargoTomlVersion 同一判据。
+  // 旧写法把两者混为一谈，中断后的同版本重跑会在这里炸出误导性错误。
+  if (updated === block.text && !/^version\s*=/m.test(block.text)) {
     invalid(`could not find version line for "${crateName}" in Cargo.lock`);
   }
   return raw.slice(0, block.start) + updated + raw.slice(block.end);
@@ -270,7 +274,9 @@ async function main() {
 }
 
 // 仅在作为脚本直接运行时执行（被 *.test.mjs import 时不触发，便于单元测试）。
-if (process.argv[1] && import.meta.url === pathToFileURL(process.argv[1]).href) {
+// realpath 双侧归一（与三个 parity 守卫同一 idiom）：node 对主模块做 realpath 而
+// argv[1] 保持原样，经 symlink 调用时裸比较不相等 → --check 门禁静默 exit 0。
+if (process.argv[1] && pathToFileURL(realpathSync(process.argv[1])).href === import.meta.url) {
   main().catch((err) => {
     fail(err?.stack || String(err));
   });

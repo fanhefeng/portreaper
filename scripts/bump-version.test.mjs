@@ -176,6 +176,17 @@ test("包名匹配必须精确，portreaper 不得命中 portreaper-cli 的块",
   );
 });
 
+// 幂等回归（实测踩到）：同版本重跑时 replace 是 no-op，旧守卫把「结果与原文相同」
+// 一律当成「version 行缺失」—— 中断后的重跑会在 Cargo.lock 一步炸出误导性错误，
+// 而 setCargoTomlVersion 对同样的 no-op 却静默通过（两函数判据必须一致）。
+test("Cargo.lock 已是目标版本时重跑必须返回原文，不得误报缺 version 行", () => {
+  const lock = ["[[package]]", 'name = "portreaper"', 'version = "0.9.0"'].join("\n");
+  assert.equal(setCargoLockVersion(lock, "0.9.0"), lock);
+  // 全量同步的重跑同样幂等
+  const synced = setAllCargoLockVersions(MULTI_LOCK, "0.9.0");
+  assert.equal(setAllCargoLockVersions(synced, "0.9.0"), synced);
+});
+
 test("LOCK_CRATE_NAMES 就是发布产物的清单", () => {
   assert.deepEqual(LOCK_CRATE_NAMES, ["portreaper", "portreaper-cli"]);
 });
