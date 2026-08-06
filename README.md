@@ -118,10 +118,13 @@ crates/portreaper-core/src/   the engine — no GUI dependency, reusable by othe
   scanner/            process scan + v2 zombie classification (the core logic)
                       mod / model / classify / identify / macos / windows
   platform.rs         cross-platform kill with PID-reuse identity check
+  whitelist.rs        JSON-persisted whitelist (收藏)
+crates/portreaper-cli/  CLI frontend (scan / kill / whitelist)
 src-tauri/src/        desktop shell only — no verdict logic
   lib.rs              tray, window lifecycle, invoke handlers
-  commands.rs         Tauri command surface
-  whitelist.rs        JSON-persisted whitelist (收藏)
+  commands.rs         Tauri command surface (thin wrappers over the engine)
+  paths.rs            per-environment directory resolution (dev / prod isolation)
+integrations/raycast/   Raycast extension frontend
 scripts/              release tooling (bump-version) + CI guards (reason parity, asset-name parity)
 .github/workflows/    CI + release pipelines
 website/              GitHub Pages download site

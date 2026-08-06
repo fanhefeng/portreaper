@@ -259,6 +259,11 @@ pub fn all_reason_texts(lang: Lang) -> BTreeMap<String, ReasonText>;
 
 ## 7. Raycast 适配层
 
+> **原始设计存档，现状以实现为准**：`crates/portreaper-cli/src/main.rs`（契约实际是
+> snake_case、`--cpu=skip|<ms>`，`reasons` 子命令随 §5.5 一并作废）与
+> `integrations/raycast/src/{cli,install}.ts`（发现阶梯实际是「偏好路径 → supportPath
+> 自动下载校验 → `.app` → `~/.cargo/bin`」，刻意不查 `PATH`）。偏差的来龙去脉见 §10。
+
 ### 契约形态
 
 ```bash
@@ -347,6 +352,18 @@ Raycast 扩展按顺序找：
 
 验证：`tsc --noEmit` 通过（`@raycast/api` 1.104 的类型全部对上）。**Raycast 内的 UI 交互未真机验证** —— 需要在装有 Raycast 的机器上 `pnpm dev` 走一遍。
 
+## 9. 风险清单
+
+| 风险 | 缓解 |
+|---|---|
+| `target/` 与 `Cargo.lock` 迁移打断 CI 缓存、release 产物路径与版本脚本 | 步骤 1 已改全五处并本地实跑 `tauri build`；**CI/release 只能在真机验证** —— 合并后单独发一次 tag 走完整 release 流程再继续步骤 2 |
+| 旧写法 `--manifest-path src-tauri/Cargo.toml` 在 workspace 下静默跳过引擎 | 所有门禁（CI、pre-push、文档命令清单）已改 `--all`/`--workspace`；新增 cargo 步骤时必须同样处理 |
+| core 与 Tauri 的目录算法漂移 → 白名单分家 | `check-paths-parity` 单测，五个目录逐一断言 |
+| Windows 无手工 QA，拆分放大回归面 | 步骤 1 严格零逻辑变更；`sysinfo::System` 从 static 改 `Scanner` 字段是 Windows 侧唯一实质改动，单独一个 commit 便于回滚 |
+| CLI 让 kill 能力脚本化 | 身份令牌 fail-closed 已强制「先 scan 后 kill」，不加旁路即可 |
+| 契约新增消费者后 i18n 漂移 | reason 文案单一真相源 + 四方 parity 守卫 |
+| 拆分期间 `docs/KNOWN-GAPS.md` 的 Gap 修复与重构冲突 | 拆分期间冻结 `classify.rs` / `identify.rs` 的功能改动，只做搬迁 |
+
 ## 10. 实施回顾：与原设计的三处出入
 
 原设计写于动手之前，实施中有三处被证据推翻。记下来是因为**推翻的理由比设计本身更有价值**：
@@ -362,15 +379,3 @@ Raycast 扩展按顺序找：
 - **Raycast UI 真机走查**。
 - **`scanner/mod.rs`（1681 行）细分**成 `entry/chain/duplicates/subtree`。
 - **ts-rs 生成 `contracts/process-entry.d.ts`** 取代 `src/model.ts` 的手工镜像 —— 本次新增 `whitelist_key` 时手工同步了三处夹具（tsc 逐个报错逼出来的），正是这项要解决的痛点。
-
-## 9. 风险清单
-
-| 风险 | 缓解 |
-|---|---|
-| `target/` 与 `Cargo.lock` 迁移打断 CI 缓存、release 产物路径与版本脚本 | 步骤 1 已改全五处并本地实跑 `tauri build`；**CI/release 只能在真机验证** —— 合并后单独发一次 tag 走完整 release 流程再继续步骤 2 |
-| 旧写法 `--manifest-path src-tauri/Cargo.toml` 在 workspace 下静默跳过引擎 | 所有门禁（CI、pre-push、文档命令清单）已改 `--all`/`--workspace`；新增 cargo 步骤时必须同样处理 |
-| core 与 Tauri 的目录算法漂移 → 白名单分家 | `check-paths-parity` 单测，五个目录逐一断言 |
-| Windows 无手工 QA，拆分放大回归面 | 步骤 1 严格零逻辑变更；`sysinfo::System` 从 static 改 `Scanner` 字段是 Windows 侧唯一实质改动，单独一个 commit 便于回滚 |
-| CLI 让 kill 能力脚本化 | 身份令牌 fail-closed 已强制「先 scan 后 kill」，不加旁路即可 |
-| 契约新增消费者后 i18n 漂移 | reason 文案单一真相源 + 四方 parity 守卫 |
-| 拆分期间 `docs/KNOWN-GAPS.md` 的 Gap 修复与重构冲突 | 拆分期间冻结 `classify.rs` / `identify.rs` 的功能改动，只做搬迁 |

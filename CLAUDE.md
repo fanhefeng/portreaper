@@ -20,7 +20,7 @@ pnpm build             # tsc --noEmit + vp build (used by tauri build)
 pnpm exec vp check     # oxfmt + oxlint gate (CI-enforced); --fix to apply; md excluded (see below)
 
 # Cargo commands run from the REPO ROOT (workspace root) and must be workspace-wide:
-# members are crates/portreaper-core (the engine) + src-tauri (the GUI shell).
+# members are crates/portreaper-core (the engine) + crates/portreaper-cli + src-tauri (the GUI shell).
 # A bare `--manifest-path src-tauri/Cargo.toml` silently skips the engine — i.e. skips
 # every line of logic these gates exist to protect.
 cargo fmt --all --check                    # rustfmt gate — CI-enforced, and NOT covered by `vp check` (which is JS/TS only)
@@ -41,7 +41,7 @@ node scripts/bump-version.mjs --check 0.1.0
 
 The Rust toolchain is pinned by `rust-toolchain.toml` (constrains local dev, CI, and release builds alike; the upgrade steps are documented in that file — keep the workflow files in sync). CI (`.github/workflows/ci.yml`) runs the full gate on macOS + Windows. Release is tag-triggered (`v*`, see `docs/RELEASING.md`). The GUI crate is `portreaper_lib` (see `src-tauri/Cargo.toml [lib]`); `main.rs` is a thin entry point calling `portreaper_lib::run()`.
 
-**Cargo workspace layout** (roadmap + rationale: `docs/ARCHITECTURE-CORE-SPLIT.md`). The workspace root is the *repo root*; `target/` and `Cargo.lock` live there, **not** under `src-tauri/`. Three consequences that bite if you forget them: `Swatinem/rust-cache` keys on `". -> target"` in both workflows; `release.yml`'s dmg post-processing globs `target/<triple>/release/bundle/…`; and `scripts/bump-version.mjs` reads `Cargo.lock` from the root while still reading `Cargo.toml` from `src-tauri/` (that asymmetry is deliberate — the lockfile belongs to the whole workspace, the version belongs to the app crate). `src-tauri/.gitignore` **keeps** its `/target/` line on purpose: oxfmt scopes itself by gitignore, and a pre-split checkout with a leftover `src-tauri/target/` would otherwise make `vp check` crawl into cargo's fingerprint JSON.
+**Cargo workspace layout** (roadmap + rationale: `docs/ARCHITECTURE-CORE-SPLIT.md`): members are `crates/portreaper-core` (the engine) + `crates/portreaper-cli` (headless frontend, feeds Raycast) + `src-tauri` (the GUI shell). The workspace root is the *repo root*; `target/` and `Cargo.lock` live there, **not** under `src-tauri/`. Three consequences that bite if you forget them: `Swatinem/rust-cache` keys on `". -> target"` in both workflows; `release.yml`'s dmg post-processing globs `target/<triple>/release/bundle/…`; and `scripts/bump-version.mjs` reads `Cargo.lock` from the root while still reading `Cargo.toml` from `src-tauri/` (that asymmetry is deliberate — the lockfile belongs to the whole workspace, the version belongs to the app crate). `src-tauri/.gitignore` **keeps** its `/target/` line on purpose: oxfmt scopes itself by gitignore, and a pre-split checkout with a leftover `src-tauri/target/` would otherwise make `vp check` crawl into cargo's fingerprint JSON.
 
 ## Architecture
 
@@ -84,7 +84,7 @@ Data sources: macOS = `lsof -iTCP -sTCP:LISTEN -P -n -FpcLn` + `ps -A -o pid=,pp
 3. Orphan signals: `direct_orphan` (macOS: PPID=1; Windows: parent missing or parent created *after* child = PID slot reused), `chain_orphan` (parent chain ends at init/dead root without passing a live user-visible app, and the leaf is dev-like or an ancestor shell is itself orphaned), `tty_orphaned` (real ttys with no session leader — dead terminal session).
 4. No signal → not a suspect.
 5. `elapsed_secs < 10` → `Possible` + `just_reparented` (grace period; never swept).
-6. Tiers: orphan×dev or orphan×dead-session → `Confirmed`; bare orphan/chain → `Likely`; session-only → `Possible`. ("dev" here = `dev_keyword || dev_category || automation_instance`.)
+6. Tiers: orphan×dev or orphan×dead-session → `Confirmed`; bare orphan/chain → `Likely` (exception: a Windows bare `ParentExited` with no other corroboration → `Possible` — Squirrel/Electron bootstrappers exit by design, fixture-pinned); session-only → `Possible`. ("dev" here = `dev_keyword || dev_category || automation_instance`.)
 
 **Invariants — do not break:**
 - Standard install path / launchd-managed ⇒ never auto-flagged.
@@ -124,4 +124,4 @@ The window close button is intercepted (`lib.rs` `on_window_event` → hide + `p
 
 ## Release / website
 
-Tag push `v*` → `.github/workflows/release.yml`: version-consistency gate → tauri-action matrix (macOS arm64/x64 dmg, Windows NSIS) → publish job verifies all 3 assets, re-uploads **stable-named** copies (`Portreaper-macos-arm64.dmg`, `Portreaper-macos-x64.dmg`, `Portreaper-windows-x64-setup.exe`) and flips the draft to published. The website (`/website`, GitHub Pages via `pages.yml`) hardcodes `releases/latest/download/<stable-name>` URLs, so downloads auto-update on every release with no site changes. Bump versions only via `node scripts/bump-version.mjs X.Y.Z` (syncs package.json, tauri.conf.json, Cargo.toml, Cargo.lock). Runbook: `docs/RELEASING.md`.
+Tag push `v*` → `.github/workflows/release.yml`: version-consistency gate → tauri-action matrix (macOS arm64/x64 dmg, Windows NSIS; each leg also builds a `portreaper-cli` binary) → publish job verifies all **6** assets, re-uploads **stable-named** copies (`Portreaper-macos-arm64.dmg`, `Portreaper-macos-x64.dmg`, `Portreaper-windows-x64-setup.exe` + 3 `portreaper-cli-*` binaries), generates `portreaper-cli-SHA256SUMS` (the Raycast extension downloads and verifies against it), and flips the draft to published. The website (`/website`, GitHub Pages via `pages.yml`) hardcodes `releases/latest/download/<stable-name>` URLs, so downloads auto-update on every release with no site changes. Bump versions only via `node scripts/bump-version.mjs X.Y.Z` (syncs package.json, tauri.conf.json, src-tauri/Cargo.toml, crates/portreaper-cli/Cargo.toml, Cargo.lock). Runbook: `docs/RELEASING.md`.
