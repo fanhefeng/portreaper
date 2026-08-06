@@ -38,7 +38,7 @@
           </svg>
           <span class="brand-name">Portreaper</span>
         </a>
-        <nav class="site-nav" aria-label="primary">
+        <nav class="site-nav" aria-label="primary" data-i18n-aria="a11y.nav">
           <a href="#features" data-i18n="nav.features">功能</a>
           <a href="#install" data-i18n="nav.install">安装</a>
           <a href="https://github.com/fanhefeng/portreaper" rel="noopener" data-i18n="nav.github"
@@ -56,7 +56,11 @@
       <section class="hero" id="top">
         <div class="container hero__inner">
           <div class="hero__copy">
-            <div class="hero__badges" aria-label="supported platforms">
+            <div
+              class="hero__badges"
+              aria-label="supported platforms"
+              data-i18n-aria="a11y.platforms"
+            >
               <span class="os-badge">macOS</span>
               <span class="os-badge">Windows</span>
               <span class="os-badge os-badge--soft" data-i18n="hero.langBadge">中 / EN</span>
@@ -289,8 +293,9 @@
               <h3 class="feature-card__title" data-i18n="feat.detect.title">僵尸识别</h3>
               <p class="feature-card__body" data-i18n="feat.detect.body">
                 置信度分层（confirmed / likely /
-                possible）综合孤儿、孤儿链、会话失效等信号判定。launchd / Homebrew 后台服务自动豁免
-                —— 不误报正在服务的进程。
+                possible）综合孤儿、孤儿链、会话失效等信号判定。连不占任何端口的孤儿 dev 进程（如
+                electron-vite 残留的 Electron 主进程）和同项目重复启动的 dev server
+                也逃不掉。launchd / Homebrew 后台服务自动豁免 —— 不误报正在服务的进程。
               </p>
             </article>
 
@@ -361,7 +366,8 @@
               <h3 class="feature-card__title" data-i18n="feat.cross.title">跨平台</h3>
               <p class="feature-card__body" data-i18n="feat.cross.body">
                 常驻 macOS 菜单栏与 Windows
-                系统托盘，关窗即隐藏、不打断工作流。界面中英双语，托盘标题实时显示可疑进程数。
+                系统托盘，关窗即隐藏、不打断工作流。界面中英双语，可疑进程数实时显示在托盘（macOS
+                菜单栏标题 / Windows 悬停提示）。
               </p>
             </article>
           </div>
@@ -376,7 +382,12 @@
             应用未经签名公证。下面是绕过系统拦截的标准步骤。
           </p>
 
-          <div class="tabs" role="tablist" aria-label="install platforms">
+          <div
+            class="tabs"
+            role="tablist"
+            aria-label="install platforms"
+            data-i18n-aria="a11y.installTabs"
+          >
             <button
               class="tab is-active"
               id="tab-mac"
@@ -411,14 +422,15 @@
                 隐私与安全性」，点最下方的「仍要打开」。
               </li>
               <li data-i18n="install.mac.s3">
-                或者在「应用程序」里 <strong>右键 → 打开</strong>，在弹窗里再次确认「打开」。
+                或者在「应用程序」里 <strong>右键 → 打开</strong>，在弹窗里再次确认「打开」（仅
+                macOS 14 及以前；macOS 15 起 Apple 已移除右键旁路，请用上一步的「仍要打开」）。
               </li>
               <li data-i18n="install.mac.s4">
                 若提示的是「<strong>已损坏，无法打开</strong>」（未签名 App
                 的常见报错，此时「仍要打开」常常不出现、右键打开也无效）：<strong
-                  >右键 dmg 里随附的「解除隔离 Remove Quarantine.command」→「打开」</strong
-                >，自动移除隔离并启动（v0.7.1
-                起附带；脚本自身也带隔离标记，需右键而非双击）。或在终端手动执行：
+                  >打开 dmg 里随附的「解除隔离 Remove Quarantine.command」</strong
+                >，自动移除隔离并启动（v0.7.1 起附带；脚本自身也带隔离标记 —— macOS 14 及以前右键 →
+                打开，macOS 15 起双击被拦后到「隐私与安全性」点「仍要打开」）。或在终端手动执行：
               </li>
             </ol>
             <div class="code-block">

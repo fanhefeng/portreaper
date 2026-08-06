@@ -75,7 +75,9 @@ fn is_pm2_container(cmd: &str) -> bool {
 /// 所有 node 监听者一并豁免、令真孤儿永久隐身（评审发现）。裸名时回退到
 /// 完整命令行（含脚本路径，足以区分不同 dev server）；命令行也空时退回 lsof 短名。
 ///
-/// ⚠️ 前端 src/model.ts `whitelistKey()` 是本函数的逐字镜像，二者必须同步修改。
+/// 引擎是本规则的**唯一实现**：所有前端（桌面 / CLI / Raycast）一律读
+/// `ProcessEntry.whitelist_key`，不得自行重推（核心拆分刻意消灭的失败模式）。
+/// 前端仅存 `legacyWhitelistKey`（v0.4.0 旧键兼容，引擎不产出该键）。
 pub(crate) fn whitelist_key(exe_path: &str, full_command: &str, command: &str) -> String {
     if exe_path.contains('/') || exe_path.contains('\\') {
         exe_path.to_string()
@@ -186,7 +188,8 @@ fn scan_from(collected: Collected, whitelist: &[String]) -> Vec<ProcessEntry> {
             continue;
         };
         seen.insert(l.pid);
-        // 监听者的 user 优先取 lsof L 字段；缺失时回退进程表（macOS 进程表 user 恒空）。
+        // 监听者的 user 优先取 lsof L 字段（更权威）；个别行缺 L 字段、或
+        // Windows 端口表无 user 时回退进程表的 user 列。
         let user = if !l.user.is_empty() {
             l.user.clone()
         } else {
@@ -363,7 +366,7 @@ fn build_entry(
     let verdict = classify(&snapshot);
     let raw_suspect = verdict.is_suspect;
 
-    // 白名单 key（前端 src/model.ts whitelistKey 必须用同一优先级）。
+    // 白名单 key（引擎唯一推导，前端直读 ProcessEntry.whitelist_key）。
     // 同时核对 v0.4.0 旧键以兼容升级（见 legacy_whitelist_key）。
     let wl_key = whitelist_key(&exe_path, &full_command, &command);
     let legacy_key = legacy_whitelist_key(&exe_path, &command);
@@ -681,6 +684,16 @@ fn build_parent_chain(
 
     // 注：命中 installed-app / 存活系统根即 break，因此走到 init/死根分支时
     // 链上必然没有用户可见 App —— terminates_at_init 直接置 true 即可。
+
+    // 死根收尾（两处共用）：Windows 补合成根并视为「链到 init」；macOS 同处
+    // 只是 kernel(0) / 快照间隙的瞬态，保守收尾、不下结论。
+    fn dead_root(chain: &mut Vec<ParentRef>, flags: &mut ChainFlags) {
+        if cfg!(windows) {
+            chain.push(platform_impl::synth_chain_root());
+            flags.terminates_at_init = true;
+        }
+    }
+
     for _ in 0..12 {
         let Some(current) = procs.get(&current_pid) else {
             break;
@@ -694,19 +707,13 @@ fn build_parent_chain(
             break;
         }
         if parent_ppid == 0 || parent_ppid == current_pid {
-            // Windows：父未知/已退出 ⇒ 死根；macOS：kernel(0) 处直接收尾
-            if cfg!(windows) {
-                chain.push(platform_impl::synth_chain_root());
-                flags.terminates_at_init = true;
-            }
+            // 父未知/已退出（Windows）或走到 kernel(0)（macOS）
+            dead_root(&mut chain, &mut flags);
             break;
         }
         let Some(parent) = procs.get(&parent_ppid) else {
-            // 父进程已不在快照中：Windows 视为死根；macOS 是快照间隙的瞬态，保守收尾
-            if cfg!(windows) {
-                chain.push(platform_impl::synth_chain_root());
-                flags.terminates_at_init = true;
-            }
+            // 父进程已不在快照中
+            dead_root(&mut chain, &mut flags);
             break;
         };
 
@@ -1264,6 +1271,78 @@ mod orphan_tests {
         }
     }
 
+    const ORPHAN_ELECTRON_EXE: &str =
+        "/Users/x/proj/node_modules/electron/dist/Electron.app/Contents/MacOS/Electron";
+
+    // —— scan_from 编排层（此前只测 build_entry 等零件，编排行为裸奔 —— 评审发现）——
+
+    /// 监听者缺 meta 必须整行丢弃：这是「start_unix 恒有值 ⇒ kill 身份校验
+    /// 永不因 null 失防」的安全前提，不只是显示问题。
+    #[test]
+    fn listener_without_meta_is_dropped() {
+        let mut col = col_of(HashMap::new());
+        col.listeners.push(model::Listener {
+            pid: 4242,
+            ports: vec![3000],
+            user: "x".to_string(),
+            command: "node".to_string(),
+        });
+        let entries = scan_from(col, &[]);
+        assert!(
+            entries.is_empty(),
+            "缺 meta 的监听者必须丢行，不得以空身份进入列表"
+        );
+    }
+
+    /// 同一 PID 双路径（既占端口又是孤儿 dev 进程）只出一行，且是监听者形态。
+    #[test]
+    fn same_pid_via_both_paths_emits_one_row() {
+        let exe = ORPHAN_ELECTRON_EXE;
+        let mut procs = HashMap::new();
+        procs.insert(900, meta(1, exe, &format!("{exe} .")));
+        let mut col = col_of(procs);
+        col.listeners.push(model::Listener {
+            pid: 900,
+            ports: vec![5173],
+            user: String::new(),
+            command: "Electron".to_string(),
+        });
+        let entries = scan_from(col, &[]);
+        assert_eq!(entries.len(), 1, "seen 去重失效：同 PID 出了两行");
+        assert_eq!(entries[0].ports, vec![5173], "监听者路径优先，端口须保留");
+    }
+
+    /// 白名单孤儿在 scan 产出的列表里仍要出现（供用户取消收藏），但不算嫌疑。
+    /// build_entry 层已有同名测试；这里钉的是 scan_from 的「raw_suspect 即纳入」。
+    #[test]
+    fn whitelisted_orphan_is_still_listed_by_scan_from() {
+        let exe = ORPHAN_ELECTRON_EXE;
+        let mut procs = HashMap::new();
+        procs.insert(900, meta(1, exe, &format!("{exe} .")));
+        let entries = scan_from(col_of(procs), &[exe.to_string()]);
+        assert_eq!(entries.len(), 1, "白名单孤儿必须仍在列表里");
+        assert!(entries[0].is_whitelisted);
+        assert!(!entries[0].is_zombie_suspect);
+    }
+
+    /// 无端口孤儿（端口键全为 0）的行序必须按 pid 兜底确定 —— 孤儿遍历
+    /// HashMap 的随机序不得渗入行序（评审 E1 的行序半边，此前只测了
+    /// mark_duplicates 半边）。
+    #[test]
+    fn portless_orphan_rows_sort_by_pid_fallback() {
+        // 两个不同项目的孤儿 dev 进程（避免被判成重复对），乱序插入
+        let exe_a =
+            "/Users/x/proj-a/node_modules/electron/dist/Electron.app/Contents/MacOS/Electron";
+        let exe_b =
+            "/Users/x/proj-b/node_modules/electron/dist/Electron.app/Contents/MacOS/Electron";
+        let mut procs = HashMap::new();
+        procs.insert(902, meta(1, exe_b, &format!("{exe_b} .")));
+        procs.insert(901, meta(1, exe_a, &format!("{exe_a} .")));
+        let entries = scan_from(col_of(procs), &[]);
+        let pids: Vec<u32> = entries.iter().map(|e| e.pid).collect();
+        assert_eq!(pids, vec![901, 902], "端口键同为 0 时必须按 pid 兜底排序");
+    }
+
     /// 头号目标场景：electron-vite dev 中父 node 被杀，Electron 主进程被 launchd
     /// 收养成孤儿（ppid=1），不占任何端口、住在 node_modules 下。必须检出为
     /// Confirmed —— 这正是 portreaper「端口收割」盲区里最该清理的 dev 残留。
@@ -1750,5 +1829,206 @@ mod chain_tests {
         assert!(!flags.terminates_at_init, "活终端必须挡住孤儿链判定");
         assert!(!flags.has_orphan_shell);
         assert_eq!(chain.last().unwrap().label, "Terminal");
+    }
+}
+
+/// Windows 侧的端到端 fixture —— 与上面两个 macOS 模块对称。
+///
+/// 为什么单独写一份而不是把 macOS 那些改成平台中性：`build_entry` /
+/// `build_parent_chain` 全程走 `platform_impl::*`，两个平台的孤儿判据、链终止
+/// 条件、路径阶梯**没有一处相同**。这个 crate 的 Windows 半边没有任何手工 QA，
+/// CI 是唯一的安全网 —— 而 CI 此前只跑得到纯函数 classify 与 windows.rs 的
+/// 单元测试，从 ProcMeta 到 ProcessEntry 的这段组装逻辑在 Windows 上一行未测。
+///
+/// 路径取材刻意只用**全机一致**的位置（`C:\Program Files\`、`C:\Windows\`）与
+/// 显然非标准的开发目录：runner 上的用户名、LOCALAPPDATA 都是变量，拿它们拼
+/// fixture 会做成一条只在某台机器上成立的断言。
+#[cfg(all(test, windows))]
+mod windows_e2e_tests {
+    use super::*;
+
+    fn meta(ppid: u32, exe: &str, cmd: &str, start: u64) -> ProcMeta {
+        ProcMeta {
+            ppid,
+            exe_path: exe.to_string(),
+            full_command: cmd.to_string(),
+            user: String::new(),
+            start_unix: Some(start),
+            elapsed_secs: 3600,
+            cpu_percent: 0.0,
+            rss_kb: 0,
+            tty: None,
+            state: None,
+            tty_orphaned: false,
+        }
+    }
+
+    fn col_of(procs: HashMap<u32, ProcMeta>) -> Collected {
+        Collected {
+            listeners: vec![],
+            procs,
+            launchd_pids: HashSet::new(),
+            cwds: HashMap::new(),
+            established_local_ports: HashMap::new(),
+        }
+    }
+
+    /// 存活的 explorer.exe 是链的合法终点。没有这一条，Windows 上每一个从资源
+    /// 管理器/终端启动的 dev server 都会被判成孤儿链 —— 因为 Windows 的链最终
+    /// 都会走到已退出的 userinit.exe（见 CLAUDE.md 的链走查不变量）。
+    #[test]
+    fn chain_stops_at_live_explorer() {
+        let mut procs = HashMap::new();
+        procs.insert(
+            100,
+            meta(1, "C:\\Windows\\explorer.exe", "explorer.exe", 1000),
+        );
+        procs.insert(
+            200,
+            meta(
+                100,
+                "C:\\Windows\\System32\\cmd.exe",
+                "cmd.exe /c npm run dev",
+                1100,
+            ),
+        );
+        procs.insert(
+            300,
+            meta(
+                200,
+                "C:\\Program Files\\nodejs\\node.exe",
+                "node C:\\dev\\proj\\node_modules\\vite\\bin\\vite.js",
+                1200,
+            ),
+        );
+
+        let (chain, flags) = build_parent_chain(300, &procs);
+        assert!(
+            !flags.terminates_at_init,
+            "活着的 explorer.exe 必须挡住孤儿链判定"
+        );
+        assert!(!flags.has_orphan_shell);
+        assert!(flags.walked_real_ancestor);
+        assert_eq!(
+            chain.last().unwrap().pid,
+            100,
+            "链应停在 explorer.exe 这一层"
+        );
+    }
+
+    /// 装在 `Program Files` 下的应用是 `is_chain_stopper`（category=installed-app）：
+    /// 链走到它就停，不再继续上溯到已死的根。这是「用户正开着的 App 启动的进程
+    /// 不算孤儿」那条不变量在 Windows 上的落点。
+    #[test]
+    fn chain_stops_at_installed_app_ancestor() {
+        let mut procs = HashMap::new();
+        // 祖先自身 ppid 指向一个不存在的 PID —— 若没有 installed-app 终止，
+        // 链会继续上溯并落到「父不在快照 ⇒ 死根」分支
+        procs.insert(
+            100,
+            meta(
+                4242,
+                "C:\\Program Files\\Microsoft VS Code\\Code.exe",
+                "Code.exe",
+                1000,
+            ),
+        );
+        procs.insert(
+            200,
+            meta(
+                100,
+                "C:\\Program Files\\nodejs\\node.exe",
+                "node C:\\dev\\proj\\server.js",
+                1100,
+            ),
+        );
+
+        let (chain, flags) = build_parent_chain(200, &procs);
+        assert!(
+            !flags.terminates_at_init,
+            "链在 installed-app 处停下，不该被记成终止于死根"
+        );
+        assert!(flags.walked_real_ancestor);
+        assert_eq!(chain.last().unwrap().pid, 100);
+        assert_eq!(chain.last().unwrap().category, "installed-app");
+    }
+
+    /// PID 槽位复用（父存在、但创建时间晚于子 ⇒ 真实父早已死）走完整条组装链路：
+    /// 非 dev 的用户二进制只到 Likely，且因 exe 不在常规安装位置带上 NonstandardPath。
+    #[test]
+    fn pid_slot_reused_yields_likely_with_nonstandard_path() {
+        let exe = "C:\\dev\\tools\\myserver.exe";
+        let mut procs = HashMap::new();
+        // 父 50 的创建时间晚于子 900 ⇒ 槽位复用
+        procs.insert(
+            50,
+            meta(1, "C:\\Windows\\System32\\cmd.exe", "cmd.exe", 9000),
+        );
+        procs.insert(900, meta(50, exe, "myserver.exe --serve", 1000));
+
+        let col = col_of(procs);
+        let m = col.procs.get(&900).unwrap();
+        let (entry, raw_suspect) = build_entry(
+            900,
+            m,
+            &col.procs,
+            &col,
+            &[],
+            vec![8080],
+            "myserver.exe".to_string(),
+            String::new(),
+            None,
+        );
+
+        assert!(raw_suspect, "槽位复用是直接孤儿信号");
+        assert!(entry.is_zombie_suspect);
+        assert!(entry.zombie_reasons.contains(&ReasonCode::PidSlotReused));
+        assert!(
+            entry.zombie_reasons.contains(&ReasonCode::NonstandardPath),
+            "C:\\dev\\ 不是常规安装位置，该事实必须出现在证据里"
+        );
+        assert_eq!(
+            entry.confidence,
+            Confidence::Likely,
+            "非 dev 的裸孤儿只到 Likely —— 升到 Confirmed 需要 dev 特征或死会话"
+        );
+    }
+
+    /// 同一条路径上的 dev 特征会把置信度顶到 Confirmed（孤儿 × dev）——
+    /// 与上一条构成对照，锁住 Windows 侧的分档确实生效而不是恒定一档。
+    #[test]
+    fn orphaned_dev_server_reaches_confirmed() {
+        let mut procs = HashMap::new();
+        procs.insert(
+            900,
+            meta(
+                4242, // 父不在快照中 ⇒ ParentExited
+                "C:\\Program Files\\nodejs\\node.exe",
+                "node C:\\dev\\proj\\node_modules\\vite\\bin\\vite.js --port 5173",
+                1000,
+            ),
+        );
+
+        let col = col_of(procs);
+        let m = col.procs.get(&900).unwrap();
+        let (entry, raw_suspect) = build_entry(
+            900,
+            m,
+            &col.procs,
+            &col,
+            &[],
+            vec![5173],
+            "node.exe".to_string(),
+            String::new(),
+            None,
+        );
+
+        assert!(raw_suspect);
+        assert!(entry.zombie_reasons.contains(&ReasonCode::ParentExited));
+        assert_eq!(
+            entry.app_category, "dev-script",
+            "解释器装在 Program Files，身份仍应取自脚本（路径规则例外 #1）"
+        );
+        assert_eq!(entry.confidence, Confidence::Confirmed);
     }
 }

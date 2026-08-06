@@ -21,7 +21,10 @@ pub struct ProcessEntry {
     pub full_command: String,
     pub exe_path: String,
     pub app_label: String,
-    pub app_category: String, // "installed-app" | "system" | "dev-script" | "user-binary" | "unknown"
+    // identify_app 的全部取值 —— "automation-instance" 曾漏在这份清单外，而
+    // classify 的硬豁免判据之一（automation × debugger_attached）与 describe.ts
+    // 的品牌跳过都依赖这一档，注释不全就等于骗人
+    pub app_category: String, // "installed-app" | "system" | "dev-script" | "automation-instance" | "user-binary" | "unknown"
     pub parent_chain: Vec<ParentRef>,
     pub launcher_label: String,
     pub user: String,
@@ -46,8 +49,8 @@ pub struct ProcessEntry {
     ///
     /// 推导规则有个反直觉的分支（`exe_path` 仅在含路径分隔符时可用，否则回退
     /// 全命令行），每多一个前端自行实现，就多一次「在 Raycast 里加的星标桌面版
-    /// 认不出来」的机会。`src/model.ts` 的 `whitelistKey()` 因历史原因仍在，
-    /// 但新前端一律直接读本字段。
+    /// 认不出来」的机会。所有前端一律直接读本字段；前端仅存的推导是
+    /// `legacyWhitelistKey`（v0.4.0 旧键兼容，引擎不产出该键）。
     pub whitelist_key: String,
     /// 同项目重复 dev server 的对端 PID（scan() 后处理填充；前端用于行内故事）
     pub duplicate_of: Option<u32>,
@@ -100,7 +103,7 @@ pub(crate) struct Collected {
 }
 
 /// 喂给纯分类器的进程信号快照 —— 不含任何平台/子进程依赖，可直接构造做表驱动单测。
-#[derive(Debug, Default, Clone)]
+#[derive(Debug, Default)]
 pub(crate) struct ProcessSnapshot {
     /// ps state（含 'Z' 即 defunct）；Windows None
     pub state: Option<String>,

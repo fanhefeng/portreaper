@@ -100,9 +100,11 @@ pnpm tauri build    # produce the bundle (.app / .dmg / .exe)
 Rust-only iteration and tests:
 
 ```bash
-cd src-tauri
-cargo check
-cargo test          # detection / classification unit tests
+# Run from the repo root — it is the Cargo workspace root. A bare `cargo test`
+# inside src-tauri/ silently skips crates/portreaper-core, i.e. the engine that
+# owns every classification test.
+cargo check --workspace
+cargo test --workspace    # detection / classification unit tests
 ```
 
 Releases are cut by pushing a version tag — see [docs/RELEASING.md](docs/RELEASING.md).
@@ -116,10 +118,13 @@ crates/portreaper-core/src/   the engine — no GUI dependency, reusable by othe
   scanner/            process scan + v2 zombie classification (the core logic)
                       mod / model / classify / identify / macos / windows
   platform.rs         cross-platform kill with PID-reuse identity check
+  whitelist.rs        JSON-persisted whitelist (收藏)
+crates/portreaper-cli/  CLI frontend (scan / kill / whitelist)
 src-tauri/src/        desktop shell only — no verdict logic
   lib.rs              tray, window lifecycle, invoke handlers
-  commands.rs         Tauri command surface
-  whitelist.rs        JSON-persisted whitelist (收藏)
+  commands.rs         Tauri command surface (thin wrappers over the engine)
+  paths.rs            per-environment directory resolution (dev / prod isolation)
+integrations/raycast/   Raycast extension frontend
 scripts/              release tooling (bump-version) + CI guards (reason parity, asset-name parity)
 .github/workflows/    CI + release pipelines
 website/              GitHub Pages download site
@@ -251,9 +256,10 @@ pnpm tauri build    # 产出安装包（.app / .dmg / .exe）
 仅 Rust 的迭代与测试：
 
 ```bash
-cd src-tauri
-cargo check
-cargo test          # 检测 / 分类逻辑的单元测试
+# 在仓库根执行 —— 它才是 Cargo workspace 根。在 src-tauri/ 里裸跑 cargo test
+# 会静默跳过 crates/portreaper-core，也就是跳过全部分类逻辑的测试。
+cargo check --workspace
+cargo test --workspace    # 检测 / 分类逻辑的单元测试
 ```
 
 发布通过推送版本 tag 触发 —— 详见 [docs/RELEASING.md](docs/RELEASING.md)。
@@ -263,13 +269,17 @@ cargo test          # 检测 / 分类逻辑的单元测试
 ```
 src/                  React 19 + TS UI —— App.tsx（容器：轮询扫描、kill / 收藏流程）
                       + components/（行、详情面板、分区、确认弹窗）
-src-tauri/src/
-  lib.rs              托盘、窗口生命周期、invoke 处理器
-  commands.rs         Tauri 命令入口
-  scanner/            进程扫描 + v2 僵尸分类（核心逻辑）
+crates/portreaper-core/src/
+  scanner/            进程扫描 + v2 僵尸分类（判定引擎，零 GUI 依赖）
                       mod / model / classify / identify / macos / windows
   platform.rs         跨平台 kill，带 PID 复用身份校验
   whitelist.rs        JSON 持久化的收藏（白名单）
+crates/portreaper-cli/  命令行前端（scan / kill / whitelist）
+src-tauri/src/
+  lib.rs              托盘、窗口生命周期、invoke 处理器
+  commands.rs         Tauri 命令入口（引擎的薄封装）
+  paths.rs            分环境目录解析（dev / prod 隔离）
+integrations/raycast/   Raycast 扩展前端
 scripts/              发布工具（版本号 bump）+ CI 守卫（reason parity / 资产名一致性）
 .github/workflows/    CI 与发布流水线
 website/              GitHub Pages 下载站

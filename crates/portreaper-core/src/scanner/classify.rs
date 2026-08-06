@@ -77,8 +77,12 @@ impl Verdict {
     }
 }
 
-/// dev-server 长关键字：足够独特，整行小写子串匹配（双平台共用）——
+/// dev-server 长关键字：整行小写、词界锚定的子串匹配（双平台共用）——
 /// 出现在脚本路径片段里（node_modules/vite/bin/vite.js）同样是真实 dev 证据。
+/// 词界锚定不可省：vite⊂invite、astro⊂gastro/disastrous、remix⊂premix、
+/// tauri⊂centauri、electron⊂electronics —— 与 "serve"⊂redis-server 同型的
+/// Confirmed 误升级面（评审实锤），只是残留在长词表里；真实 dev 工具在命令行里
+/// 两侧总是 / \ . @ - 空白等分隔符，锚定后仍全部命中。
 const DEV_SERVER_SUBSTRINGS: &[&str] = &[
     "vite",
     "remix",
@@ -124,7 +128,7 @@ const DEV_SERVER_SUBSTRINGS: &[&str] = &[
     "nodemon",
     "php-fpm",
     // 浏览器自动化工具链（KNOWN-GAPS Gap 1 的同族）：driver 与测试运行器本身占端口
-    // （chromedriver 9515 等），孤儿化后就是纯残留。词形足够独特，裸子串零误伤面。
+    // （chromedriver 9515 等），孤儿化后就是纯残留。
     "chromedriver",
     "geckodriver",
     "msedgedriver",
@@ -168,9 +172,31 @@ fn token_is(token: &str, pat: &str) -> bool {
     }
 }
 
+/// 子串命中且两侧邻字符都不是 ASCII 字母数字。needle 全 ASCII；haystack 若含
+/// 多字节字符，其任一字节都 >= 0x80、天然通过「非字母数字」边界判定，字节索引安全
+/// （needle 命中区间内的 abs+1 必为字符边界）。
+fn contains_bounded(haystack: &str, needle: &str) -> bool {
+    let bytes = haystack.as_bytes();
+    let mut start = 0;
+    while let Some(pos) = haystack[start..].find(needle) {
+        let abs = start + pos;
+        let end = abs + needle.len();
+        let before_ok = abs == 0 || !bytes[abs - 1].is_ascii_alphanumeric();
+        let after_ok = end == bytes.len() || !bytes[end].is_ascii_alphanumeric();
+        if before_ok && after_ok {
+            return true;
+        }
+        start = abs + 1;
+    }
+    false
+}
+
 pub(crate) fn is_dev_server(cmd: &str) -> bool {
     let lower = cmd.to_lowercase();
-    if DEV_SERVER_SUBSTRINGS.iter().any(|p| lower.contains(p)) {
+    if DEV_SERVER_SUBSTRINGS
+        .iter()
+        .any(|p| contains_bounded(&lower, p))
+    {
         return true;
     }
     lower
@@ -855,7 +881,7 @@ mod tests {
     }
 
     /// 浏览器自动化工具链的 driver / 测试运行器本身也是 dev 残留（Gap 1 同族）。
-    /// 与短关键字不同，这些词形独特，裸子串匹配零误伤面 —— 但仍锁一遍回归。
+    /// 词形独特 + 词界锚定，零误伤面 —— 但仍锁一遍回归。
     #[test]
     fn dev_keyword_covers_browser_automation_toolchain() {
         for tp in [
@@ -874,6 +900,34 @@ mod tests {
             "/Applications/Google Chrome.app/Contents/MacOS/Google Chrome"
         ));
         assert!(!is_dev_server("/Users/x/bin/driverless-car-sim"));
+    }
+
+    /// 长关键字的词界锚定：普通英文词的内嵌形态不得命中（评审实锤 ——
+    /// 与 "serve"⊂redis-server 同型的 Confirmed 误升级面，此前残留在长词表：
+    /// 一个 nohup 脱离的 invite-mailer 会经孤儿路径直升 Confirmed 进一键清扫）。
+    #[test]
+    fn dev_keyword_long_words_require_word_boundary() {
+        for fp in [
+            "/Users/x/bin/invite-mailer --daemon",   // vite ⊂ invite
+            "/opt/tools/gastronomy-planner",         // astro ⊂ gastro
+            "/Users/x/bin/disastrous-recovery-tool", // astro ⊂ disastrous
+            "/usr/local/bin/premix-audio",           // remix ⊂ premix
+            "/Users/x/bin/centauri-sync",            // tauri ⊂ centauri
+            "/Users/x/bin/electronics-inventory",    // electron ⊂ electronics
+        ] {
+            assert!(!is_dev_server(fp), "误伤: {fp}");
+        }
+        // 真阳性：分隔符（/ \ . @ - 空白）两侧的真实工具形态必须保持命中
+        for tp in [
+            "node /app/node_modules/vite/bin/vite.js",
+            "node /app/node_modules/.pnpm/vite@5.4.0/node_modules/vite/bin/vite.js",
+            "npx remix vite:dev",
+            "cargo-tauri dev",
+            "/app/node_modules/electron/dist/Electron.app/Contents/MacOS/Electron .",
+            "node /app/node_modules/astro/astro.js dev",
+        ] {
+            assert!(is_dev_server(tp), "漏报: {tp}");
+        }
     }
 
     #[test]

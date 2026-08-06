@@ -3,7 +3,7 @@
 // 这一条反直觉的情形 —— 自身就在满核的健康构建（vite build / tsc）绝不能挂徽标，
 // 否则日常开发中它会常驻在半数行上，从示警退化成噪音。
 import { describe, it, expect } from "vite-plus/test";
-import { hasBusySubtree, subtreeCpuExceedsSelf, whitelistKey, type ProcessEntry } from "./model";
+import { hasBusySubtree, subtreeCpuExceedsSelf, type ProcessEntry } from "./model";
 
 function entry(cpu: number, tree: number): ProcessEntry {
   return {
@@ -66,23 +66,7 @@ describe("subtree CPU surfacing", () => {
   });
 });
 
-// 引擎自 core 拆分起随每行输出 whitelist_key；前端的 whitelistKey() 是历史实现，
-// 两份并存就必须有东西钉住它们一致 —— 否则「在 Raycast 加的星桌面版认不出来」
-// 这类 bug 只会在用户手里出现（推导规则有一条反直觉分支：exe_path 仅在含路径
-// 分隔符时可用，PATH 解析出的裸解释器名 `node` 会塌缩掉全机同名监听者）。
-describe("whitelistKey 与引擎产出的 whitelist_key 一致", () => {
-  it("exe_path 含分隔符时用 exe_path", () => {
-    const e = entry(0, 0);
-    expect(whitelistKey(e)).toBe(e.whitelist_key);
-  });
-
-  it("裸解释器名（无分隔符）时回退到完整命令行", () => {
-    const e: ProcessEntry = {
-      ...entry(0, 0),
-      exe_path: "node",
-      full_command: "node /Users/x/app/server.js",
-      whitelist_key: "node /Users/x/app/server.js",
-    };
-    expect(whitelistKey(e)).toBe(e.whitelist_key);
-  });
-});
+// 注：此处曾有一组「whitelistKey() 与引擎产出的 whitelist_key 一致」的测试。
+// 前端那份手推实现已删除（App.tsx 改为直读 ProcessEntry.whitelist_key，与
+// Raycast 侧同一约定），只剩一份真相源后一致性断言便失去了对象 —— 键推导规则
+// 本身由 Rust 侧 scanner::mod::helper_tests 覆盖。

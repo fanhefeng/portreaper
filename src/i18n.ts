@@ -41,6 +41,7 @@ const zh = {
   "error.identityUnknown": "缺少进程身份信息，已取消终止，请刷新后重试",
   "error.whitelistFailed": "收藏保存失败（本次更改未持久化）: {err}",
   "error.scanTimeout": "扫描超时（后端无响应），正在自动重试…",
+  "error.scanBusy": "上一轮扫描尚未结束，已跳过本轮（扫描可能卡住）",
   "error.actionTimeout": "操作超时（后端无响应），请重试",
 
   // ---- row ----
@@ -234,6 +235,7 @@ const en: Record<I18nKey, string> = {
   "error.identityUnknown": "Missing process identity token — kill aborted, refresh and retry",
   "error.whitelistFailed": "Whitelist update failed (change not persisted): {err}",
   "error.scanTimeout": "Scan timed out (no response from backend); retrying…",
+  "error.scanBusy": "Previous scan still running; skipped this round",
   "error.actionTimeout": "Action timed out (no response from backend), please retry",
 
   "port.tip": "Open http://localhost:{port} in browser",

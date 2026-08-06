@@ -36,5 +36,12 @@ node --test scripts/*.test.mjs
 node scripts/check-reason-parity.mjs
 node scripts/check-release-assets.mjs
 node scripts/check-paths-parity.mjs
+# 五处版本清单自洽（以 package.json 为基准）—— 与 ci.yml 的同名步骤对齐
+node scripts/bump-version.mjs --check "$(node -p "require('./package.json').version")"
+
+# ---- 网站 ----
+# ci.yml 对 website/** 用了 paths-ignore，这几个文件唯一的门禁在 pages.yml ——
+# 而 pages.yml 只在 push 到 main 之后才跑，语法错要等部署时才发现（评审发现）。
+for f in website/*.js; do node --check "$f"; done
 
 echo "pre-push: 全部通过"

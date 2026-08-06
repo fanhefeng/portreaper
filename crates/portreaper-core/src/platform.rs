@@ -73,8 +73,6 @@ impl std::error::Error for KillError {}
 
 #[cfg(target_os = "macos")]
 pub fn kill(pid: u32, force: bool, expected_start: Option<u64>) -> Result<(), KillError> {
-    use std::process::Command;
-
     // fail-closed：没有身份令牌就拒绝（scan() 保证每行都带 start_unix，
     // 走到这里说明前端数据异常 —— 宁可让用户重扫，绝不盲杀）
     let expected = expected_start.ok_or(KillError::IdentityUnknown)?;
@@ -86,30 +84,24 @@ pub fn kill(pid: u32, force: bool, expected_start: Option<u64>) -> Result<(), Ki
     if current.abs_diff(expected) > START_TOLERANCE_SECS {
         return Err(KillError::PidReused);
     }
-    // 已知残余竞态：ps 校验与 kill 是两个独立子进程，二者之间存在亚毫秒级
-    // 窗口（macOS 无法像 Windows 那样用同一句柄钉住身份）。PID 在该窗口内
-    // 被复用且新进程创建时间恰落在 ±5s 容差内的概率可忽略 —— 接受并记录。
+    // 已知残余竞态：ps 校验与 kill(2) 之间存在亚毫秒级窗口（macOS 无法像
+    // Windows 那样用同一句柄钉住身份）。PID 在该窗口内被复用且新进程创建
+    // 时间恰落在 ±5s 容差内的概率可忽略 —— 接受并记录。
 
-    let signal = if force { "-9" } else { "-15" };
-    // 固定绝对路径（纵深防御）：不经 $PATH 解析，避免被劫持的 `kill` 二进制
-    // 在用户每次点「终止」时执行任意代码（评审发现）。映射与 scanner 同源，
-    // 避免两处各写绝对路径而漂移（crate::scanner::system_bin）。
-    let output = Command::new(crate::scanner::system_bin("kill"))
-        .args([signal, &pid.to_string()])
-        .output()
-        .map_err(|e| KillError::os(e.to_string()))?;
-    if !output.status.success() {
-        let stderr = String::from_utf8_lossy(&output.stderr);
-        let stderr = stderr.trim();
-        // /bin/kill 失败但 stderr 为空（个别 EPERM 场景）时给出带退出码的兜底
-        // 文案 —— 否则前端错误横幅展示空字符串（评审发现）。
-        if stderr.is_empty() {
-            return Err(KillError::os(format!(
-                "kill {pid} failed with {}",
-                output.status
-            )));
-        }
-        return Err(KillError::os(stderr));
+    // 直接 kill(2) syscall 而非 /bin/kill 子进程：errno 可精确映射语义变体
+    // （EPERM → AccessDenied、ESRCH → ProcessGone），与 Windows 分支的错误
+    // 协议对称 —— 此前 EPERM 以英文 OS 原文透传、不进 i18n（评审发现）；
+    // 同时消灭一次 fork/exec 和「kill 二进制被劫持」的攻击面（原 system_bin
+    // 绝对路径加固所防的目标）。pid 来自扫描产出且恒为正，不存在落入
+    // kill(0)/kill(-1) 广播语义的输入。
+    let signal = if force { libc::SIGKILL } else { libc::SIGTERM };
+    if unsafe { libc::kill(pid as libc::pid_t, signal) } != 0 {
+        let err = std::io::Error::last_os_error();
+        return Err(match err.raw_os_error() {
+            Some(libc::EPERM) => KillError::AccessDenied,
+            Some(libc::ESRCH) => KillError::ProcessGone,
+            _ => KillError::os(err.to_string()),
+        });
     }
     Ok(())
 }

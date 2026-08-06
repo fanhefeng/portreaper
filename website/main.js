@@ -242,18 +242,22 @@
   }
 
   function legacyCopy(text, done) {
+    var ta = document.createElement("textarea");
+    ta.value = text;
+    ta.style.position = "fixed";
+    ta.style.opacity = "0";
+    document.body.appendChild(ta);
     try {
-      var ta = document.createElement("textarea");
-      ta.value = text;
-      ta.style.position = "fixed";
-      ta.style.opacity = "0";
-      document.body.appendChild(ta);
       ta.select();
-      document.execCommand("copy");
-      document.body.removeChild(ta);
-      done();
+      // execCommand 失败时返回 false 而不是抛错 —— 不看返回值就会在什么都没
+      // 复制的情况下弹出「已复制」，用户去粘贴才发现是空的
+      var ok = document.execCommand("copy");
+      if (ok) done();
     } catch {
       /* ignore */
+    } finally {
+      // 清理放 finally：execCommand 抛错时也不能把隐藏 textarea 留在 DOM 里
+      document.body.removeChild(ta);
     }
   }
 

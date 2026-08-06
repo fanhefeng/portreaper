@@ -11,7 +11,6 @@ import {
   localizeKillError,
   localizeScanError,
   sweepableEntries,
-  whitelistKey,
   withTimeout,
   type Filter,
   type Os,
@@ -240,7 +239,8 @@ function App() {
 
   const handleToggleWhitelist = useCallback(
     async (e: ProcessEntry) => {
-      const key = whitelistKey(e);
+      // 引擎随每行产出的键，前端不再重推（见 model.ts ProcessEntry.whitelist_key）
+      const key = e.whitelist_key;
       await runAction(
         async () => {
           if (e.is_whitelisted) {
@@ -445,22 +445,26 @@ function App() {
         </div>
       </header>
 
-      {error && (
-        <div
-          className="error"
-          role="button"
-          tabIndex={0}
-          onClick={dismissError}
-          onKeyDown={(ev) => {
-            if (ev.key === "Enter" || ev.key === " ") {
-              ev.preventDefault();
-              dismissError();
-            }
-          }}
-        >
-          {error} {t("error.clickToClose")}
-        </div>
-      )}
+      {/* alert 与 button 语义不能同处一元素（评审发现）：外层 live region 负责
+          读屏播报，内层保留可点击关闭。区域常驻挂载 —— 内容注入既有 alert 才可靠触发播报 */}
+      <div className="error-region" role="alert">
+        {error && (
+          <div
+            className="error"
+            role="button"
+            tabIndex={0}
+            onClick={dismissError}
+            onKeyDown={(ev) => {
+              if (ev.key === "Enter" || ev.key === " ") {
+                ev.preventDefault();
+                dismissError();
+              }
+            }}
+          >
+            {error} {t("error.clickToClose")}
+          </div>
+        )}
+      </div>
 
       <main className="list">
         {entries.length === 0 ? (
@@ -483,7 +487,9 @@ function App() {
               />
             )}
 
-            {filter !== "whitelist" && suspects.length === 0 && (
+            {/* 搜索中不下全局结论：suspects 来自过滤后的子集，机器上可能正有
+                嫌疑进程只是没匹配搜索词 —— 那时说「一切正常」是误导（评审发现） */}
+            {filter !== "whitelist" && !search && suspects.length === 0 && (
               <div className="allclear">
                 <svg
                   viewBox="0 0 24 24"

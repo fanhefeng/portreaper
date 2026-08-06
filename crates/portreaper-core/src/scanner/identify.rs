@@ -170,6 +170,14 @@ const SCRIPT_VALUE_FLAGS: &[&str] = &[
     "--experimental-loader",
     "--preload",
     "--config",
+    // java 的 classpath 家族：值是 jar/目录但不是入口 —— `java -cp bootstrap.jar
+    // com.Main` 曾把 bootstrap.jar 当入口，进而给 gradle daemon / tomcat 这类
+    // 有意长驻的 -cp 启动进程贴上 dev-script、孤儿化即 Confirmed（评审实锤）。
+    // 裸 `-p`（--module-path 短形）刻意不收：与 node 的 -p（eval 模式）语义冲突。
+    "-cp",
+    "-classpath",
+    "--class-path",
+    "--module-path",
 ];
 
 /// eval / stdin 模式（`python -c`、`node -e`、`-`）—— ps 剥掉引号后代码体的
@@ -208,6 +216,19 @@ pub(crate) fn extract_script_arg(full_command: &str) -> Option<&str> {
     None
 }
 
+/// JVM 内存量值形态：可选单字母前缀 + 数字 + 可选 k/m/g 后缀（x512m、s256k、512m）。
+/// 只用于把粘连 `-m` 的内存旗标排除出模块名 —— 真实 python 模块（http.server、
+/// venv、pip）不落入此形态。
+fn is_jvm_memory_value(v: &str) -> bool {
+    let rest = v
+        .strip_prefix(|c: char| c.is_ascii_alphabetic())
+        .unwrap_or(v);
+    let rest = rest
+        .strip_suffix(['k', 'K', 'm', 'M', 'g', 'G'])
+        .unwrap_or(rest);
+    !rest.is_empty() && rest.bytes().all(|b| b.is_ascii_digit())
+}
+
 /// 从解释器命令行中提取 `-m <模块>` 调用（python -m http.server / -mhttp.server）。
 /// 模块名是进程身份（类比脚本文件）—— 孤儿化的 `python -m http.server` 不能
 /// 因解释器装在系统路径 / Homebrew 而被豁免（真实漏报案例）。
@@ -227,8 +248,11 @@ pub(crate) fn extract_module_arg(full_command: &str) -> Option<&str> {
             "-m" => return args.next(),
             _ => {
                 if let Some(glued) = tok.strip_prefix("-m") {
-                    // 粘连写法 `-mhttp.server`（python 支持）；排除 `--module-x` 类长选项
-                    if !glued.is_empty() && !glued.starts_with('-') {
+                    // 粘连写法 `-mhttp.server`（python 支持）；排除 `--module-x` 类
+                    // 长选项，以及 JVM 旧式内存旗标 —— `-mx512m`/`-ms256m`（-Xmx/-Xms
+                    // 的历史别名，HotSpot 至今接受）形如合法模块名，曾被解析成
+                    // 模块 "x512m" 并赋予 dev-script 身份（评审实锤）。
+                    if !glued.is_empty() && !glued.starts_with('-') && !is_jvm_memory_value(glued) {
                         return Some(glued);
                     }
                 }
@@ -411,6 +435,19 @@ mod tests {
             Some("app.py")
         );
         assert_eq!(extract_script_arg("java -jar app.jar"), Some("app.jar"));
+        // classpath 家族的值是 jar/目录但不是入口（gradle daemon / tomcat 形态）
+        assert_eq!(
+            extract_script_arg("java -cp bootstrap.jar org.apache.catalina.startup.Bootstrap"),
+            None
+        );
+        assert_eq!(
+            extract_script_arg("java -classpath lib/app.jar com.example.Main"),
+            None
+        );
+        assert_eq!(
+            extract_script_arg("java --class-path a.jar --module-path mods com.example.Main"),
+            None
+        );
         // eval / stdin 模式熔断：去引号后代码体里的脚本扩展名 token 不可信
         assert_eq!(extract_script_arg("python -c import sys app.py"), None);
         assert_eq!(extract_script_arg("node -e require app.js"), None);
@@ -450,6 +487,15 @@ mod tests {
         // 长选项不是粘连 -m
         assert_eq!(extract_module_arg("node --max-old-space-size=4096"), None);
         assert_eq!(extract_module_arg("python"), None);
+        // JVM 旧式内存旗标不是模块名（-mx512m = -Xmx512m 的历史别名）
+        assert_eq!(
+            extract_module_arg("java -mx512m -cp classes com.Main"),
+            None
+        );
+        assert_eq!(extract_module_arg("java -ms256m -mx1g com.Main"), None);
+        // 形似但不是内存量值的粘连模块仍然命中
+        assert_eq!(extract_module_arg("python -mvenv"), Some("venv"));
+        assert_eq!(extract_module_arg("python -mpip install x"), Some("pip"));
     }
 
     /// KNOWN-GAPS Gap 1：一次性自动化实例的命令行判据。

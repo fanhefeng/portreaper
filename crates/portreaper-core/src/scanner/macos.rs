@@ -103,14 +103,19 @@ pub(crate) fn is_live_session_root(_exe_path: &str) -> bool {
 /// 链回溯的「用户可见 App」终点：installed-app 之外还包括任何 .app bundle ——
 /// 系统自带 Terminal.app 位于 /System/Applications/（类别 system），
 /// 若不在它处停下，链会一路走到 launchd，把活终端里的 dev server 误报成孤儿链。
+///
+/// `.app/` 兜底**刻意不看 category**，即使 dev 工具自带的运行时
+/// （node_modules/electron/dist/Electron.app、ms-playwright 的 Chromium.app，
+/// 类别 dev-script / automation-instance）也照停 —— 见
+/// `chain_stopper_stops_at_dev_runtimes_on_purpose` 的理由。
 pub(crate) fn is_chain_stopper(exe_path: &str, category: &str) -> bool {
     category == "installed-app" || exe_path.contains(".app/")
 }
 
-/// (label, category) —— macOS 路径阶梯。顺序敏感：脚本/模块身份 → .app →
-/// /Applications 裸 → 系统 → 裸脚本运行时 → Homebrew CLI → cargo 产物 →
-/// 用户目录 → unknown。脚本/模块必须最先判：解释器自身可能就住在
-/// .app bundle / 系统路径里（Python.app、/usr/bin/python3）。
+/// (label, category) —— macOS 路径阶梯。顺序敏感：脚本/模块身份 → 自动化实例 →
+/// 非 .app dev 运行时 → .app → /Applications 裸 → 系统 → 裸脚本运行时 →
+/// Homebrew CLI → cargo 产物 → 用户目录 → unknown。脚本/模块必须最先判：
+/// 解释器自身可能就住在 .app bundle / 系统路径里（Python.app、/usr/bin/python3）。
 pub(crate) fn identify_app(
     full_command: &str,
     short_command: &str,
@@ -151,6 +156,16 @@ pub(crate) fn identify_app(
             super::identify::automation_label(exe, short_command),
             super::AUTOMATION_CATEGORY.to_string(),
         );
+    }
+
+    // 0c. 非 .app 形态的 dev 运行时 —— Playwright 新默认的 chromium_headless_shell、
+    //     node_modules/@esbuild/.../bin/esbuild、~/.cache/selenium 下的 driver 都没有
+    //     .app 包装。Windows 侧同判定是无条件阶梯（windows.rs 0c），macOS 曾只在
+    //     .app 分支内检查 —— 同一进程两平台置信度分档不同，无端口孤儿在 macOS
+    //     整行不可见（评审发现的调用位置漂移）。.app 形态留给阶梯 1 接住，取更
+    //     友好的 app 名作标签。
+    if !exe.contains(".app/") && super::identify::is_dev_tool_runtime_path(exe) {
+        return (basename(exe).to_string(), "dev-script".to_string());
     }
 
     // 1. .app bundle —— 抽出 .app 名（exe 来自 ps comm，含空格也完整）
@@ -241,7 +256,6 @@ pub(crate) fn system_bin(program: &str) -> &str {
         "lsof" => "/usr/sbin/lsof",
         "ps" => "/bin/ps",
         "launchctl" => "/bin/launchctl",
-        "kill" => "/bin/kill",
         other => other,
     }
 }
@@ -920,6 +934,73 @@ n[::1]:9333->[::1]:60123
         let (label, cat) = identify_app(pw, "Chromium", pw);
         assert_eq!(label, "Chromium");
         assert_eq!(cat, "dev-script");
+    }
+
+    /// 阶梯 0c：非 .app 形态的 dev 运行时也必须归 dev-script —— 此前该判定只在
+    /// .app 分支内做，Windows 是无条件阶梯（评审发现的调用位置漂移：同一进程
+    /// macOS 降档 user-binary，置信度分层与无端口孤儿门全部受损）。
+    #[test]
+    fn dev_tool_runtime_without_app_bundle_is_dev_script() {
+        // Playwright 新默认下载的 headless shell（无 .app 包装）
+        let hs = "/Users/x/Library/Caches/ms-playwright/chromium_headless_shell-1155/chrome-mac/headless_shell";
+        let (label, cat) = identify_app(hs, "headless_shell", hs);
+        assert_eq!(label, "headless_shell");
+        assert_eq!(cat, "dev-script");
+
+        // Selenium Manager 下载的 chromedriver
+        let cd = "/Users/x/.cache/selenium/chromedriver/mac-arm64/chromedriver --port=9515";
+        let exe = "/Users/x/.cache/selenium/chromedriver/mac-arm64/chromedriver";
+        assert_eq!(identify_app(cd, "chromedriver", exe).1, "dev-script");
+
+        // node_modules 下的平台二进制（esbuild）
+        let es = "/Users/x/proj/node_modules/@esbuild/darwin-arm64/bin/esbuild --serve";
+        let exe = "/Users/x/proj/node_modules/@esbuild/darwin-arm64/bin/esbuild";
+        assert_eq!(identify_app(es, "esbuild", exe).1, "dev-script");
+
+        // 对照：用户目录下的普通二进制不受影响，仍是 user-binary
+        let ub = "/Users/x/bin/mytool";
+        assert_eq!(identify_app(ub, "mytool", ub).1, "user-binary");
+    }
+
+    /// `.app/` 兜底刻意**不**服从 `identify_app` 的身份判定 —— 这与
+    /// 「dev 工具运行时归 dev-script 而非 installed-app」不矛盾，两者管的是
+    /// 不同的事：那条不变量防的是**豁免**（别让 Electron 吃 installed-app
+    /// 硬豁免），这里管的是**链终点**（helper 的父就是它，父健在就不该把每个
+    /// helper 摊成独立一行）。
+    ///
+    /// 评审建议过在此按 category 早退（dev-script / automation-instance 不停），
+    /// 会直接击穿 `busy_helper_under_live_parent_is_not_listed_separately`：
+    /// helper 的链穿过健在的主进程一路走到 ppid=1，判成 chain_orphan，Gap 1
+    /// 主案的每个 GPU/renderer 子进程都会变成独立可疑行。真正的孤儿 dev 运行时
+    /// 由它**自己那一行**（ppid=1 ⇒ direct_orphan）呈现，不依赖链回溯。
+    #[test]
+    fn chain_stopper_stops_at_dev_runtimes_on_purpose() {
+        const CHROME: &str = "/Applications/Google Chrome.app/Contents/MacOS/Google Chrome";
+
+        // 真实用户可见 App：照常终止链
+        assert!(is_chain_stopper(CHROME, "installed-app"));
+        // 系统自带 Terminal.app 类别是 system，靠 .app/ 兜住
+        assert!(is_chain_stopper(
+            "/System/Applications/Utilities/Terminal.app/Contents/MacOS/Terminal",
+            "system"
+        ));
+
+        // node_modules 里的 Electron：身份是 dev-script，但**照样**是链终点
+        let electron =
+            "/Users/x/proj/node_modules/electron/dist/Electron.app/Contents/MacOS/Electron";
+        assert_eq!(identify_app(electron, "Electron", electron).1, "dev-script");
+        assert!(
+            is_chain_stopper(electron, "dev-script"),
+            "父健在的 Electron 主进程必须终止链，否则其 renderer 会被误报为孤儿"
+        );
+
+        // Playwright 的 Chromium.app、headless 自动化实例：同理
+        let pw = "/Users/x/Library/Caches/ms-playwright/chromium-1148/chrome-mac/Chromium.app/Contents/MacOS/Chromium";
+        assert!(is_chain_stopper(pw, "dev-script"));
+        assert!(is_chain_stopper(CHROME, super::super::AUTOMATION_CATEGORY));
+
+        // 但非 .app 形态的 dev 进程不是链终点（原有行为不变）
+        assert!(!is_chain_stopper("/opt/homebrew/bin/node", "dev-script"));
     }
 
     /// 豁免谓词与事实谓词必须在 App Translocation 目录上**给出相反答案** ——

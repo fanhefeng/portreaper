@@ -53,7 +53,13 @@ pub fn env_label() -> &'static str {
     }
 }
 
-fn scoped(base: PathBuf) -> PathBuf {
+/// 给任意基目录套上当前环境的作用域（debug → `<base>/dev`，release → `<base>`）。
+///
+/// pub 是给 `src-tauri/src/paths.rs` 的漂移断言用的：它要把 Tauri 的
+/// `app_*_dir()`（未分环境）调到与本模块可比的状态。那边曾自己复刻过一份同样的
+/// `cfg!(debug_assertions)` 分支 —— 一个「校验两份实现是否一致」的断言，自己
+/// 又造了第三份实现；这条规则一改，断言就会拿旧规则去比而永远通过（评审发现）。
+pub fn scoped(base: PathBuf) -> PathBuf {
     match ENV_SUBDIR {
         Some(sub) => base.join(sub),
         None => base,

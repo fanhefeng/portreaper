@@ -1,10 +1,11 @@
 # 架构规划：引擎下沉为 core，适配多前端（Raycast 等）
 
-> 状态：**步骤 1 已落地**（见 §8 的进度标记），步骤 2–5 待做。
+> 状态：**步骤 1、2、4、5 已落地**，步骤 3（契约化）待做（见 §8 的进度标记）。
 > 目标读者：本仓库维护者。阅读前建议先看 `CLAUDE.md` 的「Architecture」一节。
 >
 > §4 的目录结构是**目标态**。当前 `crates/portreaper-core/src/` 下仍是搬迁来的
-> 原始布局（`scanner/` 六个文件 + `platform.rs`），子模块细分属于步骤 2。
+> 原始布局（`scanner/` 六个文件 + `platform.rs`）；`scanner/mod.rs` 的细分被
+> 刻意推迟到步骤 3 之后（理由见 §8 步骤 2 的「计划调整」）。
 
 ## 1. 目标与非目标
 
@@ -248,7 +249,7 @@ pub fn all_reason_texts(lang: Lang) -> BTreeMap<String, ReasonText>;
 
 | 守卫 | 状态 | 作用 |
 |---|---|---|
-| `check-reason-parity.mjs` | **升级** | 从「Rust enum ↔ i18n.ts ↔ model.ts」扩成四方：再加 `core/reasons.rs` 与 Raycast 的消费点 |
+| `check-reason-parity.mjs` | **不变** | 维持「Rust enum ↔ i18n.ts ↔ model.ts」三方。原计划扩成四方（加 `core/reasons.rs`）已作废 —— 见 §5：文案唯一真相源留在 `i18n.ts`，引擎只出机器码，Raycast 直接显示原始判定码，故没有第四方要校验 |
 | `check-paths-parity`（新） | **新增** | `src-tauri` 的单测：断言 `core::paths::config_dir()` == `app.path().app_config_dir()` 加 `dev/` 后的结果，五个目录逐一比。路径分家 = 白名单分家，必须编译期/测试期就炸 |
 | `contracts/process-entry.d.ts` | **新增** | ts-rs 从 `ProcessEntry` 派生生成（dev-dependency，`cargo test` 时导出）；CI 校验「生成结果与提交版本一致」。取代 `src/model.ts` 的手工镜像 |
 | `schemaVersion` | **新增** | CLI JSON 输出的顶层字段。Raycast 读到不认识的大版本 → 提示升级，而不是渲染出错乱的行 |
@@ -257,6 +258,11 @@ pub fn all_reason_texts(lang: Lang) -> BTreeMap<String, ReasonText>;
 `schemaVersion` 的兼容策略写进 `contracts/SCHEMA.md`：主版本号只在字段删除 / 语义变更时递增；新增可选字段不递增。
 
 ## 7. Raycast 适配层
+
+> **原始设计存档，现状以实现为准**：`crates/portreaper-cli/src/main.rs`（契约实际是
+> snake_case、`--cpu=skip|<ms>`，`reasons` 子命令随 §5.5 一并作废）与
+> `integrations/raycast/src/{cli,install}.ts`（发现阶梯实际是「偏好路径 → supportPath
+> 自动下载校验 → `.app` → `~/.cargo/bin`」，刻意不查 `PATH`）。偏差的来龙去脉见 §10。
 
 ### 契约形态
 
@@ -322,8 +328,8 @@ Raycast 扩展按顺序找：
 
 > **计划调整**：原定在本步顺带做的 `scanner/mod.rs`（1681 行）细分**推迟到步骤 3 之后**。步骤 3 的 `Scanner` 结构体会重写 `scan()` 的入口与 Windows 侧的 `System` 持有方式，先拆再改等于同一块代码动两遍、review 两遍。拆分本身是纯代码组织，不阻塞任何前端。
 
-**步骤 3 — 契约化**
-`Scanner` + `CpuSampling`；ts-rs 生成 `contracts/process-entry.d.ts`，`src/model.ts` 改为导入类型、只留纯函数；`reasons.rs` + parity 脚本升级。
+**步骤 3 — 契约化**（唯一待做项）
+`Scanner` + `CpuSampling`；ts-rs 生成 `contracts/process-entry.d.ts`，`src/model.ts` 改为导入类型、只留纯函数。原列在本步的「`reasons.rs` + parity 脚本升级」已作废（§5）：文案不下沉到引擎，parity 守卫维持三方。
 
 **步骤 4 — CLI ✅ 已完成（分发方式另议，见下）**
 `portreaper-cli` 四个子命令，手写参数解析（不引入 clap —— 这个二进制要随 `.app` 分发，每个依赖都进用户的下载包；四个子命令手写约 100 行，还能给出贴合语义的错误信息）。
@@ -346,6 +352,18 @@ Raycast 扩展按顺序找：
 
 验证：`tsc --noEmit` 通过（`@raycast/api` 1.104 的类型全部对上）。**Raycast 内的 UI 交互未真机验证** —— 需要在装有 Raycast 的机器上 `pnpm dev` 走一遍。
 
+## 9. 风险清单
+
+| 风险 | 缓解 |
+|---|---|
+| `target/` 与 `Cargo.lock` 迁移打断 CI 缓存、release 产物路径与版本脚本 | 步骤 1 已改全五处并本地实跑 `tauri build`；**CI/release 只能在真机验证** —— 合并后单独发一次 tag 走完整 release 流程再继续步骤 2 |
+| 旧写法 `--manifest-path src-tauri/Cargo.toml` 在 workspace 下静默跳过引擎 | 所有门禁（CI、pre-push、文档命令清单）已改 `--all`/`--workspace`；新增 cargo 步骤时必须同样处理 |
+| core 与 Tauri 的目录算法漂移 → 白名单分家 | `check-paths-parity` 单测，五个目录逐一断言 |
+| Windows 无手工 QA，拆分放大回归面 | 步骤 1 严格零逻辑变更；`sysinfo::System` 从 static 改 `Scanner` 字段是 Windows 侧唯一实质改动，单独一个 commit 便于回滚 |
+| CLI 让 kill 能力脚本化 | 身份令牌 fail-closed 已强制「先 scan 后 kill」，不加旁路即可 |
+| 契约新增消费者后 i18n 漂移 | reason 文案单一真相源 + 四方 parity 守卫 |
+| 拆分期间 `docs/KNOWN-GAPS.md` 的 Gap 修复与重构冲突 | 拆分期间冻结 `classify.rs` / `identify.rs` 的功能改动，只做搬迁 |
+
 ## 10. 实施回顾：与原设计的三处出入
 
 原设计写于动手之前，实施中有三处被证据推翻。记下来是因为**推翻的理由比设计本身更有价值**：
@@ -361,15 +379,3 @@ Raycast 扩展按顺序找：
 - **Raycast UI 真机走查**。
 - **`scanner/mod.rs`（1681 行）细分**成 `entry/chain/duplicates/subtree`。
 - **ts-rs 生成 `contracts/process-entry.d.ts`** 取代 `src/model.ts` 的手工镜像 —— 本次新增 `whitelist_key` 时手工同步了三处夹具（tsc 逐个报错逼出来的），正是这项要解决的痛点。
-
-## 9. 风险清单
-
-| 风险 | 缓解 |
-|---|---|
-| `target/` 与 `Cargo.lock` 迁移打断 CI 缓存、release 产物路径与版本脚本 | 步骤 1 已改全五处并本地实跑 `tauri build`；**CI/release 只能在真机验证** —— 合并后单独发一次 tag 走完整 release 流程再继续步骤 2 |
-| 旧写法 `--manifest-path src-tauri/Cargo.toml` 在 workspace 下静默跳过引擎 | 所有门禁（CI、pre-push、文档命令清单）已改 `--all`/`--workspace`；新增 cargo 步骤时必须同样处理 |
-| core 与 Tauri 的目录算法漂移 → 白名单分家 | `check-paths-parity` 单测，五个目录逐一断言 |
-| Windows 无手工 QA，拆分放大回归面 | 步骤 1 严格零逻辑变更；`sysinfo::System` 从 static 改 `Scanner` 字段是 Windows 侧唯一实质改动，单独一个 commit 便于回滚 |
-| CLI 让 kill 能力脚本化 | 身份令牌 fail-closed 已强制「先 scan 后 kill」，不加旁路即可 |
-| 契约新增消费者后 i18n 漂移 | reason 文案单一真相源 + 四方 parity 守卫 |
-| 拆分期间 `docs/KNOWN-GAPS.md` 的 Gap 修复与重构冲突 | 拆分期间冻结 `classify.rs` / `identify.rs` 的功能改动，只做搬迁 |

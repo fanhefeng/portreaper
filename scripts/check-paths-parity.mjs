@@ -26,9 +26,17 @@ import { fileURLToPath, pathToFileURL } from "node:url";
  *
  * 严格解析：找不到就抛，绝不返回 undefined 让调用方与同样 undefined 的另一侧
  * 「相等」而静默通过 —— 守卫静默放行比没有守卫更危险（同 check-reason-parity）。
+ *
+ * 先剔除注释行：一行被注释掉的旧常量（改名时留在原地当参考的那种）排在真常量
+ * 之前，`match` 会先命中它，守卫于是拿一个死值去跟 tauri.conf.json 比对 ——
+ * 比对通过与否都已失去意义。与 check-reason-parity 的 codeLines 同一处理。
  */
 export function extractCoreIdentifier(pathsSrc) {
-  const m = pathsSrc.match(/pub const APP_IDENTIFIER:\s*&str\s*=\s*"([^"]+)"\s*;/);
+  const code = pathsSrc
+    .split("\n")
+    .filter((l) => !l.trim().startsWith("//"))
+    .join("\n");
+  const m = code.match(/pub const APP_IDENTIFIER:\s*&str\s*=\s*"([^"]+)"\s*;/);
   if (!m) {
     throw new Error(
       '在 crates/portreaper-core/src/paths.rs 里找不到 `pub const APP_IDENTIFIER: &str = "...";` —— ' +

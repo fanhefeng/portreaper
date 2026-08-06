@@ -35,6 +35,9 @@ describe("security config guards", () => {
     // 否则等于无谓削弱 CSP（webview 一旦被注入即可执行 inline style/script）
     expect(s).not.toMatch(/style-src[^;]*'unsafe-inline'/);
     expect(s).not.toMatch(/script-src[^;]*'unsafe-inline'/);
+    // 'unsafe-eval' 同理：构建产物里没有 eval / new Function，放行它只是白送
+    // 一条注入后的代码执行路径。整串查即可 —— 它出现在任何指令里都不可接受。
+    expect(s).not.toContain("'unsafe-eval'");
   });
 
   it("权限面是精确的全量白名单：core:default + log:default + scoped opener，不多一项", () => {
@@ -44,8 +47,11 @@ describe("security config guards", () => {
     // 无读取/无文件系统访问，攻击面极小）。
     const stringPerms = perms.filter((p): p is string => typeof p === "string");
     expect(stringPerms).toEqual(["core:default", "log:default"]);
-    // 对象型权限只有一个：scoped 的 opener:allow-open-url（下一测试校验 scope）
-    expect(perms.length).toBe(3);
+    // 对象型权限只有一个：scoped 的 opener:allow-open-url（下一测试校验 scope）。
+    // 直接数对象项，不写 perms.length === 3 —— 那个总数把「字符串型 2 条」的信息
+    // 重复了一遍，将来字符串集合一变，这行就要跟着改，且失败信息说不清是哪一侧多了。
+    const objectPerms = perms.filter((p) => typeof p === "object" && p !== null);
+    expect(objectPerms.length).toBe(1);
   });
 
   it("opener 权限已收窄：无 opener:default，open-url 仅限 localhost", () => {

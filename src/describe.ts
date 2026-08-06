@@ -22,10 +22,14 @@ const KNOWN_PROCESSES: ReadonlyArray<
   readonly [RegExp, string, string] | readonly [RegExp, string, string, "path" | "brand"]
 > = [
   // —— 开发服务器 / 框架（先于泛化的 node/python；自身就是 dev-script，身份型）——
-  [/vite/, "Vite 前端开发服务器", "Vite frontend dev server"],
-  [/webpack/, "Webpack 前端开发服务", "Webpack dev server"],
+  // \b 不是可选的：身份型模式也吃 app_label（「项目目录名 · 脚本名」），
+  // 裸 /vite/ 会让 ~/code/invite-portal 被描述成 Vite 开发服务器 ——
+  // 与下面品牌组 spotify-clone 是同一个坑，身份组当初漏了（评审发现）。
+  // 真实 vite 的 app_label / 命令行里，vite 两侧总是 . / - 或空白，仍能命中。
+  [/\bvite\b/, "Vite 前端开发服务器", "Vite frontend dev server"],
+  [/\bwebpack\b/, "Webpack 前端开发服务", "Webpack dev server"],
   [/next dev|next-server|next start/, "Next.js 开发服务器", "Next.js dev server"],
-  [/nuxt/, "Nuxt 开发服务器", "Nuxt dev server"],
+  [/\bnuxt\b/, "Nuxt 开发服务器", "Nuxt dev server"],
   [/uvicorn|gunicorn|fastapi|flask|django/, "Python Web 服务", "Python web service"],
   [/http\.server/, "Python 临时文件服务器", "Python ad-hoc file server"],
   [/jupyter/, "Jupyter 笔记本服务", "Jupyter notebook server"],
@@ -70,7 +74,15 @@ const KNOWN_PROCESSES: ReadonlyArray<
   // —— 泛化运行时（永远放最后；\b 词界防止把无关二进制误标）——
   // cargo / target/(debug|release) 只出现在 exe 路径或完整命令行 —— 走宽 haystack。
   // 分隔符两路都匹配（Windows 是 target\debug），与后端 is_dev_build_artifact 对齐。
-  [/cargo|target[\\/](debug|release)/, "Rust 开发程序", "Rust dev program", "path"],
+  // cargo 必须被分隔符或空白包住：裸的 /cargo/ 会把 `node ~/code/cargo-cult/app.js`
+  // 说成「Rust 开发程序」—— 宽 haystack 含完整命令行与 exe 路径，项目目录名一律在内。
+  // 顺带排除 `~/.cargo/bin/<任意二进制>`：住在那儿不代表它是 Rust 开发程序。
+  [
+    /(?:^|[\s\\/])cargo(?:\s|$)|target[\\/](debug|release)/,
+    "Rust 开发程序",
+    "Rust dev program",
+    "path",
+  ],
   [/\bnode\b|\bnpm\b|\bpnpm\b|\byarn\b|\bbun\b/, "Node.js 程序", "Node.js program"],
   [/\bpython/, "Python 程序", "Python program"],
   [/\bjava\b|gradle|tomcat/, "Java 程序", "Java program"],

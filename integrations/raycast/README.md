@@ -7,19 +7,23 @@
 
 ## 前置：portreaper-cli
 
-扩展通过 `portreaper-cli` 与引擎通信，按以下顺序寻找它：
+扩展通过 `portreaper-cli` 与引擎通信，按以下顺序寻找它（`src/cli.ts` 的
+`resolveCliPath`，逐个 `existsSync` 探测；**不查 `PATH`** —— 只认下列固定路径）：
 
 1. 扩展偏好里的 `portreaper-cli path`（显式指定，优先级最高）
-2. `/Applications/Portreaper.app/Contents/MacOS/portreaper-cli`（打包尚未落地，见下）
-3. `~/.cargo/bin/portreaper-cli`
-4. `PATH`
+2. 扩展支持目录下自动下载并校验过的副本（首次使用时自动获取）
+3. `/Applications/Portreaper.app/Contents/MacOS/portreaper-cli`（打包尚未落地，见下）
+4. `<repo>/target/release/portreaper-cli`、`<repo>/target/debug/portreaper-cli`（开发构建）
+5. `~/.cargo/bin/portreaper-cli`
 
-都找不到时会渲染一个引导页，列出找过的位置。
+**一般不需要手工安装**：全部落空时扩展会自己从 GitHub release 下载对应平台的二进制
+并校验 SHA-256（见 `src/install.ts`——Raycast Store 不允许把安装工作丢给用户）。
+下载失败才渲染引导页，列出找过的位置。
 
-目前请从源码安装：
+从源码安装（开发者路径）：
 
 ```bash
-# 方式一：装到 PATH
+# 方式一：装到 ~/.cargo/bin
 cargo install --path crates/portreaper-cli
 
 # 方式二：本地构建后在扩展偏好里指向它
@@ -92,4 +96,4 @@ Store 的 CI 用它自带的 Prettier 检查代码风格，PR 可能被标记格
 
 扩展代码通过了 `tsc --noEmit`（`@raycast/api` 类型全部对上），CLI 侧的 scan / kill /
 whitelist 三条链路都在本机真机验证过。但**Raycast 内的 UI 交互尚未真机验证** ——
-需要在装有 Raycast 的机器上 `pnpm dev` 走一遍。
+需要在装有 Raycast 的机器上 `npm run dev` 走一遍（本目录用 npm，理由见「开发」一节）。

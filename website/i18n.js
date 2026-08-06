@@ -5,6 +5,11 @@ window.I18N = {
     "meta.description":
       "Portreaper —— 一个 macOS / Windows 桌面托盘工具，找出占用 TCP 端口的进程，精准识别并清扫孤儿 dev-server 僵尸进程。",
     "a11y.skip": "跳到主要内容",
+    // 读屏器读到的标签也要跟随界面语言 —— 只翻可见文字、留一堆英文（或写死中文的
+    // "复制命令"）aria-label，等于对依赖读屏的用户根本没做这次切换（评审发现）
+    "a11y.nav": "主导航",
+    "a11y.platforms": "支持的平台",
+    "a11y.installTabs": "安装平台",
 
     "nav.features": "功能",
     "nav.install": "安装",
@@ -61,9 +66,9 @@ window.I18N = {
     "install.mac.s2":
       "首次打开若提示「无法验证开发者」：前往「系统设置 → 隐私与安全性」，点最下方的「仍要打开」。",
     "install.mac.s3":
-      "或者在「应用程序」里 <strong>右键 → 打开</strong>，在弹窗里再次确认「打开」。",
+      "或者在「应用程序」里 <strong>右键 → 打开</strong>，在弹窗里再次确认「打开」（仅 macOS 14 及以前；macOS 15 起 Apple 已移除右键旁路，请用上一步的「仍要打开」）。",
     "install.mac.s4":
-      "若提示的是「<strong>已损坏，无法打开</strong>」（未签名 App 的常见报错，此时「仍要打开」常常不出现、右键打开也无效）：<strong>右键 dmg 里随附的「解除隔离 Remove Quarantine.command」→「打开」</strong>，自动移除隔离并启动（v0.7.1 起附带；脚本自身也带隔离标记，需右键而非双击）。或在终端手动执行：",
+      "若提示的是「<strong>已损坏，无法打开</strong>」（未签名 App 的常见报错，此时「仍要打开」常常不出现、右键打开也无效）：<strong>打开 dmg 里随附的「解除隔离 Remove Quarantine.command」</strong>，自动移除隔离并启动（v0.7.1 起附带；脚本自身也带隔离标记 —— macOS 14 及以前右键 → 打开，macOS 15 起双击被拦后到「隐私与安全性」点「仍要打开」）。或在终端手动执行：",
     "install.copy": "复制",
     "install.copyAria": "复制命令",
     "showcase.screenshotAlt": "Portreaper 主界面截图",
@@ -88,6 +93,9 @@ window.I18N = {
     "meta.description":
       "Portreaper — a macOS / Windows desktop tray app that finds processes holding TCP ports and precisely identifies and reaps orphaned dev-server zombies.",
     "a11y.skip": "Skip to main content",
+    "a11y.nav": "primary",
+    "a11y.platforms": "supported platforms",
+    "a11y.installTabs": "install platforms",
 
     "nav.features": "Features",
     "nav.install": "Install",
@@ -145,16 +153,16 @@ window.I18N = {
     "install.mac.s2":
       "If the first launch says “cannot verify the developer”: go to System Settings → Privacy & Security and click “Open Anyway” at the bottom.",
     "install.mac.s3":
-      "Or in Applications, <strong>right-click → Open</strong> and confirm “Open” in the dialog.",
+      "Or in Applications, <strong>right-click → Open</strong> and confirm “Open” in the dialog (macOS 14 and earlier only — macOS 15 removed this bypass; use “Open Anyway” from the previous step instead).",
     "install.mac.s4":
-      "If it instead says the app is <strong>“damaged and can't be opened”</strong> (a common error for unsigned apps — “Open Anyway” and right-click → Open usually won't help here): <strong>right-click the bundled “解除隔离 Remove Quarantine.command” inside the dmg → “Open”</strong> — it strips quarantine and launches the app (shipped since v0.7.1; the script is quarantined too, hence right-click rather than double-click). Or run this in Terminal manually:",
+      "If it instead says the app is <strong>“damaged and can't be opened”</strong> (a common error for unsigned apps — “Open Anyway” and right-click → Open usually won't help here): <strong>open the bundled “解除隔离 Remove Quarantine.command” inside the dmg</strong> — it strips quarantine and launches the app (shipped since v0.7.1; the script is quarantined too — right-click → Open on macOS 14 and earlier, on macOS 15+ double-click, get blocked, then click “Open Anyway” in Privacy & Security). Or run this in Terminal manually:",
     "install.copy": "Copy",
     "install.copyAria": "Copy command",
     "showcase.screenshotAlt": "Screenshot of the Portreaper main window",
     "install.win.s1":
       "Run the <code>.exe</code> installer. If SmartScreen appears, click “More info → Run anyway”.",
     "install.win.s2":
-      "Antivirus may flag it — the app needs to enumerate and terminate processes, behavior heuristic engines often mark. Add it to your trust list if needed.",
+      "Antivirus may flag it — the app needs to enumerate and terminate processes, behavior that heuristic engines often flag. Add it to your trust list if needed.",
     "install.win.expTitle": "Experimental",
     "install.win.expBody":
       "The Windows build is so far only CI-compiled and unit-tested, not yet broadly validated across machines. Feedback in the issue tracker is welcome.",

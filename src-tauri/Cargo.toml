@@ -22,12 +22,18 @@ tauri-build = { version = "2", features = [] }
 portreaper-core = { path = "../crates/portreaper-core" }
 tauri = { version = "2", features = ["tray-icon", "image-png"] }
 tauri-plugin-opener = "2"
-serde = { version = "1", features = ["derive"] }
-serde_json = "1"
-once_cell = "1"
 sys-locale = "0.3" # 托盘菜单初始语言（托盘先于 webview 构建，需 Rust 侧探测系统语言）
 log = "0.4" # 日志门面：全代码 log::info!/warn!/error!，落盘由 tauri-plugin-log 接管
 tauri-plugin-log = "2" # 统一日志系统（分环境目录 + 大小轮转，见 paths.rs / lib.rs setup）
 
 # 注：sysinfo / windows 已随 scanner + platform 一并移入 portreaper-core ——
 # GUI 壳本身不做任何进程枚举或终止，不该直接依赖平台 API。
+#
+# 同理刻意**没有** serde / serde_json / once_cell（评审发现的未用依赖，已移除）：
+#   - serde：本 crate 零 derive。命令签名里流动的 ProcessEntry / KillError 都在
+#     portreaper-core 里派生好，#[tauri::command] 的序列化经由 tauri 自己的
+#     serde 重导出完成，不需要这里再直接依赖一份；
+#   - serde_json：白名单的 JSON 读写在 core::whitelist；
+#   - once_cell：进程级单例用标准库 OnceLock（whitelist.rs / lib.rs），
+#     std 有了以后这个 crate 就是纯粹的历史残留。
+# 三者都由 `cargo machete` 报出并实测删除后编译通过 —— 想加回来前先确认真有 use。

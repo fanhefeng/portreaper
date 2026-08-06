@@ -118,5 +118,12 @@ test("解释 cli_asset 的注释行不得被当成一条资产名", () => {
     "        # cli_asset:",
     "        # cli_asset: bogus-name-from-a-comment\n        # cli_asset:",
   );
+  // 突变依赖注释行的精确缩进：缩进一变，replace 变成 no-op，这条用例就在
+  // 「校验原始源码」而不是校验注释豁免，且会一直绿着（评审发现）
+  assert.notEqual(
+    releaseSrc,
+    real.releaseSrc,
+    "突变未生效：release.yml 的注释缩进已变，用例形同虚设",
+  );
   assert.deepEqual(checkCliAssetNames({ ...real, releaseSrc }), []);
 });

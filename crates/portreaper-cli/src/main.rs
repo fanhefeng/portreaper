@@ -13,7 +13,7 @@
 //! portreaper-cli --version | --help
 //! ```
 //!
-//! `--json` 输出带 `schemaVersion`：消费方读到不认识的**主**版本应当提示升级，
+//! `--json` 输出带 `schema_version`：消费方读到不认识的**主**版本应当提示升级，
 //! 而不是照着渲染出错乱的行。新增可选字段不递增主版本。
 //!
 //! # kill 的安全性是白送的
@@ -174,7 +174,9 @@ fn cmd_scan(args: &[String]) -> i32 {
 /// 需要稳定结构的消费方一律走 `--json`。
 fn print_table(entries: &[scanner::ProcessEntry]) {
     if entries.is_empty() {
-        println!("没有发现监听端口的进程。");
+        // 中性措辞：这里看不到 include_orphans，而扫描结果同时涵盖监听端口的进程
+        // 与不占端口的孤儿 dev 进程 —— 说「没有监听端口的进程」会漏掉后半句
+        println!("没有可列出的进程。");
         return;
     }
     let suspects = entries.iter().filter(|e| e.is_zombie_suspect).count();

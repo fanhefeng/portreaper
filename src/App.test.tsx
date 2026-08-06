@@ -16,6 +16,7 @@ vi.mock("@tauri-apps/plugin-opener", () => ({
 
 import { invoke } from "@tauri-apps/api/core";
 import { ACTION_TIMEOUT_MS, SCAN_TIMEOUT_MS } from "./model";
+import { setLang } from "./i18n";
 import App from "./App";
 
 const mockInvoke = vi.mocked(invoke);
@@ -45,6 +46,8 @@ function suspectEntry(over: Record<string, unknown> = {}) {
     confidence: "confirmed",
     zombie_reasons: ["ppid1_orphan", "dev_server_keyword"],
     is_whitelisted: false,
+    // 引擎随每行产出的白名单键（前端直读、不重推）。exe_path 含路径分隔符 ⇒ 用它。
+    whitelist_key: "/opt/homebrew/bin/node",
     duplicate_of: null,
     ...over,
   };
@@ -69,8 +72,12 @@ async function advance(ms: number) {
 describe("error channels", () => {
   beforeEach(() => {
     vi.useFakeTimers();
-    // 语言固定走英文分支，断言文案不受系统 locale 影响
+    // 语言固定走英文分支，断言文案不受系统 locale 影响。
+    // 光写 localStorage 不够：i18n 的 current 是**模块级**变量，在 import 那一刻
+    // 就已经按当时的 localStorage/navigator 求值完了，此处再写已经太晚 ——
+    // 必须调 setLang 覆盖它（评审发现：这些断言此前实际依赖跑测机器的系统语言）。
     localStorage.setItem("portreaper.lang", "en");
+    setLang("en");
   });
 
   afterEach(() => {
@@ -100,6 +107,8 @@ describe("error channels", () => {
     // 错误出现，且是本地化后的语义文案
     expect(screen.getByText(/Kill failed/)).toBeTruthy();
     expect(screen.getByText(/PID was reused/)).toBeTruthy();
+    // 横幅落在常驻 role="alert" 区域内：读屏用户对失败可感知（评审发现）
+    expect(screen.getByRole("alert").textContent).toContain("Kill failed");
 
     // 两轮成功轮询（>4s）之后错误必须仍在 —— 这就是被修复的回归
     await advance(4500);
@@ -215,6 +224,26 @@ describe("error channels", () => {
     expect(screen.queryByText(/lsof exploded/)).toBeNull();
   });
 
+  it("ERR_SCAN_BUSY 映射为本地化文案而非透传原始码，且保留扫描错误的自愈语义", async () => {
+    let busy = true;
+    route({
+      get_platform: () => "macos",
+      scan_ports: () => {
+        if (busy) throw "ERR_SCAN_BUSY: previous scan still in flight";
+        return [suspectEntry()];
+      },
+    });
+    render(<App />);
+    await advance(0);
+
+    expect(screen.getByText(/Previous scan still running/)).toBeTruthy();
+    expect(screen.queryByText(/ERR_SCAN_BUSY/)).toBeNull();
+
+    busy = false;
+    await advance(2100); // 后端恢复 → 下一轮轮询自动清除
+    expect(screen.queryByText(/Previous scan still running/)).toBeNull();
+  });
+
   it("操作错误优先于扫描错误展示，关闭时两者同时清空", async () => {
     let scanFails = false;
     route({
@@ -250,11 +279,13 @@ describe("error channels", () => {
     const added: string[] = [];
     route({
       get_platform: () => "macos",
-      // exe_path 是裸名 "node"（PATH/shebang 启动），不含路径分隔符
+      // exe_path 是裸名 "node"（PATH/shebang 启动），不含路径分隔符 ⇒ 引擎给出的
+      // whitelist_key 是完整命令行，前端原样转发
       scan_ports: () => [
         suspectEntry({
           exe_path: "node",
           full_command: "node /Users/x/proj/server.js",
+          whitelist_key: "node /Users/x/proj/server.js",
         }),
       ],
       add_whitelist: (args) => {
@@ -267,7 +298,7 @@ describe("error channels", () => {
     fireEvent.click(screen.getByText("☆")); // 收藏
     await advance(0);
 
-    // 键必须是完整命令行，而非塌缩的裸 "node"（前后端镜像一致性）
+    // 键必须是完整命令行，而非塌缩的裸 "node"
     expect(added).toEqual(["node /Users/x/proj/server.js"]);
   });
 
@@ -365,11 +396,13 @@ describe("error channels", () => {
     const removed: string[] = [];
     route({
       get_platform: () => "macos",
-      // exe_path 是裸名（PATH/shebang 启动）：新键=完整命令行，旧键=裸 "node"
+      // exe_path 是裸名（PATH/shebang 启动）：新键=完整命令行（引擎产出），
+      // 旧键=裸 "node"（legacyWhitelistKey 在前端推导 —— 引擎不产出 v0.4.0 键）
       scan_ports: () => [
         suspectEntry({
           exe_path: "node",
           full_command: "node /Users/x/proj/server.js",
+          whitelist_key: "node /Users/x/proj/server.js",
           is_whitelisted: true,
           is_zombie_suspect: false,
           confidence: "none",
@@ -497,5 +530,35 @@ describe("error channels", () => {
     // 仅 :5173 的行保留
     expect(screen.getByText("proj")).toBeTruthy();
     expect(screen.queryByText("other")).toBeNull();
+  });
+
+  it("搜索中不宣告「一切正常」：全局结论不能出自过滤子集（评审发现）", async () => {
+    route({
+      get_platform: () => "macos",
+      scan_ports: () => [
+        suspectEntry(), // 嫌疑，:5173
+        suspectEntry({
+          pid: 1111,
+          ports: [8080],
+          command: "healthy",
+          full_command: "healthy server",
+          app_label: "healthy",
+          is_zombie_suspect: false,
+          confidence: "none",
+          zombie_reasons: [],
+        }),
+      ],
+    });
+    render(<App />);
+    await advance(0);
+    expect(screen.queryByText(/All clear/)).toBeNull(); // 有嫌疑，本就不该出现
+
+    // 搜索只命中那个健康进程：suspects 子集为空，但机器上的嫌疑还在 ——
+    // 修复前这里会打出「No zombies. All clear」
+    fireEvent.change(screen.getByPlaceholderText(/Search/), {
+      target: { value: "8080" },
+    });
+    expect(screen.getByText("healthy")).toBeTruthy();
+    expect(screen.queryByText(/All clear/)).toBeNull();
   });
 });

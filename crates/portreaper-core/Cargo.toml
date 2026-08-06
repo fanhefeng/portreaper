@@ -20,6 +20,11 @@ log = "0.4" # 日志门面；落盘由各前端自行接管
 # 两者归并成同一份实现，paths.rs 才可能与 app.path().app_*_dir() 逐字节相等。
 dirs = "6"
 
+# macOS 端进程终止：kill(2) 直接 syscall —— errno 可精确映射语义变体
+# （EPERM→AccessDenied、ESRCH→ProcessGone），并消灭 /bin/kill 子进程
+[target.'cfg(target_os = "macos")'.dependencies]
+libc = "0.2"
+
 # Windows 端进程/端口枚举与终止（macOS 不编译这些依赖）
 [target.'cfg(windows)'.dependencies]
 sysinfo = "0.33"

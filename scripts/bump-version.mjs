@@ -24,6 +24,7 @@
 //
 // Zero dependencies. Requires Node >= 18 (ESM, fs/promises).
 
+import { realpathSync } from "node:fs";
 import { readFile, writeFile } from "node:fs/promises";
 import { fileURLToPath, pathToFileURL } from "node:url";
 import { dirname, join } from "node:path";
@@ -49,6 +50,18 @@ export const LOCK_CRATE_NAMES = ["portreaper", "portreaper-cli"];
 function fail(msg) {
   console.error(`error: ${msg}`);
   process.exit(1);
+}
+
+/**
+ * 纯改写函数（`setCargo*Version`）的校验失败走 throw，不走 `fail()`。
+ *
+ * 它们是 export 出去给 node:test 用的：`process.exit(1)` 会把整个测试进程带走，
+ * 于是那几条「清单缺 [package] / 缺 version 行必须响亮失败」的分支根本无法被
+ * 断言覆盖 —— 唯一能验证它们的手段反而杀死了验证过程。main() 本就有 try/catch
+ * 把异常转成 `fail()`，CLI 侧的退出码与错误文案完全不变（评审发现）。
+ */
+function invalid(msg) {
+  throw new Error(msg);
 }
 
 function parseArgs(argv) {
@@ -134,7 +147,7 @@ function sliceTomlSection(raw, section) {
 export function setCargoTomlVersion(raw, version) {
   const header = /^\[package\]\s*$/m;
   const start = raw.search(header);
-  if (start === -1) fail("could not find [package] section in Cargo.toml");
+  if (start === -1) invalid("could not find [package] section in Cargo.toml");
   const headerLen = raw.match(header)[0].length;
   const sectionStart = start + headerLen;
   const after = raw.slice(sectionStart);
@@ -144,7 +157,7 @@ export function setCargoTomlVersion(raw, version) {
   const section = raw.slice(sectionStart, sectionEnd);
   const replaced = section.replace(/^(\s*version\s*=\s*")[^"]*(")/m, `$1${version}$2`);
   if (replaced === section && !/^\s*version\s*=/m.test(section)) {
-    fail('could not find `version = "..."` in [package] section of Cargo.toml');
+    invalid('could not find `version = "..."` in [package] section of Cargo.toml');
   }
   return raw.slice(0, sectionStart) + replaced + raw.slice(sectionEnd);
 }
@@ -178,11 +191,14 @@ function findCargoLockBlock(raw, crateName) {
 export function setCargoLockVersion(raw, version, crateName = LOCK_CRATE_NAMES[0]) {
   const block = findCargoLockBlock(raw, crateName);
   if (!block) {
-    fail(`could not find [[package]] name = "${crateName}" block in Cargo.lock`);
+    invalid(`could not find [[package]] name = "${crateName}" block in Cargo.lock`);
   }
   const updated = block.text.replace(/^(version\s*=\s*")[^"]*(")/m, `$1${version}$2`);
-  if (updated === block.text) {
-    fail(`could not find version line for "${crateName}" in Cargo.lock`);
+  // no-op ≠ 行缺失：版本已是目标值时 replace 结果与原文相同（幂等重跑合法），
+  // 只有 version 行整个缺失才响亮失败 —— 与 setCargoTomlVersion 同一判据。
+  // 旧写法把两者混为一谈，中断后的同版本重跑会在这里炸出误导性错误。
+  if (updated === block.text && !/^version\s*=/m.test(block.text)) {
+    invalid(`could not find version line for "${crateName}" in Cargo.lock`);
   }
   return raw.slice(0, block.start) + updated + raw.slice(block.end);
 }
@@ -258,7 +274,9 @@ async function main() {
 }
 
 // 仅在作为脚本直接运行时执行（被 *.test.mjs import 时不触发，便于单元测试）。
-if (process.argv[1] && import.meta.url === pathToFileURL(process.argv[1]).href) {
+// realpath 双侧归一（与三个 parity 守卫同一 idiom）：node 对主模块做 realpath 而
+// argv[1] 保持原样，经 symlink 调用时裸比较不相等 → --check 门禁静默 exit 0。
+if (process.argv[1] && pathToFileURL(realpathSync(process.argv[1])).href === import.meta.url) {
   main().catch((err) => {
     fail(err?.stack || String(err));
   });

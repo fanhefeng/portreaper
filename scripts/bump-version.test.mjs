@@ -114,6 +114,26 @@ test("setCargoLockVersion targets the portreaper block, not portreaper_lib/serde
   assert.ok(out.includes('name = "serde"\nversion = "1.0.200"'), "serde block untouched");
 });
 
+// 清单形态被破坏时必须响亮失败 —— 这几条分支曾经调 process.exit(1)，
+// 断言碰不到它们（一碰就把测试进程带走），等于「守住 bump 正确性」的最后一环无人验证。
+test("Cargo.toml 缺 [package] 段必须抛错，而不是返回原文", () => {
+  assert.throws(() => setCargoTomlVersion('[dependencies]\nfoo = "1"\n', "0.6.0"), /\[package\]/);
+});
+
+test("Cargo.toml 的 [package] 段缺 version 行必须抛错", () => {
+  assert.throws(() => setCargoTomlVersion('[package]\nname = "portreaper"\n', "0.6.0"), /version/);
+});
+
+test("Cargo.lock 找不到目标包块必须抛错", () => {
+  const lock = ["[[package]]", 'name = "serde"', 'version = "1.0.200"'].join("\n");
+  assert.throws(() => setCargoLockVersion(lock, "0.6.0"), /portreaper/);
+});
+
+test("Cargo.lock 目标包块缺 version 行必须抛错", () => {
+  const lock = ["[[package]]", 'name = "portreaper"', "dependencies = []"].join("\n");
+  assert.throws(() => setCargoLockVersion(lock, "0.6.0"), /version line/);
+});
+
 // ---- 多发布产物：portreaper 与 portreaper-cli 必须一起同步 ----
 // 判据是「用户能不能看见这个版本号」：安装包与 release 里的 CLI 都看得见，
 // 内部库 portreaper-core 看不见。曾经 CLI 自成一套（0.1.0），用户 `--version`
@@ -154,6 +174,17 @@ test("包名匹配必须精确，portreaper 不得命中 portreaper-cli 的块",
     "0.1.0",
     "只改 portreaper 时，portreaper-cli 必须原封不动",
   );
+});
+
+// 幂等回归（实测踩到）：同版本重跑时 replace 是 no-op，旧守卫把「结果与原文相同」
+// 一律当成「version 行缺失」—— 中断后的重跑会在 Cargo.lock 一步炸出误导性错误，
+// 而 setCargoTomlVersion 对同样的 no-op 却静默通过（两函数判据必须一致）。
+test("Cargo.lock 已是目标版本时重跑必须返回原文，不得误报缺 version 行", () => {
+  const lock = ["[[package]]", 'name = "portreaper"', 'version = "0.9.0"'].join("\n");
+  assert.equal(setCargoLockVersion(lock, "0.9.0"), lock);
+  // 全量同步的重跑同样幂等
+  const synced = setAllCargoLockVersions(MULTI_LOCK, "0.9.0");
+  assert.equal(setAllCargoLockVersions(synced, "0.9.0"), synced);
 });
 
 test("LOCK_CRATE_NAMES 就是发布产物的清单", () => {

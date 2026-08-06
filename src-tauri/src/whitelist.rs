@@ -18,7 +18,7 @@ use portreaper_core::Whitelist;
 static WHITELIST: OnceLock<Mutex<Whitelist>> = OnceLock::new();
 
 fn cell() -> &'static Mutex<Whitelist> {
-    // init() 未跑（理论上不该发生：lib.rs setup 里第一件事就是它）时的降级形态：
+    // init() 未跑（理论上不该发生：lib.rs setup 内、任何命令可达之前调用）时的降级形态：
     // 一个指向空路径的白名单 —— 读永远为空、写响亮失败，绝不静默假成功。
     WHITELIST.get_or_init(|| Mutex::new(Whitelist::empty(PathBuf::new())))
 }
