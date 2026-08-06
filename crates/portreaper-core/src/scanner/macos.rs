@@ -112,10 +112,10 @@ pub(crate) fn is_chain_stopper(exe_path: &str, category: &str) -> bool {
     category == "installed-app" || exe_path.contains(".app/")
 }
 
-/// (label, category) —— macOS 路径阶梯。顺序敏感：脚本/模块身份 → .app →
-/// /Applications 裸 → 系统 → 裸脚本运行时 → Homebrew CLI → cargo 产物 →
-/// 用户目录 → unknown。脚本/模块必须最先判：解释器自身可能就住在
-/// .app bundle / 系统路径里（Python.app、/usr/bin/python3）。
+/// (label, category) —— macOS 路径阶梯。顺序敏感：脚本/模块身份 → 自动化实例 →
+/// 非 .app dev 运行时 → .app → /Applications 裸 → 系统 → 裸脚本运行时 →
+/// Homebrew CLI → cargo 产物 → 用户目录 → unknown。脚本/模块必须最先判：
+/// 解释器自身可能就住在 .app bundle / 系统路径里（Python.app、/usr/bin/python3）。
 pub(crate) fn identify_app(
     full_command: &str,
     short_command: &str,
@@ -156,6 +156,16 @@ pub(crate) fn identify_app(
             super::identify::automation_label(exe, short_command),
             super::AUTOMATION_CATEGORY.to_string(),
         );
+    }
+
+    // 0c. 非 .app 形态的 dev 运行时 —— Playwright 新默认的 chromium_headless_shell、
+    //     node_modules/@esbuild/.../bin/esbuild、~/.cache/selenium 下的 driver 都没有
+    //     .app 包装。Windows 侧同判定是无条件阶梯（windows.rs 0c），macOS 曾只在
+    //     .app 分支内检查 —— 同一进程两平台置信度分档不同，无端口孤儿在 macOS
+    //     整行不可见（评审发现的调用位置漂移）。.app 形态留给阶梯 1 接住，取更
+    //     友好的 app 名作标签。
+    if !exe.contains(".app/") && super::identify::is_dev_tool_runtime_path(exe) {
+        return (basename(exe).to_string(), "dev-script".to_string());
     }
 
     // 1. .app bundle —— 抽出 .app 名（exe 来自 ps comm，含空格也完整）
@@ -246,7 +256,6 @@ pub(crate) fn system_bin(program: &str) -> &str {
         "lsof" => "/usr/sbin/lsof",
         "ps" => "/bin/ps",
         "launchctl" => "/bin/launchctl",
-        "kill" => "/bin/kill",
         other => other,
     }
 }
@@ -925,6 +934,32 @@ n[::1]:9333->[::1]:60123
         let (label, cat) = identify_app(pw, "Chromium", pw);
         assert_eq!(label, "Chromium");
         assert_eq!(cat, "dev-script");
+    }
+
+    /// 阶梯 0c：非 .app 形态的 dev 运行时也必须归 dev-script —— 此前该判定只在
+    /// .app 分支内做，Windows 是无条件阶梯（评审发现的调用位置漂移：同一进程
+    /// macOS 降档 user-binary，置信度分层与无端口孤儿门全部受损）。
+    #[test]
+    fn dev_tool_runtime_without_app_bundle_is_dev_script() {
+        // Playwright 新默认下载的 headless shell（无 .app 包装）
+        let hs = "/Users/x/Library/Caches/ms-playwright/chromium_headless_shell-1155/chrome-mac/headless_shell";
+        let (label, cat) = identify_app(hs, "headless_shell", hs);
+        assert_eq!(label, "headless_shell");
+        assert_eq!(cat, "dev-script");
+
+        // Selenium Manager 下载的 chromedriver
+        let cd = "/Users/x/.cache/selenium/chromedriver/mac-arm64/chromedriver --port=9515";
+        let exe = "/Users/x/.cache/selenium/chromedriver/mac-arm64/chromedriver";
+        assert_eq!(identify_app(cd, "chromedriver", exe).1, "dev-script");
+
+        // node_modules 下的平台二进制（esbuild）
+        let es = "/Users/x/proj/node_modules/@esbuild/darwin-arm64/bin/esbuild --serve";
+        let exe = "/Users/x/proj/node_modules/@esbuild/darwin-arm64/bin/esbuild";
+        assert_eq!(identify_app(es, "esbuild", exe).1, "dev-script");
+
+        // 对照：用户目录下的普通二进制不受影响，仍是 user-binary
+        let ub = "/Users/x/bin/mytool";
+        assert_eq!(identify_app(ub, "mytool", ub).1, "user-binary");
     }
 
     /// `.app/` 兜底刻意**不**服从 `identify_app` 的身份判定 —— 这与

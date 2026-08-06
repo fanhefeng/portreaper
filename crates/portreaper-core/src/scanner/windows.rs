@@ -12,8 +12,8 @@ use std::sync::OnceLock; // KnownPaths 的一次性探测缓存（System 已改�
 use sysinfo::{Pid, ProcessRefreshKind, ProcessesToUpdate, System, UpdateKind, Users};
 use windows::Win32::Foundation::{ERROR_INSUFFICIENT_BUFFER, NO_ERROR};
 use windows::Win32::NetworkManagement::IpHelper::{
-    GetExtendedTcpTable, MIB_TCP6TABLE_OWNER_PID, MIB_TCPTABLE_OWNER_PID, MIB_TCP_STATE_ESTAB,
-    MIB_TCP_STATE_LISTEN, TCP_TABLE_OWNER_PID_ALL,
+    GetExtendedTcpTable, MIB_TCP6ROW_OWNER_PID, MIB_TCP6TABLE_OWNER_PID, MIB_TCPROW_OWNER_PID,
+    MIB_TCPTABLE_OWNER_PID, MIB_TCP_STATE_ESTAB, MIB_TCP_STATE_LISTEN, TCP_TABLE_OWNER_PID_ALL,
 };
 use windows::Win32::Networking::WinSock::{AF_INET, AF_INET6};
 use windows::Win32::System::Com::CoTaskMemFree;
@@ -570,10 +570,11 @@ fn decode_port(dw_local_port: u32) -> u16 {
     u16::from_be_bytes([b[0], b[1]])
 }
 
-/// 缓冲字节数下界：空表时 API 只要求 4 字节（裸 dwNumEntries），但我们随后
-/// 会对整个表结构体取 `&T` —— Rust 引用必须覆盖完整的 size_of::<T>()（含
-/// 声明的 table[1] 首行，IPv4 28 字节 / IPv6 60 字节），缓冲小于结构体时
-/// 引用一经构造即属 UB（评审发现，与下方的对齐问题同源）。取两族最大值。
+/// 缓冲字节数下界：空表时 API 只要求 4 字节（裸 dwNumEntries），但解析侧按
+/// `*const T` 读表头并用 addr_of! 计算首行偏移 —— 让缓冲无条件覆盖完整的
+/// size_of::<T>()（含声明的 table[1] 首行，IPv4 28 字节 / IPv6 60 字节），
+/// 这些地址计算就永远在分配范围内，无需逐处论证（评审发现，与下方的对齐
+/// 问题同源）。取两族最大值。
 const MIN_TABLE_BYTES: usize = {
     let v4 = std::mem::size_of::<MIB_TCPTABLE_OWNER_PID>();
     let v6 = std::mem::size_of::<MIB_TCP6TABLE_OWNER_PID>();
@@ -644,20 +645,26 @@ fn tcp_tables() -> TcpTables {
                     );
                     break;
                 }
+                // 全程裸指针、不构造 &T：引用的 provenance 只覆盖 size_of::<T>()
+                // （柔性数组只含声明的 table[1] 首行），从引用派生的行指针读第 2 行
+                // 起即越界 —— Stacked/Tree Borrows 语义下的 UB（Miri 可复现），与
+                // MIN_TABLE_BYTES 注释是同一问题的另一半。addr_of! 经裸指针解引用
+                // 派生，保留 buf 整个分配的 provenance。也因此不能写
+                // `(*table).table.as_ptr()`：方法调用会先对 1 行的数组取引用。
                 if af == u32::from(AF_INET.0) {
-                    let table = &*(buf.as_ptr() as *const MIB_TCPTABLE_OWNER_PID);
+                    let table = buf.as_ptr() as *const MIB_TCPTABLE_OWNER_PID;
                     let rows = std::slice::from_raw_parts(
-                        table.table.as_ptr(),
-                        table.dwNumEntries as usize,
+                        std::ptr::addr_of!((*table).table).cast::<MIB_TCPROW_OWNER_PID>(),
+                        (*table).dwNumEntries as usize,
                     );
                     for row in rows {
                         out.push_row(row.dwState, row.dwOwningPid, row.dwLocalPort);
                     }
                 } else {
-                    let table = &*(buf.as_ptr() as *const MIB_TCP6TABLE_OWNER_PID);
+                    let table = buf.as_ptr() as *const MIB_TCP6TABLE_OWNER_PID;
                     let rows = std::slice::from_raw_parts(
-                        table.table.as_ptr(),
-                        table.dwNumEntries as usize,
+                        std::ptr::addr_of!((*table).table).cast::<MIB_TCP6ROW_OWNER_PID>(),
+                        (*table).dwNumEntries as usize,
                     );
                     for row in rows {
                         out.push_row(row.dwState, row.dwOwningPid, row.dwLocalPort);

@@ -2759,6 +2759,7 @@ name = "portreaper-core"
 version = "0.1.0"
 dependencies = [
  "dirs",
+ "libc",
  "log",
  "serde",
  "serde_json",
