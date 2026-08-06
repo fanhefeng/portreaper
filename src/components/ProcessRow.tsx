@@ -99,6 +99,9 @@ function RowImpl({
   // 清扫进行中禁用全部行内终止按钮（评审发现）：批量循环正逐个 kill，
   // 此时对同一进程发起第二次 kill 只会制造一条多余的失败横幅
   const killing = killingPid === e.pid || sweeping;
+  // ★/☆ 字形不构成可用的读屏按钮名（会读作 "black star"）——
+  // aria-label 与 title 同源，收藏/取消收藏的动作语义跟随语言（评审发现）
+  const starTip = e.is_whitelisted ? t("star.remove.tip") : t("star.add.tip");
 
   return (
     <div className={`row-block ${expanded ? "open" : ""}`}>
@@ -249,7 +252,8 @@ function RowImpl({
           <button
             className={`btn-act btn-star ${e.is_whitelisted ? "active" : ""}`}
             onClick={() => onToggleWhitelist(e)}
-            title={e.is_whitelisted ? t("star.remove.tip") : t("star.add.tip")}
+            title={starTip}
+            aria-label={starTip}
           >
             {e.is_whitelisted ? "★" : "☆"}
           </button>

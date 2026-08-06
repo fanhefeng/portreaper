@@ -280,6 +280,11 @@ button {
 
 /* ───── Error banner ───── */
 
+/* alert live region 常驻挂载（空时零高度）：只锁 flex 收缩，视觉全在内层 .error */
+.error-region {
+  flex-shrink: 0;
+}
+
 .error {
   background: var(--danger-soft);
   color: var(--danger-text);

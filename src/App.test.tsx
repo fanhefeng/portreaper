@@ -107,6 +107,8 @@ describe("error channels", () => {
     // 错误出现，且是本地化后的语义文案
     expect(screen.getByText(/Kill failed/)).toBeTruthy();
     expect(screen.getByText(/PID was reused/)).toBeTruthy();
+    // 横幅落在常驻 role="alert" 区域内：读屏用户对失败可感知（评审发现）
+    expect(screen.getByRole("alert").textContent).toContain("Kill failed");
 
     // 两轮成功轮询（>4s）之后错误必须仍在 —— 这就是被修复的回归
     await advance(4500);
@@ -220,6 +222,26 @@ describe("error channels", () => {
     scanFails = false;
     await advance(2100); // 下一轮轮询成功
     expect(screen.queryByText(/lsof exploded/)).toBeNull();
+  });
+
+  it("ERR_SCAN_BUSY 映射为本地化文案而非透传原始码，且保留扫描错误的自愈语义", async () => {
+    let busy = true;
+    route({
+      get_platform: () => "macos",
+      scan_ports: () => {
+        if (busy) throw "ERR_SCAN_BUSY: previous scan still in flight";
+        return [suspectEntry()];
+      },
+    });
+    render(<App />);
+    await advance(0);
+
+    expect(screen.getByText(/Previous scan still running/)).toBeTruthy();
+    expect(screen.queryByText(/ERR_SCAN_BUSY/)).toBeNull();
+
+    busy = false;
+    await advance(2100); // 后端恢复 → 下一轮轮询自动清除
+    expect(screen.queryByText(/Previous scan still running/)).toBeNull();
   });
 
   it("操作错误优先于扫描错误展示，关闭时两者同时清空", async () => {

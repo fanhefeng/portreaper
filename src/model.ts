@@ -186,8 +186,9 @@ export function withTimeout<T>(p: Promise<T>, ms: number, marker: string): Promi
   return Promise.race([p, timeout]).finally(() => clearTimeout(timer));
 }
 
-/** 扫描超时 sentinel → 本地化；其余（OS 原文）透传 */
+/** 扫描侧语义错误（超时 sentinel / 后端拒扫）→ 本地化；其余（OS 原文）透传 */
 export function localizeScanError(err: string, t: Translator): string {
   if (err.includes("ERR_SCAN_TIMEOUT")) return t("error.scanTimeout");
+  if (err.includes("ERR_SCAN_BUSY")) return t("error.scanBusy");
   return err;
 }

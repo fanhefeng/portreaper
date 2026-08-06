@@ -445,22 +445,26 @@ function App() {
         </div>
       </header>
 
-      {error && (
-        <div
-          className="error"
-          role="button"
-          tabIndex={0}
-          onClick={dismissError}
-          onKeyDown={(ev) => {
-            if (ev.key === "Enter" || ev.key === " ") {
-              ev.preventDefault();
-              dismissError();
-            }
-          }}
-        >
-          {error} {t("error.clickToClose")}
-        </div>
-      )}
+      {/* alert 与 button 语义不能同处一元素（评审发现）：外层 live region 负责
+          读屏播报，内层保留可点击关闭。区域常驻挂载 —— 内容注入既有 alert 才可靠触发播报 */}
+      <div className="error-region" role="alert">
+        {error && (
+          <div
+            className="error"
+            role="button"
+            tabIndex={0}
+            onClick={dismissError}
+            onKeyDown={(ev) => {
+              if (ev.key === "Enter" || ev.key === " ") {
+                ev.preventDefault();
+                dismissError();
+              }
+            }}
+          >
+            {error} {t("error.clickToClose")}
+          </div>
+        )}
+      </div>
 
       <main className="list">
         {entries.length === 0 ? (
