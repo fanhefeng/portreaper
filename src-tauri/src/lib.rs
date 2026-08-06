@@ -12,7 +12,9 @@ use tauri::{
     AppHandle, Manager, WindowEvent, Wry,
 };
 
-/// 当前界面语言（"zh" / "en"），托盘 tooltip 与菜单共用；
+/// 当前界面语言（"zh" / "en"）。唯一读取方是 Windows 的托盘 tooltip
+/// （commands.rs update_tray_title）；菜单 re-text 直接用调用参数，不读它。
+/// macOS 上只写不读 —— 为跨平台状态形状统一而保留。
 /// 由系统 locale 初始化，前端切换语言时通过 set_tray_language 同步。
 pub struct TrayLang(pub Mutex<&'static str>);
 

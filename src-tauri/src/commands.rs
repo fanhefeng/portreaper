@@ -19,16 +19,27 @@ pub struct ScannerState(pub Mutex<Scanner>);
 #[tauri::command]
 pub async fn scan_ports(app: AppHandle) -> Result<Vec<scanner::ProcessEntry>, String> {
     tauri::async_runtime::spawn_blocking(move || {
-        let wl = whitelist::get_all();
-        // 毒化恢复：scan 中途 panic 一次不应让后续每轮轮询永久 panic（前端表现为
-        // 永远 ERR_SCAN_TIMEOUT）。Scanner 内部只是采集缓存，半更新状态可安全续用
-        // —— 拆分前这段恢复逻辑在 windows.rs 的 System 锁上，语义原样搬来。
         let state = app.state::<ScannerState>();
-        let mut scanner = state.0.lock().unwrap_or_else(PoisonError::into_inner);
-        scanner.scan(&wl)
+        // try_lock 而非 lock（评审发现）：前端 10s 超时后仍每 2s 轮询，若某轮
+        // scan 里 lsof 永久挂死（网络挂载卷等），排队 lock 会让阻塞池线程每
+        // ~10s 新增一个、直至 tokio 阻塞池 512 上限耗尽 —— 那之后 kill_process
+        // 的 spawn_blocking 排队永不执行。拿不到锁说明上一轮还在跑，直接拒绝
+        // 本轮：前端把 ERR_SCAN_BUSY 展示为普通扫描错误，下一轮轮询自动重试。
+        let mut scanner = match state.0.try_lock() {
+            Ok(guard) => guard,
+            // 毒化恢复：scan 中途 panic 一次不应让后续每轮轮询永久 panic（前端
+            // 表现为永远 ERR_SCAN_TIMEOUT）。Scanner 内部只是采集缓存，半更新
+            // 状态可安全续用 —— 拆分前这段恢复逻辑在 windows.rs 的 System 锁上。
+            Err(std::sync::TryLockError::Poisoned(p)) => p.into_inner(),
+            Err(std::sync::TryLockError::WouldBlock) => {
+                return Err("ERR_SCAN_BUSY: previous scan still running".to_string());
+            }
+        };
+        let wl = whitelist::get_all();
+        Ok(scanner.scan(&wl))
     })
     .await
-    .map_err(|e| format!("scan task failed: {e}"))
+    .map_err(|e| format!("scan task failed: {e}"))?
 }
 
 /// 终止进程。`start_unix` 是扫描时捕获的创建时间 —— kill 前重新核对，
@@ -90,7 +101,6 @@ pub fn update_tray_title(
         }
         #[cfg(windows)]
         {
-            use tauri::Manager;
             // 毒化恢复：语言只是一个 &'static str，持锁 panic 不可能让它处于
             // 半更新的无效状态。不恢复的话，一次 panic 就让托盘计数此后永久
             // 报错 —— 与 scan_ports / whitelist 的锁同一套取舍（评审发现）。
@@ -116,7 +126,6 @@ pub fn update_tray_title(
 /// 前端切换语言时同步托盘菜单文案与 tooltip 语言。
 #[tauri::command]
 pub fn set_tray_language(app: tauri::AppHandle, lang: String) -> Result<(), String> {
-    use tauri::Manager;
     let lang: &'static str = if lang.to_lowercase().starts_with("zh") {
         "zh"
     } else {
