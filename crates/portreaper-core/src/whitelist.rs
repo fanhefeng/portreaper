@@ -96,7 +96,8 @@ impl Whitelist {
         }
     }
 
-    /// 空白名单（无落盘位置时的降级形态：一切操作照常，只是存不下来）。
+    /// 空白名单（无落盘位置时的降级形态：读照常为空，写走到 save 时响亮失败 ——
+    /// 不是「静默存不下来」，add/remove 会回滚并上抛错误）。
     pub fn empty(path: PathBuf) -> Self {
         Self {
             entries: Vec::new(),
@@ -143,10 +144,14 @@ impl Whitelist {
     }
 
     /// 加入白名单并落盘。重复 key 是幂等的 no-op。
+    ///
+    /// 回滚快照必须取在 `merge_from_disk` **之后**：save 失败时磁盘仍是合并前
+    /// 拿到的那份现状，回滚到「合并后、修改前」恰好与之相等 —— 快照取在合并前
+    /// 会把其他进程的改动从内存里丢掉，直到下次 mutate 才自愈（评审发现）。
     pub fn add(&mut self, key: String) -> Result<(), String> {
         self.ensure_writable()?;
-        let snapshot = self.entries.clone();
         self.merge_from_disk();
+        let snapshot = self.entries.clone();
         if self.contains(&key) {
             return Ok(());
         }
@@ -158,11 +163,11 @@ impl Whitelist {
         Ok(())
     }
 
-    /// 移出白名单并落盘。不存在的 key 是幂等的 no-op。
+    /// 移出白名单并落盘。不存在的 key 是幂等的 no-op。快照时序同 `add`。
     pub fn remove(&mut self, key: &str) -> Result<(), String> {
         self.ensure_writable()?;
-        let snapshot = self.entries.clone();
         self.merge_from_disk();
+        let snapshot = self.entries.clone();
         let Some(idx) = self.entries.iter().position(|x| x == key) else {
             return Ok(());
         };
@@ -191,9 +196,14 @@ impl Whitelist {
         let tmp = self
             .path
             .with_extension(format!("json.{}.tmp", std::process::id()));
-        fs::write(&tmp, &json).map_err(|e| format!("write whitelist: {e}"))?;
+        // 两条失败路径都清 tmp：PID 后缀意味着短命 CLI 每次的临时名都不同，
+        // 磁盘满写半截时的残留会在配置目录逐个累积、永远没人回收。
+        if let Err(e) = fs::write(&tmp, &json) {
+            let _ = fs::remove_file(&tmp);
+            return Err(format!("write whitelist: {e}"));
+        }
         if let Err(e) = fs::rename(&tmp, &self.path) {
-            let _ = fs::remove_file(&tmp); // 失败不留垃圾
+            let _ = fs::remove_file(&tmp);
             return Err(format!("commit whitelist: {e}"));
         }
         Ok(())
@@ -295,6 +305,35 @@ mod tests {
         assert!(!err.is_empty());
         assert!(!wl.contains("/usr/bin/y"), "保存失败必须回滚内存");
         assert!(!has_tmp_leftover(&dir), "提交失败后不得留下临时文件");
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    /// save 失败时的回滚基准必须是「合并后」的视图：磁盘此刻就是合并前读到的
+    /// 现状，回滚到合并前的旧快照会把其他进程的改动从内存里丢掉、直到下次
+    /// mutate 才自愈（评审发现）。用「tmp 路径被目录占位」制造 write 阶段失败 ——
+    /// 读路径不受影响，merge 照常成功。
+    #[test]
+    fn rollback_after_merge_keeps_other_processes_changes() {
+        let dir = temp_dir_for("rollback-merge");
+        let path = dir.join("whitelist.json");
+
+        let mut resident = Whitelist::load(path.clone());
+        resident.add("/gui/first".to_string()).unwrap();
+
+        let mut ephemeral = Whitelist::load(path.clone());
+        ephemeral.add("/cli/second".to_string()).unwrap();
+
+        // 占住本进程的 tmp 名，让 resident 的下一次 save 在 write 阶段失败
+        let tmp = path.with_extension(format!("json.{}.tmp", std::process::id()));
+        fs::create_dir_all(&tmp).unwrap();
+
+        let err = resident.add("/gui/third".to_string()).unwrap_err();
+        assert!(!err.is_empty());
+        assert!(!resident.contains("/gui/third"), "保存失败必须回滚本次修改");
+        assert!(
+            resident.contains("/cli/second"),
+            "回滚不得把已合并进来的他进程改动一并丢掉"
+        );
         let _ = fs::remove_dir_all(&dir);
     }
 

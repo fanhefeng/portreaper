@@ -75,7 +75,9 @@ fn is_pm2_container(cmd: &str) -> bool {
 /// 所有 node 监听者一并豁免、令真孤儿永久隐身（评审发现）。裸名时回退到
 /// 完整命令行（含脚本路径，足以区分不同 dev server）；命令行也空时退回 lsof 短名。
 ///
-/// ⚠️ 前端 src/model.ts `whitelistKey()` 是本函数的逐字镜像，二者必须同步修改。
+/// 引擎是本规则的**唯一实现**：所有前端（桌面 / CLI / Raycast）一律读
+/// `ProcessEntry.whitelist_key`，不得自行重推（核心拆分刻意消灭的失败模式）。
+/// 前端仅存 `legacyWhitelistKey`（v0.4.0 旧键兼容，引擎不产出该键）。
 pub(crate) fn whitelist_key(exe_path: &str, full_command: &str, command: &str) -> String {
     if exe_path.contains('/') || exe_path.contains('\\') {
         exe_path.to_string()
@@ -186,7 +188,8 @@ fn scan_from(collected: Collected, whitelist: &[String]) -> Vec<ProcessEntry> {
             continue;
         };
         seen.insert(l.pid);
-        // 监听者的 user 优先取 lsof L 字段；缺失时回退进程表（macOS 进程表 user 恒空）。
+        // 监听者的 user 优先取 lsof L 字段（更权威）；个别行缺 L 字段、或
+        // Windows 端口表无 user 时回退进程表的 user 列。
         let user = if !l.user.is_empty() {
             l.user.clone()
         } else {
@@ -363,7 +366,7 @@ fn build_entry(
     let verdict = classify(&snapshot);
     let raw_suspect = verdict.is_suspect;
 
-    // 白名单 key（前端 src/model.ts whitelistKey 必须用同一优先级）。
+    // 白名单 key（引擎唯一推导，前端直读 ProcessEntry.whitelist_key）。
     // 同时核对 v0.4.0 旧键以兼容升级（见 legacy_whitelist_key）。
     let wl_key = whitelist_key(&exe_path, &full_command, &command);
     let legacy_key = legacy_whitelist_key(&exe_path, &command);
@@ -681,6 +684,16 @@ fn build_parent_chain(
 
     // 注：命中 installed-app / 存活系统根即 break，因此走到 init/死根分支时
     // 链上必然没有用户可见 App —— terminates_at_init 直接置 true 即可。
+
+    // 死根收尾（两处共用）：Windows 补合成根并视为「链到 init」；macOS 同处
+    // 只是 kernel(0) / 快照间隙的瞬态，保守收尾、不下结论。
+    fn dead_root(chain: &mut Vec<ParentRef>, flags: &mut ChainFlags) {
+        if cfg!(windows) {
+            chain.push(platform_impl::synth_chain_root());
+            flags.terminates_at_init = true;
+        }
+    }
+
     for _ in 0..12 {
         let Some(current) = procs.get(&current_pid) else {
             break;
@@ -694,19 +707,13 @@ fn build_parent_chain(
             break;
         }
         if parent_ppid == 0 || parent_ppid == current_pid {
-            // Windows：父未知/已退出 ⇒ 死根；macOS：kernel(0) 处直接收尾
-            if cfg!(windows) {
-                chain.push(platform_impl::synth_chain_root());
-                flags.terminates_at_init = true;
-            }
+            // 父未知/已退出（Windows）或走到 kernel(0)（macOS）
+            dead_root(&mut chain, &mut flags);
             break;
         }
         let Some(parent) = procs.get(&parent_ppid) else {
-            // 父进程已不在快照中：Windows 视为死根；macOS 是快照间隙的瞬态，保守收尾
-            if cfg!(windows) {
-                chain.push(platform_impl::synth_chain_root());
-                flags.terminates_at_init = true;
-            }
+            // 父进程已不在快照中
+            dead_root(&mut chain, &mut flags);
             break;
         };
 
@@ -1262,6 +1269,78 @@ mod orphan_tests {
             cwds: HashMap::new(),
             established_local_ports: HashMap::new(),
         }
+    }
+
+    const ORPHAN_ELECTRON_EXE: &str =
+        "/Users/x/proj/node_modules/electron/dist/Electron.app/Contents/MacOS/Electron";
+
+    // —— scan_from 编排层（此前只测 build_entry 等零件，编排行为裸奔 —— 评审发现）——
+
+    /// 监听者缺 meta 必须整行丢弃：这是「start_unix 恒有值 ⇒ kill 身份校验
+    /// 永不因 null 失防」的安全前提，不只是显示问题。
+    #[test]
+    fn listener_without_meta_is_dropped() {
+        let mut col = col_of(HashMap::new());
+        col.listeners.push(model::Listener {
+            pid: 4242,
+            ports: vec![3000],
+            user: "x".to_string(),
+            command: "node".to_string(),
+        });
+        let entries = scan_from(col, &[]);
+        assert!(
+            entries.is_empty(),
+            "缺 meta 的监听者必须丢行，不得以空身份进入列表"
+        );
+    }
+
+    /// 同一 PID 双路径（既占端口又是孤儿 dev 进程）只出一行，且是监听者形态。
+    #[test]
+    fn same_pid_via_both_paths_emits_one_row() {
+        let exe = ORPHAN_ELECTRON_EXE;
+        let mut procs = HashMap::new();
+        procs.insert(900, meta(1, exe, &format!("{exe} .")));
+        let mut col = col_of(procs);
+        col.listeners.push(model::Listener {
+            pid: 900,
+            ports: vec![5173],
+            user: String::new(),
+            command: "Electron".to_string(),
+        });
+        let entries = scan_from(col, &[]);
+        assert_eq!(entries.len(), 1, "seen 去重失效：同 PID 出了两行");
+        assert_eq!(entries[0].ports, vec![5173], "监听者路径优先，端口须保留");
+    }
+
+    /// 白名单孤儿在 scan 产出的列表里仍要出现（供用户取消收藏），但不算嫌疑。
+    /// build_entry 层已有同名测试；这里钉的是 scan_from 的「raw_suspect 即纳入」。
+    #[test]
+    fn whitelisted_orphan_is_still_listed_by_scan_from() {
+        let exe = ORPHAN_ELECTRON_EXE;
+        let mut procs = HashMap::new();
+        procs.insert(900, meta(1, exe, &format!("{exe} .")));
+        let entries = scan_from(col_of(procs), &[exe.to_string()]);
+        assert_eq!(entries.len(), 1, "白名单孤儿必须仍在列表里");
+        assert!(entries[0].is_whitelisted);
+        assert!(!entries[0].is_zombie_suspect);
+    }
+
+    /// 无端口孤儿（端口键全为 0）的行序必须按 pid 兜底确定 —— 孤儿遍历
+    /// HashMap 的随机序不得渗入行序（评审 E1 的行序半边，此前只测了
+    /// mark_duplicates 半边）。
+    #[test]
+    fn portless_orphan_rows_sort_by_pid_fallback() {
+        // 两个不同项目的孤儿 dev 进程（避免被判成重复对），乱序插入
+        let exe_a =
+            "/Users/x/proj-a/node_modules/electron/dist/Electron.app/Contents/MacOS/Electron";
+        let exe_b =
+            "/Users/x/proj-b/node_modules/electron/dist/Electron.app/Contents/MacOS/Electron";
+        let mut procs = HashMap::new();
+        procs.insert(902, meta(1, exe_b, &format!("{exe_b} .")));
+        procs.insert(901, meta(1, exe_a, &format!("{exe_a} .")));
+        let entries = scan_from(col_of(procs), &[]);
+        let pids: Vec<u32> = entries.iter().map(|e| e.pid).collect();
+        assert_eq!(pids, vec![901, 902], "端口键同为 0 时必须按 pid 兜底排序");
     }
 
     /// 头号目标场景：electron-vite dev 中父 node 被杀，Electron 主进程被 launchd
