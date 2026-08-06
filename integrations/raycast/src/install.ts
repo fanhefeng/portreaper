@@ -20,9 +20,8 @@
  * 一个来路不明的可执行文件绝不能留在磁盘上，更不能去执行它。
  */
 
-import { createHash } from "node:crypto";
-import { chmod, mkdir, readFile, rename, rm, writeFile } from "node:fs/promises";
-import { existsSync } from "node:fs";
+import { createHash, randomUUID } from "node:crypto";
+import { chmod, mkdir, rename, rm, writeFile } from "node:fs/promises";
 import { join } from "node:path";
 
 /** 稳定资产名 —— 与 `.github/workflows/release.yml` 的 matrix.cli_asset 一一对应。
@@ -97,10 +96,6 @@ export function installedCliPath(supportPath: string): string {
   return join(supportPath, "bin", exe);
 }
 
-export function isInstalled(supportPath: string): boolean {
-  return existsSync(installedCliPath(supportPath));
-}
-
 /**
  * 下载最新 release 的 CLI 到扩展的 supportPath，校验 sha256 后置为可执行。
  * 返回可执行文件路径。
@@ -134,8 +129,9 @@ export async function installCli(
   // 原子落盘：写同目录临时文件 → 置执行位 → rename。直接写 dest 的话，中途失败
   // （磁盘满、进程被杀）会留下一个半截却已可执行的文件，而它对下一次启动来说
   // 「存在即视为已安装」—— 校验虽拦得住，但那是白跑一趟下载（评审发现）。
+  // pid 不足以防撞名（同进程重试 / pid 复用），叠一段 UUID 保证临时名唯一
   const dest = installedCliPath(supportPath);
-  const tmp = `${dest}.${process.pid}.tmp`;
+  const tmp = `${dest}.${process.pid}.${randomUUID()}.tmp`;
   await mkdir(join(supportPath, "bin"), { recursive: true });
   try {
     await writeFile(tmp, bin);
@@ -146,15 +142,4 @@ export async function installCli(
     throw e;
   }
   return dest;
-}
-
-/** 读回已安装二进制并复核哈希（用于「我这份是不是被换掉了」的排查）。 */
-export async function verifyInstalled(supportPath: string): Promise<boolean> {
-  const p = installedCliPath(supportPath);
-  if (!existsSync(p)) return false;
-  const assetName = assetNameFor(process.platform, process.arch);
-  const sumsText = (await fetchBuffer(`${RELEASE_BASE}/${CHECKSUM_ASSET}`)).toString("utf8");
-  const expected = parseChecksums(sumsText, assetName);
-  if (!expected) return false;
-  return sha256(await readFile(p)) === expected;
 }

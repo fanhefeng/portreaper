@@ -87,24 +87,20 @@ export class SchemaMismatchError extends Error {
 /**
  * 二进制发现阶梯，顺序即优先级：
  *
- * 1. 用户在扩展偏好里显式指定的路径 —— 永远最高，用于非常规安装位置；
+ * 1. 用户在扩展偏好里显式指定的路径 —— 永远最高，用于非常规安装位置
+ *    （含开发者在本仓库 `cargo build` 出的产物）；
  * 2. 扩展自己下载并校验过的副本（supportPath）—— 常规用户走的就是这条；
  * 3. 已安装的桌面版 `.app` 内 —— 打包尚未落地，路径先留着，补上即生效；
- * 4. 从源码构建的产物 —— 开发者在本仓库 `cargo build` 后立刻可用；
- * 5. `cargo install` 的产物。
+ * 4. `cargo install` 的产物。
  *
  * **不查 `PATH`**：这里只对固定路径逐个 `existsSync`。想用 PATH 上的某一份，
  * 在扩展偏好里写出它的绝对路径。
  *
  * 唯一的候选构造点 —— `resolveCliPath` 与 `searchedLocations` 都从这里取，
  * 否则引导页会告诉用户「我找过 A、B、C」而实际找的是 A、B、C、D（曾经如此：
- * 两处各写一份，源码构建的两条路径只存在于其中一处）。
+ * 两处各写一份，部分候选只存在于其中一处）。
  */
-function cliCandidates(
-  preferredPath: string | undefined,
-  supportPath?: string,
-  repoRoot?: string,
-): string[] {
+function cliCandidates(preferredPath: string | undefined, supportPath?: string): string[] {
   const candidates: string[] = [];
   if (preferredPath && preferredPath.trim() !== "") {
     candidates.push(preferredPath.trim());
@@ -113,10 +109,6 @@ function cliCandidates(
     candidates.push(installedCliPath(supportPath));
   }
   candidates.push("/Applications/Portreaper.app/Contents/MacOS/portreaper-cli");
-  if (repoRoot) {
-    candidates.push(`${repoRoot}/target/release/portreaper-cli`);
-    candidates.push(`${repoRoot}/target/debug/portreaper-cli`);
-  }
   candidates.push(`${homedir()}/.cargo/bin/portreaper-cli`);
   return candidates;
 }
@@ -128,9 +120,8 @@ function cliCandidates(
 export function resolveCliPath(
   preferredPath: string | undefined,
   supportPath?: string,
-  repoRoot?: string,
 ): string | null {
-  for (const c of cliCandidates(preferredPath, supportPath, repoRoot)) {
+  for (const c of cliCandidates(preferredPath, supportPath)) {
     if (existsSync(c)) return c;
   }
   return null;
@@ -140,9 +131,8 @@ export function resolveCliPath(
 export function searchedLocations(
   preferredPath: string | undefined,
   supportPath?: string,
-  repoRoot?: string,
 ): string[] {
-  const candidates = cliCandidates(preferredPath, supportPath, repoRoot);
+  const candidates = cliCandidates(preferredPath, supportPath);
   // 未配置的两项在清单里要说明「为什么这条没出现」，而不是静静少一行
   if (!preferredPath || preferredPath.trim() === "") candidates.unshift("(preference not set)");
   if (!supportPath) candidates.unshift("(extension support path)");
