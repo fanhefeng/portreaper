@@ -26,6 +26,11 @@ on:
     paths-ignore:
       - "website/**"
       - "docs/**"
+  # 手动触发口。GitHub 平台故障可能留下既无法取消也无法重跑的僵尸运行
+  # （2026-08-06 事故实录：rerun 后 status=queued 但 jobs 为空，cancel 报
+  # 「已完成」、rerun 报「正在跑」、force-cancel 409「尚未入队」）——
+  # 此时需要一个不造提交就能拉起全新运行的入口。
+  workflow_dispatch:
 
 permissions:
   contents: read
