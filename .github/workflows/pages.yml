@@ -6,6 +6,9 @@ on:
     paths:
       - "website/**"
       - ".github/workflows/pages.yml"
+  # 平台故障后 dispatch 通道可能积压数小时（2026-08-06 事故：两次 dispatch 均
+  # 停在 queued 且 jobs 为空，而 push 事件 18 秒即开跑）——届时改用 push 触发：
+  # 提交任何触碰上方 paths 的改动即可。
   workflow_dispatch:
 
 # Permissions required by the GitHub Pages deployment actions.
