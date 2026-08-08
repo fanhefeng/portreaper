@@ -50,7 +50,7 @@ pnpm 探测只看父目录有没有 `pnpm-lock.yaml` + `pnpm-workspace.yaml`，�
 
 `src/cli.ts` 的 `resolveCliPath`，逐个 `existsSync` 探测；**不查 `PATH`** —— 只认下列固定路径：
 
-1. 扩展偏好里的 `portreaper-cli path`（显式指定，优先级最高）
+1. 扩展偏好里的 `Portreaper CLI Path`（显式指定，优先级最高）
 2. 扩展支持目录下自动下载并校验过的副本（首次使用时自动获取）
 3. `/Applications/Portreaper.app/Contents/MacOS/portreaper-cli`（打包尚未落地，见下）
 4. `~/.cargo/bin/portreaper-cli`
