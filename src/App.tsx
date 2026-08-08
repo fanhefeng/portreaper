@@ -25,7 +25,9 @@ import "./App.css";
  *  与 scanError（存原始码、渲染时翻译）的语义对称（评审发现）。 */
 type ActionError = { render: (t: Translator) => string };
 
-type BatchFailure = { pid: number; label: string; raw: string };
+// raw 是 invoke 的 reject 原值（结构化 KillError 或超时 sentinel），刻意不转字符串：
+// 本地化要到渲染时才做（语言可切），而结构一旦压平就再也分派不出语义分支。
+type BatchFailure = { pid: number; label: string; raw: unknown };
 
 /** 变更类 invoke（kill / 白名单）统一包超时：后端挂起时各调用方的 finally
  *  才能执行，sweeping/killingPid 不会永久卡死按钮（评审发现；scan 侧的同类
@@ -175,7 +177,9 @@ function App() {
           await new Promise((r) => setTimeout(r, 250));
           await freshScan();
         },
-        (err, tr) => tr("error.killFailed", { err: localizeKillError(String(err), tr) }),
+        // 原值直传（不套 String）：kill 错误是结构化的 {code, message?}，
+        // 先转字符串会把它压成 "[object Object]"，分派立刻退化成透传。
+        (err, tr) => tr("error.killFailed", { err: localizeKillError(err, tr) }),
       );
     } finally {
       // 只摘掉自己那一个：并发的 kill 各自收尾，互不影响对方的禁用态。
@@ -252,7 +256,7 @@ function App() {
                 startUnix: s.start_unix,
               });
             } catch (err) {
-              failures.push({ pid: s.pid, label: s.app_label, raw: String(err) });
+              failures.push({ pid: s.pid, label: s.app_label, raw: err });
             }
           }
           await new Promise((r) => setTimeout(r, 700));

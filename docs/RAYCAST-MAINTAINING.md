@@ -32,6 +32,14 @@ npm outdated --prefix integrations/raycast    # 提交 Store 前必跑
 
 `@raycast/api` 是这里唯一会实质漂移的依赖，而 Store 审核偏好较新的 API 版本。
 
+**`npm audit` 的两条 low 一律不修**（2026-08-08 复核，结论按当前形态成立）：告警指向
+`esbuild` 的「Windows 上跑开发服务器时可任意读文件」，它是 `@raycast/api` 的**传递
+构建期**依赖。`npm audit fix --force` 给出的所谓修复是把 `@raycast/api` 从 1.104.24
+**降级**到 1.104.9 —— 为一个构建工具的 Windows 开发服务器问题，降级官方 SDK，而本扩展
+`platforms` 只有 macOS、分发形态里根本不跑那个 dev server。方向完全不成比例。上游修
+要等 Raycast 自己抬 esbuild。**若哪天该告警升到 high/critical，或 esbuild 进入运行时
+依赖，再重新评估** —— 别因为「audit 是红的」就顺手降级 SDK。
+
 **为什么不交给 Dependabot**：给本目录配 npm 生态试过一次，每月必失败。Dependabot 的
 pnpm 探测只看父目录有没有 `pnpm-lock.yaml` + `pnpm-workspace.yaml`，命中就判定
 「workspace 子目录」并拒绝更新 —— 与本目录自身是不是规范的 npm 布局无关
@@ -216,12 +224,28 @@ Raycast Beta 的支持目录）对一个人造孤儿 dev server 加星，另一�
 
 待人工完成：
 
-- [ ] **上架前扫一眼 ★ 的那一跳**：Raycast 里加星后瞟一下桌面版菜单栏计数是否 2 秒内减一。
-      数据链路已实测闭合（同一个 whitelist.json、同一套 key 规则），剩下的纯粹是
-      「前端把 `is_whitelisted` 渲染成 ★」这一层，风险很低，但 README 的
-      「Shared with the desktop app」承诺了 ~2 秒，值得亲眼确认一次。
-- [ ] **提交前跑一遍** `npm run lint` + `npm run build` + `npm outdated --prefix .`
-      （最近一次 `npm outdated` 报了 `@types/node` 26.1.2 → 26.2.0，尚未升）。
+- [x] **上架前扫一眼 ★ 的那一跳** —— 2026-08-08 实测，**没通过，是真 bug，已修**。
+
+      当时的判断是「数据链路已实测闭合，剩下纯粹是前端渲染那一层，风险很低」。
+      这个判断错了：链路闭合的只有**写**方向。桌面版的 `whitelist::get_all()` 返回的
+      是进程启动时的内存快照，CLI / Raycast 加的星它**永远看不到** —— 那一行仍标红、
+      仍计入托盘、**仍留在一键清扫的目标集里**。用户刚在 Raycast 收藏的进程，会被
+      桌面版一键清扫杀掉。README 承诺的「Shared with the desktop app」在读方向是假的。
+
+      复现（就是本条 checklist 的动作）：起一个 ppid=1 的孤儿 dev 监听者 → 托盘
+      `27` 变 `28 ⚠` → CLI `whitelist add` → 磁盘与 CLI 侧都已生效，**托盘纹丝不动，
+      仍是 `28 ⚠`**，等多久都不变。
+
+      修复：`Whitelist::refresh()`（替换语义，取消星标同样传播）+ `get_all()` 每轮调它。
+      两条测试钉住：引擎语义一条、「桌面侧到底有没有调」一条。
+
+      **教训记在这里**：「风险很低、不必亲眼看」正是这条 checklist 存在的理由。
+      写方向有测试、读方向没有，而两边共用「共享状态」这一个说法，就没人再去分开验。
+- [x] **提交前跑一遍** `npm run lint` + `npm run build` + `npm outdated --prefix integrations/raycast`
+      —— 2026-08-08 全过：`ray lint` 三项 ready（ESLint/Prettier 未装是预期的，
+      见《为什么不装 ESLint / Prettier》）、`ray build` 成功、`tsc --noEmit` 干净。
+      `npm outdated` 报的 `@types/node` 26.1.2 → 26.2.0 已升，现已无过期项。
+      `npm audit` 剩两条 low，**有意不修**，理由见《依赖升级》一节。
 
       真机那类事**不是 tsc / ray build 能替你验的** —— 它们只保证代码能编译、清单合规，
       保证不了「点下去真的有反应」。Store 提交 checklist 明确要求实测 distribution build。

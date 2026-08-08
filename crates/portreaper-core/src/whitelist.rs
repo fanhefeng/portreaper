@@ -10,7 +10,7 @@
 //! 值类型让两种模型都自然：GUI 在自己那侧包一层 static 缓存（语义完全不变），
 //! CLI 每次 load / mutate / drop。
 //!
-//! # 五层防护（全部原样保留，每一层都是事故换来的）
+//! # 六层防护（全部原样保留，每一层都是事故换来的）
 //!
 //! - **原子写**：同目录临时文件 + rename，崩溃中途不会留下半个 JSON；
 //! - **损坏备份**：解析失败的旧文件先挪到 `.corrupt`，绝不让后续首次保存覆盖旧数据；
@@ -24,6 +24,12 @@
 //!   进程**共写同一份文件，而 add/remove 的落盘是「整表覆写」。常驻 GUI 的内存
 //!   快照会越来越旧，直接覆写就把 CLI 刚加的收藏抹掉。故每次修改前先取一遍磁盘
 //!   最新内容作基准，再施加本次增删（评审发现）。
+//! - **读时刷新**（`refresh`）：上一条的对偶，且**两条都不可省**。写前合并保证
+//!   常驻 GUI 不覆盖别人的改动，但它只在 GUI 自己 add/remove 时才触发；两次
+//!   mutate 之间，GUI 读到的仍是旧快照 —— 外部加的星它看不见，那一行照旧标红、
+//!   照旧计入托盘、**照旧留在一键清扫的目标集里**，用户刚收藏的进程会被清扫杀掉。
+//!   v0.8.1 带着这个缺口发过版，v0.9.0 上架 Raycast 前的跨端 ★ 验收才在真机上撞到。
+//!   教训：「共享状态」这一个说法盖住了两个方向，写方向有测试就没人再验读方向。
 //!
 //! # 为什么不上跨进程文件锁
 //!
@@ -139,6 +145,20 @@ impl Whitelist {
         if let Some(disk) = self.read_disk_entries() {
             self.entries = disk;
         }
+    }
+
+    /// 重新对齐磁盘现状 —— **读路径专用**。
+    ///
+    /// 写前合并（`add`/`remove` 里的 `merge_from_disk`）只保证「常驻 GUI 不会
+    /// 覆盖掉 CLI 刚加的星」，那是**写**方向。读方向需要这一个：常驻 GUI 的内存
+    /// 快照在两次 mutate 之间会越来越旧，不刷新的话 Raycast/CLI 加的星在桌面版
+    /// 永远不可见 —— 那一行仍标红、仍计入托盘计数、**仍留在一键清扫的目标集里**。
+    /// 用户刚在 Raycast 收藏的进程被桌面版一键清扫杀掉，是本项目最不能出的误杀。
+    ///
+    /// 语义是**替换**而非并集：取消星标同样要传播。取并集会让内存里的旧键永远
+    /// 留着，un-star 在桌面版永不生效。
+    pub fn refresh(&mut self) {
+        self.merge_from_disk();
     }
 
     fn ensure_writable(&self) -> Result<(), String> {
@@ -422,6 +442,51 @@ mod tests {
         let disk = Whitelist::load(path);
         assert!(!disk.contains("/gui/first"));
         assert!(disk.contains("/cli/second"), "删除不得波及其他进程的条目");
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    /// 上一条钉的是**写**方向（常驻实例不覆盖别人）。这条钉**读**方向：常驻实例
+    /// 在两次自身 mutate 之间也必须看得见别人的改动。
+    ///
+    /// 真机复现过的事故形态（v0.9.0 上架 Raycast 前的跨端 ★ 同步验收）：在 CLI /
+    /// Raycast 里加星，桌面版托盘计数纹丝不动 —— 那一行仍标红、仍计入托盘，
+    /// **仍留在一键清扫的目标集里**，用户刚收藏的进程会被清扫杀掉。
+    #[test]
+    fn resident_instance_sees_external_changes_without_mutating() {
+        let dir = temp_dir_for("refresh");
+        let path = dir.join("whitelist.json");
+
+        let mut resident = Whitelist::load(path.clone());
+        resident.add("/gui/kept".to_string()).unwrap();
+
+        // 另一个进程（CLI/Raycast）加星 + 取消星标，常驻实例全程没有任何 mutate
+        let mut ephemeral = Whitelist::load(path.clone());
+        ephemeral.add("/cli/starred".to_string()).unwrap();
+        ephemeral.remove("/gui/kept".to_string().as_str()).unwrap();
+
+        assert!(
+            !resident.contains("/cli/starred"),
+            "前提：不 refresh 时内存快照确实是旧的（否则本测试没在测东西）"
+        );
+
+        resident.refresh();
+
+        assert!(
+            resident.contains("/cli/starred"),
+            "外部加的星必须可见 —— 否则桌面版会把用户刚收藏的进程算进清扫目标"
+        );
+        assert!(
+            !resident.contains("/gui/kept"),
+            "外部取消的星必须同步消失 —— refresh 是替换语义，取并集会让 un-star 永不生效"
+        );
+
+        // refresh 是只读的：不得反过来把内存写回磁盘
+        let disk = Whitelist::load(path);
+        assert!(disk.contains("/cli/starred"));
+        assert!(
+            !disk.contains("/gui/kept"),
+            "refresh 不得复活已被删除的条目"
+        );
         let _ = fs::remove_dir_all(&dir);
     }
 }

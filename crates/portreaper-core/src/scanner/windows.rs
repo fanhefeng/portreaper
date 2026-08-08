@@ -463,7 +463,7 @@ fn refresh_processes(sys: &mut System) {
 }
 
 /// 创建时间 / 运行时长的净化：start_time()==0 表示读取失败（句柄受限），
-/// 此时两个值都不可信 —— start 置 None（kill 走 fail-closed 的 ERR_IDENTITY_UNKNOWN）。
+/// 此时两个值都不可信 —— start 置 None（kill 走 fail-closed 的 identity_unknown）。
 /// elapsed 不能置 0：那等价于宣称「刚启动」，会让 classify 的宽限期恒命中、把一个
 /// exe/cmd 可读但创建时间读不到的孤儿 dev server 永久钉在 Possible、永不入清扫/计数
 ///（评审发现）。创建时间未知 ≠ 刚启动 —— 置为宽限期阈值（10），既不触发宽限降级、
@@ -515,7 +515,7 @@ impl PlatformState {
             names.insert(pid_u32, proc_.name().to_string_lossy().into_owned());
             // 句柄受限（受保护/提权）进程 sysinfo 读不到创建时间时返回 0 ——
             // 必须净化（评审发现）：start_unix=Some(0) 会让 kill 身份校验恒以
-            // ERR_PID_REUSED 误拒（语义应为缺令牌的 ERR_IDENTITY_UNKNOWN）、
+            // pid_reused 误拒（语义应为缺令牌的 identity_unknown）、
             // elapsed 变成 ~56 年的荒谬时长、并污染 direct_orphan 的槽位复用
             // 比较（start=0 的父或子会伪造时间倒挂）。None 走 fail-closed 语义。
             let (start_unix, elapsed_secs) = sanitize_times(proc_.start_time(), proc_.run_time());
@@ -1096,7 +1096,7 @@ mod tests {
     }
 
     /// 回归（评审发现）：句柄受限进程 start_time()==0 时必须净化 ——
-    /// 否则 kill 校验恒报 ERR_PID_REUSED（应为 ERR_IDENTITY_UNKNOWN）、
+    /// 否则 kill 校验恒报 pid_reused（应为 identity_unknown）、
     /// UI 显示 ~56 年运行时长。elapsed 净化为宽限期阈值（非 0）：未知创建时间
     /// 不得被当作「刚启动」而触发宽限降级、令受保护孤儿永不入清扫（评审发现）。
     #[test]

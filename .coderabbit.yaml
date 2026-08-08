@@ -183,9 +183,21 @@ reviews:
     - path: "crates/portreaper-core/src/platform.rs"
       instructions: |
         Kill path. `kill_process(pid, force, start_unix)` re-reads process
-        creation time and refuses with ERR_PID_REUSED if it moved by >5s —
-        killing a recycled PID is a data-loss bug. Any change that skips,
+        creation time and refuses with `KillError::PidReused` if it moved by
+        >5s — killing a recycled PID is a data-loss bug. Any change that skips,
         weakens, or widens that tolerance is a serious finding.
+
+        Failures cross EVERY IPC boundary as the serde form `{code, message?}`
+        (`#[serde(tag = "code", rename_all = "snake_case")]`) — the Tauri
+        command returns `Result<(), KillError>` and the CLI writes the same
+        value to stderr. The `code` strings are a cross-process contract with
+        two consumers (`src/model.ts` localizeKillError, `integrations/raycast/
+        src/cli.ts` killErrorMessage): adding a variant obliges both switches
+        plus the `wire_contract_tests` table. Flag any reintroduction of
+        `ERR_*:`-prefixed error strings or of `includes()`-style substring
+        matching on error text — that legacy layer was deliberately deleted,
+        and its failure mode was silent (a missed frontend just degrades to
+        dumping raw English at the user).
 
         Windows has a single Terminate button on purpose: there is no reliable
         graceful kill for detached console processes. Do not accept added
@@ -200,6 +212,14 @@ reviews:
 
         - `commands.rs` fns must stay thin wrappers; new `#[tauri::command]`
           fns must be registered in `lib.rs` invoke_handler!.
+        - `whitelist.rs` keeps a process-wide INSTANCE, never cached CONTENTS:
+          `get_all()` must call `refresh()` on every scan. The whitelist is
+          shared across three frontend processes; a stale read means a star
+          added in Raycast stays invisible to the desktop app — the row keeps
+          counting in the tray and KEEPS SITTING IN THE SWEEP TARGET SET, so
+          one-click sweep kills what the user just starred. Flag any change
+          that reintroduces content caching (mtime gates included) or that
+          turns `refresh` into a union — un-starring must propagate too.
         - `paths.rs` scopes every persisted dir by build profile via
           cfg(debug_assertions) — no env vars — so dev never pollutes installed
           app data.

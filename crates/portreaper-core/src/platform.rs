@@ -6,8 +6,10 @@
 //! 多一份 `startsWith("ERR_…")` 解析、且没有任何编译期保护 —— 加一个变体时
 //! 漏改某个前端，那里只会安静地把语义错误当成 OS 原文透传。
 //!
-//! 旧的 `ERR_*:` 字符串形态由 [`KillError::to_legacy_string`] 保留，供尚未
-//! 迁移到结构化错误的 IPC 边界使用（见 `src-tauri/src/commands.rs`）。
+//! **所有 IPC 边界都吃 serde 形态 `{code, message?}`**：Tauri 命令直接返回
+//! `Result<(), KillError>`（`src-tauri/src/commands.rs`），CLI 把同一个值
+//! `serde_json` 写到 stderr（`portreaper-cli/src/main.rs`）。v0.9.0 之前桌面侧
+//! 曾走一层 `ERR_*:` 前缀字符串的降级兼容层，已随本次统一删除。
 
 use std::fmt;
 
@@ -42,30 +44,23 @@ impl KillError {
             message: message.into(),
         }
     }
-
-    /// 旧 IPC 契约的字符串形态。前端以 `includes("ERR_…")` 匹配，故这些 token
-    /// **必须逐字保留**（`src/model.ts` 的 killErrorText 依赖它们）。
-    pub fn to_legacy_string(&self) -> String {
-        match self {
-            Self::IdentityUnknown => {
-                "ERR_IDENTITY_UNKNOWN: missing identity token, rescan first".to_string()
-            }
-            Self::ProcessGone => "ERR_PROCESS_GONE: process no longer exists".to_string(),
-            Self::PidReused => {
-                "ERR_PID_REUSED: process identity changed (PID was reused), rescan and retry"
-                    .to_string()
-            }
-            Self::AccessDenied => {
-                "ERR_ACCESS_DENIED: not permitted to terminate (protected process?)".to_string()
-            }
-            Self::Os { message } => message.clone(),
-        }
-    }
 }
 
+/// 面向**日志与 `std::error::Error`** 的英文原文，不是 IPC 契约 —— 前端的
+/// 用户可见文案一律由 `code` 分派本地化，绝不解析这里的句子。故意不带任何
+/// `ERR_` 前缀：前缀曾是前端 `includes()` 的匹配依据，留着只会诱使人再写一次
+/// 字符串匹配。
 impl fmt::Display for KillError {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        f.write_str(&self.to_legacy_string())
+        match self {
+            Self::IdentityUnknown => f.write_str("missing identity token, rescan first"),
+            Self::ProcessGone => f.write_str("process no longer exists"),
+            Self::PidReused => {
+                f.write_str("process identity changed (PID was reused), rescan and retry")
+            }
+            Self::AccessDenied => f.write_str("not permitted to terminate (protected process?)"),
+            Self::Os { message } => f.write_str(message),
+        }
     }
 }
 
@@ -129,7 +124,7 @@ fn current_start_unix(pid: u32) -> Result<Option<u64>, String> {
         .duration_since(UNIX_EPOCH)
         .map(|d| d.as_secs())
         .unwrap_or(0);
-    // 解析失败返回 Ok(None) → 上层 kill 走 ERR_PROCESS_GONE 让用户重扫,绝不静默把
+    // 解析失败返回 Ok(None) → 上层 kill 走 process_gone 让用户重扫,绝不静默把
     // 进程当成「刚启动」(current ≈ now 会绕过 ±5s PID 复用容差)。
     Ok(crate::scanner::parse_etime_checked(etime).map(|elapsed| now.saturating_sub(elapsed)))
 }
@@ -203,45 +198,54 @@ pub fn kill(pid: u32, _force: bool, expected_start: Option<u64>) -> Result<(), K
 }
 
 #[cfg(test)]
-mod legacy_contract_tests {
+mod wire_contract_tests {
     use super::KillError;
 
-    /// `src/model.ts` 的 killErrorText 用 `err.includes("ERR_…")` 分派本地化文案。
-    /// 这些 token 是**跨进程契约**：改一个字母，前端不会报错，只会安静地把语义
-    /// 错误当成 OS 原文原样吐给用户（英文、且带实现细节）。故逐条钉死。
+    /// `code` 是**唯一的跨进程契约**：桌面前端（`src/model.ts` localizeKillError）
+    /// 与 Raycast（`integrations/raycast/src/cli.ts` killErrorMessage）都按它分派
+    /// 本地化文案。改一个字母，两侧都不会报错，只会安静地退化成「透传 OS 原文」
+    /// —— 用户看到的是英文实现细节。故四个语义码逐条钉死。
+    ///
+    /// 新增变体时这张表**必须同步扩**，且两个前端的 switch 都要加分支。
     #[test]
-    fn legacy_tokens_match_frontend_matchers() {
+    fn semantic_codes_match_frontend_matchers() {
         let cases = [
-            (KillError::IdentityUnknown, "ERR_IDENTITY_UNKNOWN"),
-            (KillError::ProcessGone, "ERR_PROCESS_GONE"),
-            (KillError::PidReused, "ERR_PID_REUSED"),
-            (KillError::AccessDenied, "ERR_ACCESS_DENIED"),
+            (KillError::IdentityUnknown, r#"{"code":"identity_unknown"}"#),
+            (KillError::ProcessGone, r#"{"code":"process_gone"}"#),
+            (KillError::PidReused, r#"{"code":"pid_reused"}"#),
+            (KillError::AccessDenied, r#"{"code":"access_denied"}"#),
         ];
-        for (err, token) in cases {
-            let s = err.to_legacy_string();
-            assert!(
-                s.contains(token),
-                "{err:?} 的兼容字符串必须含 {token}，实际: {s}"
-            );
+        for (err, expected) in cases {
+            let json = serde_json::to_string(&err).unwrap();
+            assert_eq!(json, expected, "{err:?} 的 wire 形态变了，前端会静默退化");
         }
     }
 
-    /// OS 原文不得被套上任何 `ERR_` 前缀 —— 那会让前端把一条无语义的系统错误
-    /// 误判成某个语义分支（`includes` 是子串匹配，不看位置）。
+    /// `Os` 变体多带一个 `message`：它无语义，前端只能原样展示，故原文必须
+    /// 完整过河（截断/改写会让用户拿不到可搜索的系统错误）。
     #[test]
-    fn os_errors_pass_through_verbatim() {
-        let err = KillError::os("Operation not permitted");
-        assert_eq!(err.to_legacy_string(), "Operation not permitted");
-        assert!(!err.to_legacy_string().contains("ERR_"));
+    fn os_variant_carries_verbatim_message() {
+        let json = serde_json::to_string(&KillError::os("Operation not permitted")).unwrap();
+        assert_eq!(json, r#"{"code":"os","message":"Operation not permitted"}"#);
     }
 
-    /// 结构化形态的 serde 键名同样是契约（未来的 CLI/Raycast 直接吃 JSON）。
+    /// Display 面向日志，**不得**再带 `ERR_` 前缀 —— 那是已删除的旧字符串契约的
+    /// 残迹，留着会诱使人在前端重新写一次 `includes()` 匹配。
     #[test]
-    fn serializes_as_tagged_snake_case() {
-        let json = serde_json::to_string(&KillError::PidReused).unwrap();
-        assert_eq!(json, r#"{"code":"pid_reused"}"#);
-        let json = serde_json::to_string(&KillError::os("boom")).unwrap();
-        assert_eq!(json, r#"{"code":"os","message":"boom"}"#);
+    fn display_is_log_text_without_legacy_prefix() {
+        for err in [
+            KillError::IdentityUnknown,
+            KillError::ProcessGone,
+            KillError::PidReused,
+            KillError::AccessDenied,
+            KillError::os("boom"),
+        ] {
+            assert!(
+                !err.to_string().contains("ERR_"),
+                "{err:?} 的 Display 仍带旧前缀"
+            );
+        }
+        assert_eq!(KillError::os("boom").to_string(), "boom");
     }
 }
 
@@ -250,7 +254,7 @@ mod live_tests {
     use std::time::{SystemTime, UNIX_EPOCH};
 
     /// 真机验证 kill 身份校验（默认忽略：cargo test kill_identity -- --ignored）：
-    /// 错误令牌必须拒绝（ERR_PID_REUSED）、缺令牌必须拒绝（ERR_IDENTITY_UNKNOWN）、
+    /// 错误令牌必须拒绝（pid_reused）、缺令牌必须拒绝（identity_unknown）、
     /// 正确令牌应放行并真正终止目标。
     #[test]
     #[ignore]

@@ -1,6 +1,6 @@
 use std::sync::{Mutex, PoisonError};
 
-use portreaper_core::{kill, ProcessEntry, Scanner};
+use portreaper_core::{kill, KillError, ProcessEntry, Scanner};
 use tauri::{AppHandle, Manager};
 
 use crate::whitelist;
@@ -46,17 +46,20 @@ pub async fn scan_ports(app: AppHandle) -> Result<Vec<ProcessEntry>, String> {
 /// 防止 scan 与点击之间 PID 被复用导致误杀（Windows 复用尤其激进）。
 /// async 理由同 scan_ports（macOS 分支 shell 出 ps + kill 两个子进程）。
 ///
-/// 引擎返回结构化的 `KillError`，这里降级成旧的 `ERR_*:` 字符串形态过 IPC ——
-/// 前端 `src/model.ts` 仍以 `includes("ERR_…")` 分派本地化文案。**兼容层是
-/// 过渡性的**：待前端改吃 `{code, message}` 后，这里直接返回 KillError 的
-/// serde 形态，`to_legacy_string` 随之删除（token 由 core 的
-/// legacy_contract_tests 钉住，改动前先看那组测试）。
+/// 错误直接返回引擎的 `KillError`：Tauri 按 serde 形态 `{code, message?}` 过 IPC，
+/// 与 CLI 写给 Raycast 的 stderr **同一个值、同一套 code**（v0.9.0 统一，此前桌面
+/// 侧多一层 `ERR_*:` 字符串降级）。前端按 `code` 分派本地化，不解析人类文案。
+///
+/// spawn_blocking 自身的 join 失败（panic / 运行时关停）无 kill 语义，归入
+/// `Os` 变体——前端会把它当无语义系统错误原样展示，正确：这不是「杀不掉」的
+/// 四种已知原因之一，冒充任何一个都会给出误导性的处置建议。
 #[tauri::command]
-pub async fn kill_process(pid: u32, force: bool, start_unix: Option<u64>) -> Result<(), String> {
+pub async fn kill_process(pid: u32, force: bool, start_unix: Option<u64>) -> Result<(), KillError> {
     tauri::async_runtime::spawn_blocking(move || kill(pid, force, start_unix))
         .await
-        .map_err(|e| format!("kill task failed: {e}"))?
-        .map_err(|e| e.to_legacy_string())
+        .map_err(|e| KillError::Os {
+            message: format!("kill task failed: {e}"),
+        })?
 }
 
 /// 前端平台感知（驱动平台分叉的文案与按钮布局），不引入额外 JS 插件。
