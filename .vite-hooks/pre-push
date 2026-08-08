@@ -19,7 +19,7 @@ echo "pre-push: 正在跑 CI 门禁（跳过请用 VITE_GIT_HOOKS=0）"
 
 # ---- 前端 ----
 pnpm exec vp check
-pnpm exec tsc --noEmit
+pnpm run typecheck
 pnpm exec vp test run
 pnpm exec vp build
 
@@ -36,8 +36,17 @@ node --test scripts/*.test.mjs
 node scripts/check-reason-parity.mjs
 node scripts/check-release-assets.mjs
 node scripts/check-paths-parity.mjs
+node scripts/check-toolchain-parity.mjs
+node scripts/check-model-parity.mjs
 # 五处版本清单自洽（以 package.json 为基准）—— 与 ci.yml 的同名步骤对齐
 node scripts/bump-version.mjs --check "$(node -p "require('./package.json').version")"
+
+# ---- Raycast 扩展（条件跑） ----
+# CI 无条件跑；本地只在 node_modules 已存在时跑（不为一次推送强加 ~30s 的
+# npm ci）。没装过就交给 CI 兜底 —— 这是三层门禁里唯一允许的本地缺口。
+if [ -d integrations/raycast/node_modules ]; then
+  npm run typecheck --prefix integrations/raycast
+fi
 
 # ---- 网站 ----
 # ci.yml 对 website/** 用了 paths-ignore，这几个文件唯一的门禁在 pages.yml ——

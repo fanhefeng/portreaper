@@ -13,6 +13,14 @@ updates:
     schedule:
       interval: weekly
 
+  # integrations/raycast 是普通 npm 布局（package-lock.json，无 catalog:），
+  # updater 解析得了 —— 上面「npm 生态已移除」的理由只适用于仓库根的
+  # vite-plus catalog 布局，不适用于这里。@raycast/api 的漂移否则无人提醒。
+  - package-ecosystem: npm
+    directory: /integrations/raycast
+    schedule:
+      interval: monthly
+
   # workspace 根是仓库根（Cargo.lock 也在那里）。指到 /src-tauri 会让 updater
   # 看不见 crates/portreaper-core 的依赖，也读不到共享 lockfile。
   - package-ecosystem: cargo
