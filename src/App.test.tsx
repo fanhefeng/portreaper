@@ -340,19 +340,25 @@ describe("kill & sweep flow", () => {
     fireEvent.click(screen.getByText("Terminate"));
     await advance(0);
 
-    // kill 5151（也挂起）—— killingPid 现在是 5151
+    // kill 5151（也挂起）
     fireEvent.click(screen.getAllByText("Kill")[1]);
     fireEvent.click(screen.getByText("Terminate"));
     await advance(0);
 
-    // 4242 先完成：函数式更新只清自己的标记，5151 的按钮必须仍处于禁用
+    // 两个请求都在飞 ⇒ 两行都必须禁用。单值 killingPid 会在这里破功：
+    // 后发起的 5151 覆盖掉 4242，4242 的按钮恢复可点，允许对飞行中的它再发一次 kill。
+    expect((screen.getAllByText("Kill")[0] as HTMLButtonElement).disabled).toBe(true);
+    expect((screen.getAllByText("Kill")[1] as HTMLButtonElement).disabled).toBe(true);
+
+    // 4242 先完成：只摘自己的标记，5151 仍在飞 ⇒ 仍禁用，4242 恢复可点
     gates[4242]?.();
     await advance(400);
-    const killBtnB = screen.getAllByText("Kill")[1] as HTMLButtonElement;
-    expect(killBtnB.disabled).toBe(true);
+    expect((screen.getAllByText("Kill")[1] as HTMLButtonElement).disabled).toBe(true);
+    expect((screen.getAllByText("Kill")[0] as HTMLButtonElement).disabled).toBe(false);
 
     gates[5151]?.();
     await advance(400);
+    expect((screen.getAllByText("Kill")[1] as HTMLButtonElement).disabled).toBe(false);
   });
 });
 

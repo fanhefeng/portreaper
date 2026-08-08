@@ -175,11 +175,11 @@ distribution build 通过、`tsc --noEmit` 零错误。
 - [x] 无 analytics、无 Keychain 访问、UI 全英文
 - [x] 二进制走「可信源下载 + SHA-256 校验 + 失败即删 + UI 明示」——
       官方政策点名允许的形态（先例：glean-search #28995、lumen #28909、speedtest）
+- [x] **`author` 字段** = Raycast 账号 handle `fhf1121`（不是 GitHub 用户名）——
+      2026-08 已核对确认。
 
 待人工完成：
 
-- [x] **`author` 字段** = Raycast 账号 handle `fhf1121`（不是 GitHub 用户名）——
-      2026-08 已核对确认。
 - [ ] **真机 QA 的剩余两项** —— 其余场景（载入、扫描分组、置信度、详情面板、动作面板、
       终止确认、搜索过滤、无端口孤儿、首次下载 + SHA-256 校验）已在 Raycast Beta 实测通过，
       逐项结果见上节《真机验证状态》。`npm run dev` 后补跑这两条：

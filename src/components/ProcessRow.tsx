@@ -14,11 +14,11 @@ import { DESC_KEYS, describeEntry, splitLabel } from "../describe";
 import { ProcessDetail } from "./ProcessDetail";
 
 /** 整表共享的行上下文：App 用 useMemo 保持引用稳定（回调全部 useCallback），
- *  只在 os/lang/killingPid/sweeping 变化时新建 —— memo 比较靠它的**对象身份**。 */
+ *  只在 os/lang/killingPids/sweeping 变化时新建 —— memo 比较靠它的**对象身份**。 */
 export type RowShared = {
   os: Os | null;
   lang: Lang;
-  killingPid: number | null;
+  killingPids: ReadonlySet<number>;
   sweeping: boolean;
   onAskKill: (e: ProcessEntry, force: boolean) => void;
   onToggleWhitelist: (e: ProcessEntry) => void;
@@ -34,7 +34,7 @@ export type RowProps = {
 
 // Row 用 memo + 自定义比较:轮询每 2s 产生全新 entries 数组,e 引用必变,默认
 // 浅比较失效;这里对 e 做内容比较(serde 字段序固定 → JSON.stringify 稳定),
-// shared 按对象身份比较 —— App 的 useMemo 保证只有 os/lang/killingPid/sweeping
+// shared 按对象身份比较 —— App 的 useMemo 保证只有 os/lang/killingPids/sweeping
 // 真正变化时才换新对象。仅当本行数据或共享上下文变化才重渲染(否则一行 ~50 条
 // 正则 + 整棵 JSX 每 2s 白跑)。
 //
@@ -62,7 +62,7 @@ function RowImpl({ e, expanded, shared }: RowProps) {
   const {
     os,
     lang,
-    killingPid,
+    killingPids,
     sweeping,
     onAskKill,
     onToggleWhitelist,
@@ -102,7 +102,7 @@ function RowImpl({ e, expanded, shared }: RowProps) {
   const morePorts = e.ports.length - shownPorts.length;
   // 清扫进行中禁用全部行内终止按钮（评审发现）：批量循环正逐个 kill，
   // 此时对同一进程发起第二次 kill 只会制造一条多余的失败横幅
-  const killing = killingPid === e.pid || sweeping;
+  const killing = killingPids.has(e.pid) || sweeping;
   // ★/☆ 字形不构成可用的读屏按钮名（会读作 "black star"）——
   // aria-label 与 title 同源，收藏/取消收藏的动作语义跟随语言（评审发现）
   const starTip = e.is_whitelisted ? t("star.remove.tip") : t("star.add.tip");
