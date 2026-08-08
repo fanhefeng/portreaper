@@ -45,12 +45,15 @@ pnpm 探测只看父目录有没有 `pnpm-lock.yaml` + `pnpm-workspace.yaml`，�
 1. 扩展偏好里的 `portreaper-cli path`（显式指定，优先级最高）
 2. 扩展支持目录下自动下载并校验过的副本（首次使用时自动获取）
 3. `/Applications/Portreaper.app/Contents/MacOS/portreaper-cli`（打包尚未落地，见下）
-4. `<repo>/target/release/portreaper-cli`、`<repo>/target/debug/portreaper-cli`（开发构建）
-5. `~/.cargo/bin/portreaper-cli`
+4. `~/.cargo/bin/portreaper-cli`
+
+**没有 `<repo>/target/...` 这一档**，尽管开发时很想有：扩展跑在 Raycast 里，
+`process.cwd()` 是 Raycast 的目录，仓库在哪儿无从得知；写死绝对路径又只对本机有效。
+本机调试请走第 1 项（偏好里填 `target/release/portreaper-cli` 的绝对路径）。
 
 全部落空时走 `src/install.ts` 自动下载 + SHA-256 校验（Store 政策明确要求
 "Avoid asking users to perform additional downloads"，且下载必须带哈希校验）。
-下载失败才渲染引导页，列出找过的位置。
+下载失败同样落到引导页（`DownloadFailedError`，见下），列出找过的位置。
 
 > **随 `.app` 分发尚未实现。** Tauri 的 `externalBin` / `bundle.resources` 都要求文件在
 > dev 时也存在，会给日常 `pnpm tauri dev` 加一道脆弱前置；且完整 release 流程无法本地
@@ -164,11 +167,27 @@ distribution build 通过、`tsc --noEmit` 零错误。
 `filtering={false}` 之后那页不再出现，缺了就是一片空白（已补 `List.EmptyView`）。
 
 **首次运行的下载链路已端到端验证**（2026-08）：把查找阶梯上的所有副本移开
-（扩展支持目录 + `target/release` + `target/debug`）制造「全新用户」环境后重开命令，
+（扩展支持目录，以及偏好里若填过路径则一并清掉）制造「全新用户」环境后重开命令，
 扩展自动从 GitHub Release 取回 `portreaper-cli-macos-arm64` 并落盘，
 其 SHA-256 与发布的 `portreaper-cli-SHA256SUMS` **逐字节一致**，随后正常渲染列表。
 
-**仍未验证**（需要人工补跑）：断网时的引导页、星标与桌面版的双向同步。
+**星标与桌面版的双向同步已验证**（2026-08）：拿扩展**实际使用的那个副本**
+（`~/Library/Application Support/com.raycast-x.macos/extensions/portreaper/bin/portreaper-cli`，
+Raycast Beta 的支持目录）对一个人造孤儿 dev server 加星，另一个 release 二进制
+（`target/release`）立刻在 `whitelist list` 里读到，重新 `scan` 那一行
+`is_whitelisted=true` / `is_zombie_suspect=false` 且 `zombie_reasons` 仍完整列出；
+反向从 `target/release` 侧移除，扩展侧随即读到空表。两者写的是同一个
+`~/Library/Application Support/com.fhf.portreaper/whitelist.json`。
+桌面版 GUI 启动时的 `assert_matches_tauri` 未报错，且 v0.7.1 与 v0.8.1 的
+`whitelist_key` 推导逐字节相同 —— 装着旧版桌面版也不影响互认。
+（纯视觉那一跳 ★ 仍建议上架前扫一眼，但数据链路已闭合。）
+
+**断网时的引导页已修复并验证**（2026-08）：此前 `fetch` 的失败原样冒泡，用户看到的
+是一句 `fetch failed`（超时则是 `The operation was aborted due to timeout`），既非引导页
+也无从下手 —— 与本文档上面写的「下载失败落到引导页」不符。现由 `DownloadFailedError`
+归一（断网/DNS/超时/代理 4xx/资产 404 全部命中，逐项实测），UI 落到引导页并显示
+`getaddrinfo ENOTFOUND github.com` 这类有指向性的原因。同时确认安全边界未被吞掉：
+校验和不匹配仍抛 `ChecksumMismatchError`、走专属错误页、不留残留文件。
 
 > 造孤儿进程的办法（复现用）：`cd /tmp/demo-app && nohup node dev-server.js &` ——
 > 启动它的 shell 一退出，node 即被 launchd 收养成 ppid==1 的孤儿，正是引擎要抓的形态。
@@ -190,18 +209,21 @@ distribution build 通过、`tsc --noEmit` 零错误。
 - [x] **`author` 字段** = Raycast 账号 handle `fhf1121`（不是 GitHub 用户名）——
       2026-08 已核对确认。
 
+- [x] **真机 QA** —— 载入、扫描分组、置信度、详情面板、动作面板、终止确认、搜索过滤、
+      无端口孤儿、首次下载 + SHA-256 校验已在 Raycast Beta 实测；星标双向同步与断网
+      引导页于 2026-08 补验（断网那条当时**没通过**，改掉后才过 —— 见上节）。
+      逐项结果见《真机验证状态》。
+
 待人工完成：
 
-- [ ] **真机 QA 的剩余两项** —— 其余场景（载入、扫描分组、置信度、详情面板、动作面板、
-      终止确认、搜索过滤、无端口孤儿、首次下载 + SHA-256 校验）已在 Raycast Beta 实测通过，
-      逐项结果见上节《真机验证状态》。`npm run dev` 后补跑这两条：
+- [ ] **上架前扫一眼 ★ 的那一跳**：Raycast 里加星后瞟一下桌面版菜单栏计数是否 2 秒内减一。
+      数据链路已实测闭合（同一个 whitelist.json、同一套 key 规则），剩下的纯粹是
+      「前端把 `is_whitelisted` 渲染成 ★」这一层，风险很低，但 README 的
+      「Shared with the desktop app」承诺了 ~2 秒，值得亲眼确认一次。
+- [ ] **提交前跑一遍** `npm run lint` + `npm run build` + `npm outdated --prefix .`
+      （最近一次 `npm outdated` 报了 `@types/node` 26.1.2 → 26.2.0，尚未升）。
 
-      | 场景 | 看什么 |
-      |---|---|
-      | 星标双向同步 | 在 Raycast 加星 → 桌面版 2 秒内是否出现 ★（反向再试一次）。README 的「Shared with the desktop app」按这个时延写死了承诺，验不过就得回去改措辞 |
-      | 断网 | 断网后以「全新用户」状态（挪走查找阶梯上的所有 CLI 副本）首次运行，是否渲染引导页而不是白屏或崩溃 |
-
-      这两条**都不是 tsc / ray build 能替你验的** —— 它们只保证代码能编译、清单合规，
+      真机那类事**不是 tsc / ray build 能替你验的** —— 它们只保证代码能编译、清单合规，
       保证不了「点下去真的有反应」。Store 提交 checklist 明确要求实测 distribution build。
 - [x] **`metadata/` 截图** —— 4 张，2000×1250 sRGB PNG，浅色主题，`ray lint` 的
       "validate extension metadata" 已通过：
