@@ -46,6 +46,18 @@ pnpm exec vp check
 
 This confirms `Cargo.lock` is consistent after the bump and that the crate still compiles. Commit any lockfile changes it produces. `vp check` guards the bumped manifests' formatting — the v0.7.0 release turned main's CI red because the (since-fixed) bump script re-serialized `tauri.conf.json` in a non-oxfmt style; if it ever flags something, run `pnpm exec vp check --fix` and include it in the release commit.
 
+> **Tauri Rust/npm version parity.** Every tauri part is a *pair* — a Rust crate
+> and an npm package (`tauri`/`@tauri-apps/api`, `tauri-plugin-log`/`@tauri-apps/plugin-log`, …).
+> `tauri build` **refuses to build** when a pair's major.minor differ, and that check
+> exists nowhere else: neither CI's `Check` leg nor the pre-push hook runs `tauri build`,
+> so a mismatch sails through every gate and detonates on all three release build legs
+> at once, *after* the draft release has been created. This is not hypothetical — the
+> first v0.9.0 tag failed exactly this way (dependabot bumped Rust `tauri-plugin-log`
+> to 2.9.0; **dependabot structurally cannot touch the npm side**, since cargo and npm
+> are separate ecosystems to it). `node scripts/check-tauri-parity.mjs` now guards this
+> and runs in CI + pre-push, so an ordinary push catches it. **When a dependabot cargo
+> PR touches any `tauri*` crate, check its npm counterpart in the same commit.**
+
 ### 3. Commit, tag, push
 
 ```bash
@@ -89,6 +101,22 @@ Pushing the tag triggers `release.yml`, which runs four stages:
 ### 5. If the publish job fails
 
 The release is created as a **draft** and only published in the final `publish` job. **If `publish` fails, the release stays a draft** and the stable links 404. Fix the cause, then **re-run only the failed job** from the Actions UI (no new tag needed). Do not push a second tag for the same version — re-running the job is the supported path.
+
+### 6. If a *build* leg fails (needs a code fix)
+
+Different from step 5: re-running is useless when the fix is a commit, not a retry.
+Because nothing was published (the release is still a draft), the version number is
+**not** burned — reuse it rather than skipping to the next patch:
+
+```bash
+gh release delete vX.Y.Z --yes     # remove the draft
+git push --delete origin vX.Y.Z    # remove the remote tag
+git tag -d vX.Y.Z                  # remove the local tag
+# ... commit the fix on main, then re-tag and push as in step 3
+```
+
+Only bump to a new version if the old tag was ever **published** — a published tag is
+immutable in users' eyes (download links, issue reports, `--version` output).
 
 ## Future: code signing
 

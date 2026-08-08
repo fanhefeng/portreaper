@@ -169,6 +169,14 @@ jobs:
         if: runner.os == 'macOS'
         run: node scripts/check-model-parity.mjs
 
+      # tauri 的每个部件都是 Rust crate + npm 包一对，major.minor 不一致会让
+      # `tauri build` 直接拒绝构建。本 job 与 pre-push 都不跑 tauri build（太慢），
+      # 所以这类不一致能一路全绿合进 main，直到 push tag 后三条 release 构建腿
+      # 同时炸掉 —— v0.9.0 就这么炸过一次（dependabot 只抬得动 Rust 侧）。
+      - name: Tauri Rust/npm version parity check
+        if: runner.os == 'macOS'
+        run: node scripts/check-tauri-parity.mjs
+
       # integrations/raycast 是独立 npm 项目（不在 pnpm workspace 内），此前
       # 完全游离于 CI —— 而它承载扩展里最敏感的逻辑（下载/校验/执行二进制）。
       # 只做 typecheck，不 ray build（无 Raycast 运行时）。

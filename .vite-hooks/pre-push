@@ -38,6 +38,9 @@ node scripts/check-release-assets.mjs
 node scripts/check-paths-parity.mjs
 node scripts/check-toolchain-parity.mjs
 node scripts/check-model-parity.mjs
+# tauri 的 Rust crate ↔ npm 包必须同 major.minor，否则 `tauri build` 拒绝构建。
+# 这里和 CI 都不跑 tauri build（太慢），不拦就要等到 push tag 才发现（v0.9.0 的教训）。
+node scripts/check-tauri-parity.mjs
 # 五处版本清单自洽（以 package.json 为基准）—— 与 ci.yml 的同名步骤对齐
 node scripts/bump-version.mjs --check "$(node -p "require('./package.json').version")"
 
