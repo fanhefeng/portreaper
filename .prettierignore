@@ -9,5 +9,6 @@
 # （无分号、属性名加引号）。它虽然入库（Raycast 官方模板如此，且 tsc 需要它），
 # 但**是生成物**：交给 oxfmt 管就会陷入「ray build 改回去 / vp check --fix 再改回来」
 # 的往复 churn —— 与 integrations/raycast 不装 Prettier 的理由同源
-# （见 integrations/raycast/MAINTAINING.md）。生成文件不进格式门禁。
+# （见 docs/RAYCAST-MAINTAINING.md —— 维护文档一律放 docs/，不能进 ray publish
+# 会原样提交的扩展目录）。生成文件不进格式门禁。
 integrations/raycast/raycast-env.d.ts
