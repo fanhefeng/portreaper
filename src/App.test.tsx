@@ -1,9 +1,12 @@
-// App 错误通道回归测试（评审发现的高危 UX bug）：
-// 后台 2s 轮询成功后曾无条件 setError(null)，把 kill / 清扫 / 收藏的失败
-// 提示在用户看清之前静默冲掉。修复后错误分两路：
-//   - scanError：扫描错误，下一次成功轮询自动清除（自愈语义）；
-//   - actionError：操作错误，只能用户点击关闭。
-// 本文件用假 invoke + 假定时器完整走一遍「kill 失败 → 多轮成功轮询」流程。
+// App 容器的行为回归测试，按行为域分组（各 describe 头注释交代来历）：
+//   - error channels：扫描/操作双错误通道的展示与清除语义；
+//   - kill & sweep flow：单杀与批量清扫的范围、超时、并发防护；
+//   - whitelist：星标键的选择、旧键清理、落盘后的刷新语义；
+//   - search & filter：过滤子集与全局结论的边界；
+//   - platform variance：macOS/Windows 的按钮布局分叉。
+// 基建统一：假 invoke 路由（route）+ 假定时器（advance）+ 共享 serde 夹具
+// （test-fixtures.ts makeEntry）—— 整棵渲染覆盖容器编排；useScan 的轮询并发
+// 语义另有 useScan.test.ts 直接单测。
 import { describe, it, expect, vi, beforeEach, afterEach } from "vite-plus/test";
 import { render, screen, fireEvent, act, cleanup } from "@testing-library/react";
 
@@ -17,41 +20,13 @@ vi.mock("@tauri-apps/plugin-opener", () => ({
 import { invoke } from "@tauri-apps/api/core";
 import { ACTION_TIMEOUT_MS, SCAN_TIMEOUT_MS } from "./model";
 import { setLang } from "./i18n";
+import { makeEntry } from "./test-fixtures";
 import App from "./App";
 
 const mockInvoke = vi.mocked(invoke);
 
-/** 一行可被 kill 的 Confirmed 嫌疑（serde 契约的最小镜像），字段可覆盖 */
-function suspectEntry(over: Record<string, unknown> = {}) {
-  return {
-    pid: 4242,
-    ppid: 1,
-    ports: [5173],
-    command: "node",
-    full_command: "node /Users/x/proj/node_modules/vite/bin/vite.js",
-    exe_path: "/opt/homebrew/bin/node",
-    app_label: "proj · vite.js",
-    app_category: "dev-script",
-    parent_chain: [],
-    launcher_label: "launchd",
-    user: "x",
-    tty: "",
-    elapsed_secs: 3600,
-    start_unix: 1000,
-    cpu_percent: 0,
-    cpu_percent_tree: 0,
-    mem_mb: 10,
-    state: "S",
-    is_zombie_suspect: true,
-    confidence: "confirmed",
-    zombie_reasons: ["ppid1_orphan", "dev_server_keyword"],
-    is_whitelisted: false,
-    // 引擎随每行产出的白名单键（前端直读、不重推）。exe_path 含路径分隔符 ⇒ 用它。
-    whitelist_key: "/opt/homebrew/bin/node",
-    duplicate_of: null,
-    ...over,
-  };
-}
+/** 语义化别名：makeEntry 的缺省形态就是「一行可被 kill 的 Confirmed 嫌疑」 */
+const suspectEntry = makeEntry;
 
 /** 按命令名路由的假 invoke；未注册的命令静默成功（update_tray_title 等装饰性调用） */
 function route(handlers: Record<string, (args?: unknown) => unknown>) {
@@ -69,25 +44,29 @@ async function advance(ms: number) {
   });
 }
 
+beforeEach(() => {
+  vi.useFakeTimers();
+  // 语言固定走英文分支，断言文案不受系统 locale 影响。
+  // 光写 localStorage 不够：i18n 的 current 是**模块级**变量，在 import 那一刻
+  // 就已经按当时的 localStorage/navigator 求值完了，此处再写已经太晚 ——
+  // 必须调 setLang 覆盖它（评审发现：这些断言此前实际依赖跑测机器的系统语言）。
+  localStorage.setItem("portreaper.lang", "en");
+  setLang("en");
+});
+
+afterEach(() => {
+  cleanup();
+  vi.useRealTimers();
+  mockInvoke.mockReset();
+  mockInvoke.mockImplementation(() => Promise.resolve(undefined));
+  localStorage.clear();
+});
+
+// 双错误通道（评审发现的高危 UX bug）：后台 2s 轮询成功后曾无条件 setError(null)，
+// 把 kill / 清扫 / 收藏的失败提示在用户看清之前静默冲掉。修复后错误分两路：
+//   - scanError：扫描错误，下一次成功轮询自动清除（自愈语义）；
+//   - actionError：操作错误，只能用户点击关闭。
 describe("error channels", () => {
-  beforeEach(() => {
-    vi.useFakeTimers();
-    // 语言固定走英文分支，断言文案不受系统 locale 影响。
-    // 光写 localStorage 不够：i18n 的 current 是**模块级**变量，在 import 那一刻
-    // 就已经按当时的 localStorage/navigator 求值完了，此处再写已经太晚 ——
-    // 必须调 setLang 覆盖它（评审发现：这些断言此前实际依赖跑测机器的系统语言）。
-    localStorage.setItem("portreaper.lang", "en");
-    setLang("en");
-  });
-
-  afterEach(() => {
-    cleanup();
-    vi.useRealTimers();
-    mockInvoke.mockReset();
-    mockInvoke.mockImplementation(() => Promise.resolve(undefined));
-    localStorage.clear();
-  });
-
   it("kill 失败的操作错误在后续成功轮询后仍然可见（回归：曾被 2s 轮询冲掉）", async () => {
     route({
       get_platform: () => "macos",
@@ -144,66 +123,6 @@ describe("error channels", () => {
     fireEvent.click(screen.getByText("Terminate"));
     await advance(400); // 成功路径有 250ms 收尾等待 + freshScan
     expect(screen.queryByText(/Kill failed/)).toBeNull();
-  });
-
-  it("批量清扫只含 Confirmed+Likely，失败聚合横幅在轮询后仍可见", async () => {
-    const killCalls: number[] = [];
-    route({
-      get_platform: () => "macos",
-      scan_ports: () => [
-        suspectEntry(), // confirmed, pid 4242
-        suspectEntry({ pid: 4343, confidence: "likely", ports: [5174] }),
-        suspectEntry({ pid: 4444, confidence: "possible", ports: [5175] }),
-      ],
-      kill_process: (args) => {
-        killCalls.push((args as { pid: number }).pid);
-        throw "ERR_PID_REUSED: process identity changed";
-      },
-    });
-    render(<App />);
-    await advance(0);
-
-    // 清扫按钮计数 = 2（Possible 永不入清扫 —— CLAUDE.md 不变量）
-    fireEvent.click(screen.getByText(/Clean up \(2\)/));
-    fireEvent.click(screen.getByText("Terminate all"));
-    await advance(800); // 批量循环 + 700ms 收尾等待
-
-    // 清扫范围：只杀了 confirmed + likely，4444 从未被尝试
-    expect(killCalls.sort()).toEqual([4242, 4343]);
-    expect(killCalls).not.toContain(4444);
-
-    // 失败聚合横幅：2/2 + 语言无关分隔符「; 」
-    const banner = screen.getByText(/2\/2 processes failed/);
-    expect(banner.textContent).toContain("; PID 4343");
-
-    // 两轮成功轮询后仍可见（actionError 不被轮询冲掉）
-    await advance(4500);
-    expect(screen.getByText(/2\/2 processes failed/)).toBeTruthy();
-  });
-
-  it("kill 挂起不再永久卡死清扫 UI：超时后释放按钮并报错（回归：mutation invoke 曾无超时）", async () => {
-    route({
-      get_platform: () => "macos",
-      scan_ports: () => [suspectEntry()],
-      kill_process: () => new Promise(() => {}), // 后端挂死：invoke 永不 settle
-    });
-    render(<App />);
-    await advance(0);
-
-    fireEvent.click(screen.getByText(/Clean up \(1\)/));
-    fireEvent.click(screen.getByText("Terminate all"));
-
-    // 超时前：清扫进行中，按钮切到进行态
-    await advance(1000);
-    expect(screen.getByText(/Cleaning…/)).toBeTruthy();
-
-    // ACTION_TIMEOUT_MS + 700ms 收尾 + freshScan 落定：sweeping 释放、
-    // 聚合横幅出现且含本地化的超时文案 —— 修复前这里会永远停在 Cleaning…
-    await advance(ACTION_TIMEOUT_MS + 1000);
-    const banner = screen.getByText(/1\/1 processes failed/);
-    expect(banner.textContent).toContain("timed out");
-    const sweepBtn = screen.getByText<HTMLButtonElement>(/Clean up \(1\)/);
-    expect(sweepBtn.disabled).toBe(false);
   });
 
   it("扫描错误保留自愈语义：后端恢复后下一轮轮询自动清除", async () => {
@@ -275,6 +194,169 @@ describe("error channels", () => {
     expect(screen.getByText(/scan down/)).toBeTruthy();
   });
 
+  it("扫描超时转可见错误（自愈语义）：后端恢复后下一轮自动清除", async () => {
+    let hang = true;
+    route({
+      get_platform: () => "macos",
+      scan_ports: () => (hang ? new Promise(() => {}) : ([suspectEntry()] as unknown)),
+    });
+    render(<App />);
+    await advance(0);
+
+    // 超时阈值后：挂死的 invoke 被转成本地化的扫描错误横幅
+    await advance(SCAN_TIMEOUT_MS + 100);
+    expect(screen.getByText(/Scan timed out/)).toBeTruthy();
+
+    // 后端恢复。注意超时那一刻轮询已立即用仍挂死的后端开了第二次扫描 ——
+    // 它还要再等一个完整超时周期；其后的下一轮 2s 轮询才能成功并自愈
+    hang = false;
+    await advance(SCAN_TIMEOUT_MS + 2100);
+    expect(screen.queryByText(/Scan timed out/)).toBeNull();
+  });
+});
+
+describe("kill & sweep flow", () => {
+  it("批量清扫只含 Confirmed+Likely，失败聚合横幅在轮询后仍可见", async () => {
+    const killCalls: number[] = [];
+    route({
+      get_platform: () => "macos",
+      scan_ports: () => [
+        suspectEntry(), // confirmed, pid 4242
+        suspectEntry({ pid: 4343, confidence: "likely", ports: [5174] }),
+        suspectEntry({ pid: 4444, confidence: "possible", ports: [5175] }),
+      ],
+      kill_process: (args) => {
+        killCalls.push((args as { pid: number }).pid);
+        throw "ERR_PID_REUSED: process identity changed";
+      },
+    });
+    render(<App />);
+    await advance(0);
+
+    // 清扫按钮计数 = 2（Possible 永不入清扫 —— CLAUDE.md 不变量）
+    fireEvent.click(screen.getByText(/Clean up \(2\)/));
+    fireEvent.click(screen.getByText("Terminate all"));
+    await advance(800); // 批量循环 + 700ms 收尾等待
+
+    // 清扫范围：只杀了 confirmed + likely，4444 从未被尝试
+    expect(killCalls.sort()).toEqual([4242, 4343]);
+    expect(killCalls).not.toContain(4444);
+
+    // 失败聚合横幅：2/2 + 语言无关分隔符「; 」
+    const banner = screen.getByText(/2\/2 processes failed/);
+    expect(banner.textContent).toContain("; PID 4343");
+
+    // 两轮成功轮询后仍可见（actionError 不被轮询冲掉）
+    await advance(4500);
+    expect(screen.getByText(/2\/2 processes failed/)).toBeTruthy();
+  });
+
+  it("kill 挂起不再永久卡死清扫 UI：超时后释放按钮并报错（回归：mutation invoke 曾无超时）", async () => {
+    route({
+      get_platform: () => "macos",
+      scan_ports: () => [suspectEntry()],
+      kill_process: () => new Promise(() => {}), // 后端挂死：invoke 永不 settle
+    });
+    render(<App />);
+    await advance(0);
+
+    fireEvent.click(screen.getByText(/Clean up \(1\)/));
+    fireEvent.click(screen.getByText("Terminate all"));
+
+    // 超时前：清扫进行中，按钮切到进行态
+    await advance(1000);
+    expect(screen.getByText(/Cleaning…/)).toBeTruthy();
+
+    // ACTION_TIMEOUT_MS + 700ms 收尾 + freshScan 落定：sweeping 释放、
+    // 聚合横幅出现且含本地化的超时文案 —— 修复前这里会永远停在 Cleaning…
+    await advance(ACTION_TIMEOUT_MS + 1000);
+    const banner = screen.getByText(/1\/1 processes failed/);
+    expect(banner.textContent).toContain("timed out");
+    const sweepBtn = screen.getByText<HTMLButtonElement>(/Clean up \(1\)/);
+    expect(sweepBtn.disabled).toBe(false);
+  });
+
+  it("终止确认弹窗显示完整命令行（不是 lsof 短名）", async () => {
+    route({
+      get_platform: () => "macos",
+      scan_ports: () => [
+        suspectEntry({
+          command: "node",
+          full_command: "node /Users/x/proj/node_modules/vite/bin/vite.js dev",
+        }),
+      ],
+    });
+    render(<App />);
+    await advance(0);
+
+    fireEvent.click(screen.getAllByText("Kill")[0]);
+    // 弹窗「命令」行展示完整命令，用户能辨认杀的是什么
+    expect(screen.getByText("node /Users/x/proj/node_modules/vite/bin/vite.js dev")).toBeTruthy();
+  });
+
+  it("清扫进行中禁用行内终止按钮（防对同一进程二次 kill）", async () => {
+    // 对象持有器而非裸 let：tsc 的控制流分析看不到闭包内赋值，
+    // 会把顶层使用点的 let 收窄为 null（TS2349）
+    const killGate: { resolve: (() => void) | null } = { resolve: null };
+    route({
+      get_platform: () => "macos",
+      scan_ports: () => [suspectEntry()],
+      kill_process: () =>
+        new Promise<void>((r) => {
+          killGate.resolve = r;
+        }),
+    });
+    render(<App />);
+    await advance(0);
+
+    // 启动清扫（confirmed 1 个）
+    fireEvent.click(screen.getByText(/Clean up \(1\)/));
+    fireEvent.click(screen.getByText("Terminate all"));
+    await advance(0);
+
+    // 清扫期间行内 Kill 按钮被禁用
+    const killBtn = screen.getAllByText("Kill")[0] as HTMLButtonElement;
+    expect(killBtn.disabled).toBe(true);
+
+    killGate.resolve?.();
+    await advance(800);
+  });
+
+  it("并发 kill：先完成的一次不得清掉仍在飞行那次的 killing 标记（评审发现）", async () => {
+    const gates: Record<number, () => void> = {};
+    route({
+      get_platform: () => "macos",
+      scan_ports: () => [suspectEntry(), suspectEntry({ pid: 5151, ports: [5174] })],
+      kill_process: (args) =>
+        new Promise<void>((r) => {
+          gates[(args as { pid: number }).pid] = r;
+        }),
+    });
+    render(<App />);
+    await advance(0);
+
+    // kill 4242（挂起中）
+    fireEvent.click(screen.getAllByText("Kill")[0]);
+    fireEvent.click(screen.getByText("Terminate"));
+    await advance(0);
+
+    // kill 5151（也挂起）—— killingPid 现在是 5151
+    fireEvent.click(screen.getAllByText("Kill")[1]);
+    fireEvent.click(screen.getByText("Terminate"));
+    await advance(0);
+
+    // 4242 先完成：函数式更新只清自己的标记，5151 的按钮必须仍处于禁用
+    gates[4242]?.();
+    await advance(400);
+    const killBtnB = screen.getAllByText("Kill")[1] as HTMLButtonElement;
+    expect(killBtnB.disabled).toBe(true);
+
+    gates[5151]?.();
+    await advance(400);
+  });
+});
+
+describe("whitelist", () => {
   it("白名单键：裸解释器名回退完整命令行（不塌缩匹配全机同名进程）", async () => {
     const added: string[] = [];
     route({
@@ -346,52 +428,6 @@ describe("error channels", () => {
     expect(screen.queryByText("☆")).toBeNull();
   });
 
-  it("终止确认弹窗显示完整命令行（不是 lsof 短名）", async () => {
-    route({
-      get_platform: () => "macos",
-      scan_ports: () => [
-        suspectEntry({
-          command: "node",
-          full_command: "node /Users/x/proj/node_modules/vite/bin/vite.js dev",
-        }),
-      ],
-    });
-    render(<App />);
-    await advance(0);
-
-    fireEvent.click(screen.getAllByText("Kill")[0]);
-    // 弹窗「命令」行展示完整命令，用户能辨认杀的是什么
-    expect(screen.getByText("node /Users/x/proj/node_modules/vite/bin/vite.js dev")).toBeTruthy();
-  });
-
-  it("清扫进行中禁用行内终止按钮（防对同一进程二次 kill）", async () => {
-    // 对象持有器而非裸 let：tsc 的控制流分析看不到闭包内赋值，
-    // 会把顶层使用点的 let 收窄为 null（TS2349）
-    const killGate: { resolve: (() => void) | null } = { resolve: null };
-    route({
-      get_platform: () => "macos",
-      scan_ports: () => [suspectEntry()],
-      kill_process: () =>
-        new Promise<void>((r) => {
-          killGate.resolve = r;
-        }),
-    });
-    render(<App />);
-    await advance(0);
-
-    // 启动清扫（confirmed 1 个）
-    fireEvent.click(screen.getByText(/Clean up \(1\)/));
-    fireEvent.click(screen.getByText("Terminate all"));
-    await advance(0);
-
-    // 清扫期间行内 Kill 按钮被禁用
-    const killBtn = screen.getAllByText("Kill")[0] as HTMLButtonElement;
-    expect(killBtn.disabled).toBe(true);
-
-    killGate.resolve?.();
-    await advance(800);
-  });
-
   it("取消收藏时连 v0.4.0 旧键一并删除（回归：裸键残留导致星标取消不掉）", async () => {
     const removed: string[] = [];
     route({
@@ -421,73 +457,9 @@ describe("error channels", () => {
     // 必须按「新键 → 旧键」顺序各调一次 remove_whitelist
     expect(removed).toEqual(["node /Users/x/proj/server.js", "node"]);
   });
+});
 
-  it("扫描超时转可见错误（自愈语义）：后端恢复后下一轮自动清除", async () => {
-    let hang = true;
-    route({
-      get_platform: () => "macos",
-      scan_ports: () => (hang ? new Promise(() => {}) : ([suspectEntry()] as unknown)),
-    });
-    render(<App />);
-    await advance(0);
-
-    // 超时阈值后：挂死的 invoke 被转成本地化的扫描错误横幅
-    await advance(SCAN_TIMEOUT_MS + 100);
-    expect(screen.getByText(/Scan timed out/)).toBeTruthy();
-
-    // 后端恢复。注意超时那一刻轮询已立即用仍挂死的后端开了第二次扫描 ——
-    // 它还要再等一个完整超时周期；其后的下一轮 2s 轮询才能成功并自愈
-    hang = false;
-    await advance(SCAN_TIMEOUT_MS + 2100);
-    expect(screen.queryByText(/Scan timed out/)).toBeNull();
-  });
-
-  it("Windows 平台行内是单一 Terminate 按钮（无 SIGTERM/强杀双按钮）", async () => {
-    route({
-      get_platform: () => "windows",
-      scan_ports: () => [suspectEntry()],
-    });
-    render(<App />);
-    await advance(0);
-
-    expect(screen.getAllByText("Terminate").length).toBe(1);
-    expect(screen.queryByText("Kill")).toBeNull();
-    expect(screen.queryByText("Force")).toBeNull();
-  });
-
-  it("并发 kill：先完成的一次不得清掉仍在飞行那次的 killing 标记（评审发现）", async () => {
-    const gates: Record<number, () => void> = {};
-    route({
-      get_platform: () => "macos",
-      scan_ports: () => [suspectEntry(), suspectEntry({ pid: 5151, ports: [5174] })],
-      kill_process: (args) =>
-        new Promise<void>((r) => {
-          gates[(args as { pid: number }).pid] = r;
-        }),
-    });
-    render(<App />);
-    await advance(0);
-
-    // kill 4242（挂起中）
-    fireEvent.click(screen.getAllByText("Kill")[0]);
-    fireEvent.click(screen.getByText("Terminate"));
-    await advance(0);
-
-    // kill 5151（也挂起）—— killingPid 现在是 5151
-    fireEvent.click(screen.getAllByText("Kill")[1]);
-    fireEvent.click(screen.getByText("Terminate"));
-    await advance(0);
-
-    // 4242 先完成：函数式更新只清自己的标记，5151 的按钮必须仍处于禁用
-    gates[4242]?.();
-    await advance(400);
-    const killBtnB = screen.getAllByText("Kill")[1] as HTMLButtonElement;
-    expect(killBtnB.disabled).toBe(true);
-
-    gates[5151]?.();
-    await advance(400);
-  });
-
+describe("search & filter", () => {
   it("「可疑」标签页零嫌疑时显示一切正常，而非「没有匹配项」", async () => {
     route({
       get_platform: () => "macos",
@@ -560,5 +532,20 @@ describe("error channels", () => {
     });
     expect(screen.getByText("healthy")).toBeTruthy();
     expect(screen.queryByText(/All clear/)).toBeNull();
+  });
+});
+
+describe("platform variance", () => {
+  it("Windows 平台行内是单一 Terminate 按钮（无 SIGTERM/强杀双按钮）", async () => {
+    route({
+      get_platform: () => "windows",
+      scan_ports: () => [suspectEntry()],
+    });
+    render(<App />);
+    await advance(0);
+
+    expect(screen.getAllByText("Terminate").length).toBe(1);
+    expect(screen.queryByText("Kill")).toBeNull();
+    expect(screen.queryByText("Force")).toBeNull();
   });
 });

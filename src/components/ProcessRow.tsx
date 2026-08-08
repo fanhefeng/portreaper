@@ -1,5 +1,5 @@
 import { memo, useMemo } from "react";
-import { useI18n, type I18nKey, type Lang } from "../i18n";
+import { reasonKey, storyKey, useI18n, verdictKey, type Lang } from "../i18n";
 import {
   exemptReasons,
   formatDuration,
@@ -13,9 +13,9 @@ import {
 import { DESC_KEYS, describeEntry, splitLabel } from "../describe";
 import { ProcessDetail } from "./ProcessDetail";
 
-export type RowProps = {
-  e: ProcessEntry;
-  expanded: boolean;
+/** 整表共享的行上下文：App 用 useMemo 保持引用稳定（回调全部 useCallback），
+ *  只在 os/lang/killingPid/sweeping 变化时新建 —— memo 比较靠它的**对象身份**。 */
+export type RowShared = {
   os: Os | null;
   lang: Lang;
   killingPid: number | null;
@@ -26,10 +26,22 @@ export type RowProps = {
   onToggleExpand: (pid: number) => void;
 };
 
+export type RowProps = {
+  e: ProcessEntry;
+  expanded: boolean;
+  shared: RowShared;
+};
+
 // Row 用 memo + 自定义比较:轮询每 2s 产生全新 entries 数组,e 引用必变,默认
 // 浅比较失效;这里对 e 做内容比较(serde 字段序固定 → JSON.stringify 稳定),
-// 回调已全部 useCallback 稳定 —— 仅当本行数据或 killingPid/sweeping/lang/os
-// 真正变化时才重渲染(否则一行 ~50 条正则 + 整棵 JSX 每 2s 白跑)。
+// shared 按对象身份比较 —— App 的 useMemo 保证只有 os/lang/killingPid/sweeping
+// 真正变化时才换新对象。仅当本行数据或共享上下文变化才重渲染(否则一行 ~50 条
+// 正则 + 整棵 JSX 每 2s 白跑)。
+//
+// shared 收敛成单对象是刻意的(评审发现):此前 8 个散 prop 由比较器逐字段手抄,
+// 往 RowProps 加 prop 而忘改比较器时,表现是无告警的静默 stale 渲染 —— 与下面
+// JSON.stringify 防的是同一类陷阱,只是坑挪到了比较器自身的字段清单上。收敛后
+// 新增回调/标志自动被对象身份覆盖,手工维护点只剩 App 的 useMemo 依赖数组一处。
 //
 // JSON.stringify 是**刻意保留**的,不要"优化"成手写逐字段深比较(复审结论):
 // ProcessEntry 有 ports / zombie_reasons / parent_chain 三层嵌套(末者还是对象
@@ -41,30 +53,22 @@ export const ProcessRow = memo(RowImpl, rowPropsEqual);
 function rowPropsEqual(a: RowProps, b: RowProps): boolean {
   return (
     a.expanded === b.expanded &&
-    a.os === b.os &&
-    a.lang === b.lang &&
-    a.killingPid === b.killingPid &&
-    a.sweeping === b.sweeping &&
-    a.onAskKill === b.onAskKill &&
-    a.onToggleWhitelist === b.onToggleWhitelist &&
-    a.onOpenPort === b.onOpenPort &&
-    a.onToggleExpand === b.onToggleExpand &&
+    a.shared === b.shared &&
     JSON.stringify(a.e) === JSON.stringify(b.e)
   );
 }
 
-function RowImpl({
-  e,
-  expanded,
-  os,
-  lang,
-  killingPid,
-  sweeping,
-  onAskKill,
-  onToggleWhitelist,
-  onOpenPort,
-  onToggleExpand,
-}: RowProps) {
+function RowImpl({ e, expanded, shared }: RowProps) {
+  const {
+    os,
+    lang,
+    killingPid,
+    sweeping,
+    onAskKill,
+    onToggleWhitelist,
+    onOpenPort,
+    onToggleExpand,
+  } = shared;
   const { t } = useI18n();
 
   // app_label 形如 "dev-server.js · node" —— 主名 + 次级说明
@@ -85,7 +89,7 @@ function RowImpl({
   if (exempt.includes("launchd_managed")) {
     provenance = t("story.managedBySystem");
   } else if (exempt.length > 0 && exempt[0] !== "installed_app") {
-    provenance = t(`reason.${exempt[0]}` as I18nKey);
+    provenance = t(reasonKey(exempt[0]));
   } else if (e.launcher_label && e.launcher_label !== "?") {
     provenance =
       e.launcher_label === "launchd"
@@ -181,13 +185,13 @@ function RowImpl({
             {e.is_zombie_suspect ? (
               <>
                 <span className={`verdict verdict-${e.confidence}`}>
-                  {t(`verdict.${e.confidence}` as I18nKey)}
+                  {t(verdictKey(e.confidence))}
                 </span>
                 {primary && (
                   <span className="desc-text">
                     {" · "}
                     {t(
-                      `story.${primary}` as I18nKey,
+                      storyKey(primary),
                       // duplicate 故事需要对端 PID 插值；其余 key 无占位符，参数无害
                       { pid: e.duplicate_of ?? "?" },
                     )}

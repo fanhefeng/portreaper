@@ -4,34 +4,24 @@
 // 否则日常开发中它会常驻在半数行上，从示警退化成噪音。
 import { describe, it, expect } from "vite-plus/test";
 import { hasBusySubtree, subtreeCpuExceedsSelf, type ProcessEntry } from "./model";
+import { makeEntry } from "./test-fixtures";
 
+/** Gap 1 主案形态的语义化夹具：headless Chrome 自动化实例，CPU 两值参数化 */
 function entry(cpu: number, tree: number): ProcessEntry {
-  return {
-    pid: 1,
-    ppid: 1,
+  return makeEntry({
     ports: [],
     command: "Google Chrome",
     full_command: "Google Chrome --headless=new",
     exe_path: "/Applications/Google Chrome.app/Contents/MacOS/Google Chrome",
     app_label: "Google Chrome · headless",
     app_category: "automation-instance",
-    parent_chain: [],
-    launcher_label: "launchd",
-    user: "x",
-    tty: "",
     elapsed_secs: 25_000,
-    start_unix: 1000,
     cpu_percent: cpu,
     cpu_percent_tree: tree,
     mem_mb: 100,
-    state: "S",
-    is_zombie_suspect: true,
-    confidence: "confirmed",
     zombie_reasons: ["ppid1_orphan", "automation_instance"],
-    is_whitelisted: false,
     whitelist_key: "/Applications/Google Chrome.app/Contents/MacOS/Google Chrome",
-    duplicate_of: null,
-  };
+  });
 }
 
 describe("subtree CPU surfacing", () => {

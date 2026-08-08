@@ -208,6 +208,45 @@ const zh = {
 
 export type I18nKey = keyof typeof zh;
 
+// ---- 动态键族的收敛出口（评审发现：组件里散布 7 处 `as I18nKey` 断言，每处
+// 都是绕过类型检查的洞）----
+// 键族拼接只允许发生在下面这组窄函数里：组件侧零断言，审计面收敛到本文件一处。
+// 运行时安全网是 translate() 的既有兜底链（zh → en → 键名，见 translate 注释），
+// 正常构建下 CI 的 check-reason-parity.mjs 保证 reason./reasonTip./story./verdict.
+// 四族键与 Rust ReasonCode/Confidence 一一对应，不会走到兜底。
+
+/** 唯一的动态键断言点 —— 未知码由 translate() 兜底渲染为键名（可辨认、可追查）。 */
+function dynamicKey(candidate: string): I18nKey {
+  return candidate as I18nKey;
+}
+
+/** ReasonCode → 详情短标签键（reason.*）。 */
+export function reasonKey(code: string): I18nKey {
+  return dynamicKey(`reason.${code}`);
+}
+
+/** ReasonCode → 详情完整解释键（reasonTip.*）。 */
+export function reasonTipKey(code: string): I18nKey {
+  return dynamicKey(`reasonTip.${code}`);
+}
+
+/** 主判定码 → 行内一句话结论键（story.*，仅正向码有）。 */
+export function storyKey(code: string): I18nKey {
+  return dynamicKey(`story.${code}`);
+}
+
+/** 置信层级 → 行内前缀键（verdict.*）。 */
+export function verdictKey(confidence: string): I18nKey {
+  return dynamicKey(`verdict.${confidence}`);
+}
+
+/** 类别 → cat.* 键；未知类别落 cat.unknown。字典本身就是合法类别清单 ——
+ *  取代详情面板里手工维护的类别数组（评审发现：数组与字典键重复，会漂移）。 */
+export function categoryKey(category: string): I18nKey {
+  const k = `cat.${category}`;
+  return k in zh ? (k as I18nKey) : "cat.unknown";
+}
+
 const en: Record<I18nKey, string> = {
   "search.placeholder": "Search port / PID / app / launcher",
   "filter.all": "All",

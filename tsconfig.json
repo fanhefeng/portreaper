@@ -5,9 +5,12 @@
     "lib": ["ES2020", "DOM", "DOM.Iterable"],
     "module": "ESNext",
     "skipLibCheck": true,
-    // TS6 起 @types 不再自动包含；node 全局（测试文件的 node:fs/process）须显式声明。
-    // vitest 3 的 d.ts 曾传递性引用 node 类型掩盖了这一点，vitest 4 清理后即裸奔。
-    "types": ["node"],
+    // 本 project 只覆盖 webview 应用代码，**刻意不含 node 类型**（评审发现：
+    // 此前 "types": ["node"] 为测试文件把 Node 全局带进了整个 src/ ——
+    // webview 代码误用 process.env/Buffer 能通过 tsc，只在运行时暴露）。
+    // 需要 node:fs/process 的测试走 tsconfig.test.json（含 node 类型）；
+    // `pnpm run typecheck` 两个 project 都查，CI/pre-push 用的就是它。
+    "types": [],
 
     /* Bundler mode */
     "moduleResolution": "bundler",
@@ -24,5 +27,7 @@
     "noFallthroughCasesInSwitch": true
   },
   "include": ["src"],
+  // 测试与其夹具库归 tsconfig.test.json 管（那边才有 node 类型）
+  "exclude": ["src/**/*.test.ts", "src/**/*.test.tsx", "src/test-fixtures.ts"],
   "references": [{ "path": "./tsconfig.node.json" }]
 }
