@@ -96,12 +96,17 @@ impl Whitelist {
         }
     }
 
-    /// 空白名单（无落盘位置时的降级形态：读照常为空，写走到 save 时响亮失败 ——
-    /// 不是「静默存不下来」，add/remove 会回滚并上抛错误）。
-    pub fn empty(path: PathBuf) -> Self {
+    /// 无落盘位置时的降级形态：读照常为空，写走到 save 时响亮失败 ——
+    /// 不是「静默存不下来」，add/remove 会回滚并上抛错误。
+    ///
+    /// **刻意无参**（评审发现）：曾是 `empty(path)`，签名允许传真实路径，那样
+    /// `merge_from_disk` 会吸入磁盘内容、行为退化成 `load` —— 一个名叫 empty 的
+    /// 构造器却能非空。两个调用点本来传的也都是 `PathBuf::new()`，把「脱离磁盘」
+    /// 编码进签名后，误用在类型层面即不可表达。
+    pub fn detached() -> Self {
         Self {
             entries: Vec::new(),
-            path,
+            path: PathBuf::new(),
             writable: true,
         }
     }

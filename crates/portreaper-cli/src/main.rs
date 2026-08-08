@@ -8,7 +8,7 @@
 //!
 //! ```text
 //! portreaper-cli scan [--json] [--no-orphans] [--cpu=skip|<ms>]
-//! portreaper-cli kill <pid> --start-unix <n> [--force]
+//! portreaper-cli kill <pid> --start-unix <n> [--force|-9]
 //! portreaper-cli whitelist list|add <key>|remove <key>
 //! portreaper-cli --version | --help
 //! ```
@@ -26,7 +26,7 @@
 use std::io::Write;
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
-use portreaper_core::{scanner, CpuSampling, Whitelist};
+use portreaper_core::{scan_once, CpuSampling, ProcessEntry, Whitelist};
 use serde::Serialize;
 
 /// JSON 输出的契约版本。**破坏性变更**（删字段、改字段语义）才递增；
@@ -38,7 +38,7 @@ portreaper-cli — 找出并终止无人认领的开发进程（Portreaper 的�
 
 用法:
   portreaper-cli scan [--json] [--no-orphans] [--cpu=skip|<毫秒>]
-  portreaper-cli kill <pid> --start-unix <创建时间> [--force]
+  portreaper-cli kill <pid> --start-unix <创建时间> [--force|-9]
   portreaper-cli whitelist list
   portreaper-cli whitelist add <key>
   portreaper-cli whitelist remove <key>
@@ -53,7 +53,7 @@ scan 选项:
 kill 选项:
   --start-unix <n> 扫描时该行的 start_unix。**必填** —— 引擎据此核对进程身份，
                    防止 scan 与 kill 之间 PID 被复用导致误杀。先 scan 拿到它。
-  --force          macOS 用 SIGKILL 而非 SIGTERM；Windows 无效（只有一种终止方式）
+  --force, -9      macOS 用 SIGKILL 而非 SIGTERM；Windows 无效（只有一种终止方式）
 
 退出码:
   0  成功
@@ -109,7 +109,7 @@ struct ScanReport<'a> {
     schema_version: u32,
     scanned_at: u64,
     platform: &'static str,
-    entries: &'a [scanner::ProcessEntry],
+    entries: &'a [ProcessEntry],
 }
 
 fn cmd_scan(args: &[String]) -> i32 {
@@ -141,7 +141,7 @@ fn cmd_scan(args: &[String]) -> i32 {
     }
 
     let whitelist = load_whitelist();
-    let mut entries = scanner::scan_once(whitelist.entries(), cpu);
+    let mut entries = scan_once(whitelist.entries(), cpu);
     if !include_orphans {
         // 无端口的行来自第二条扫描路径（孤儿 dev 进程）
         entries.retain(|e| !e.ports.is_empty());
@@ -172,7 +172,7 @@ fn cmd_scan(args: &[String]) -> i32 {
 
 /// 人类可读输出。刻意保持朴素：这是给「在终端里随手看一眼」用的，
 /// 需要稳定结构的消费方一律走 `--json`。
-fn print_table(entries: &[scanner::ProcessEntry]) {
+fn print_table(entries: &[ProcessEntry]) {
     if entries.is_empty() {
         // 中性措辞：这里看不到 include_orphans，而扫描结果同时涵盖监听端口的进程
         // 与不占端口的孤儿 dev 进程 —— 说「没有监听端口的进程」会漏掉后半句
@@ -192,11 +192,14 @@ fn print_table(entries: &[scanner::ProcessEntry]) {
     for e in entries {
         let ports = format_ports(&e.ports);
         let verdict = if e.is_whitelisted {
-            "★".to_string()
+            "★"
         } else if e.is_zombie_suspect {
-            format!("{:?}", e.confidence).to_lowercase()
+            // 与 JSON 输出同源：Confidence::as_str 就是 serde 的 wire 形态。
+            // 曾用 `format!("{:?}").to_lowercase()` 从 Debug 重构，四个单词变体
+            // 下巧合等价 —— 一旦出现多词变体，表格与 --json 会静默分叉。
+            e.confidence.as_str()
         } else {
-            "-".to_string()
+            "-"
         };
         println!(
             "{:<7} {:<12} {:<10} {:<9} {:>7.1}  {}",
@@ -219,35 +222,56 @@ fn format_ports(ports: &[u16]) -> String {
 // kill
 // ---------------------------------------------------------------------------
 
-fn cmd_kill(args: &[String]) -> i32 {
-    let mut pid: Option<u32> = None;
-    let mut start_unix: Option<u64> = None;
-    let mut force = false;
+/// `kill` 的参数解析结果（未校验必填项 —— 那步连同错误文案留在 cmd_kill）。
+#[derive(Debug, Default, PartialEq)]
+struct KillArgs {
+    pid: Option<u32>,
+    start_unix: Option<u64>,
+    force: bool,
+}
 
+/// 纯参数解析（可单测）：抽出来是因为 `cmd_kill` 会真的终止进程，
+/// 内联的话 `-9` 这类别名就只能靠人肉记得 —— 而未记档、无测试的别名
+/// 正是「无保护的事实契约」（评审发现）。Err(exit_code) = 用法错误。
+fn parse_kill_args(args: &[String]) -> Result<KillArgs, i32> {
+    let mut out = KillArgs::default();
     let mut it = args.iter();
     while let Some(a) = it.next() {
         match a.as_str() {
-            "--force" | "-9" => force = true,
+            // -9 是 kill(1) 肌肉记忆的别名，与 --force 等价（USAGE 已记档）
+            "--force" | "-9" => out.force = true,
             "--start-unix" => match it.next().map(|v| v.parse::<u64>()) {
-                Some(Ok(v)) => start_unix = Some(v),
+                Some(Ok(v)) => out.start_unix = Some(v),
                 _ => {
                     eprintln!("--start-unix 需要一个整数（进程创建时间，epoch 秒）");
-                    return 2;
+                    return Err(2);
                 }
             },
-            _ if pid.is_none() => match a.parse::<u32>() {
-                Ok(v) => pid = Some(v),
+            _ if out.pid.is_none() => match a.parse::<u32>() {
+                Ok(v) => out.pid = Some(v),
                 Err(_) => {
                     eprintln!("kill: 无效的 PID {a}");
-                    return 2;
+                    return Err(2);
                 }
             },
             _ => {
                 eprintln!("kill: 无法识别的参数 {a}");
-                return 2;
+                return Err(2);
             }
         }
     }
+    Ok(out)
+}
+
+fn cmd_kill(args: &[String]) -> i32 {
+    let KillArgs {
+        pid,
+        start_unix,
+        force,
+    } = match parse_kill_args(args) {
+        Ok(v) => v,
+        Err(code) => return code,
+    };
 
     let Some(pid) = pid else {
         eprintln!("kill: 缺少 PID\n");
@@ -332,7 +356,7 @@ fn load_whitelist() -> Whitelist {
         Some(p) => Whitelist::load(p),
         None => {
             eprintln!("警告: 无法解析配置目录，白名单本次不生效");
-            Whitelist::empty(std::path::PathBuf::new())
+            Whitelist::detached()
         }
     }
 }
@@ -356,7 +380,7 @@ fn platform_name() -> &'static str {
 
 #[cfg(test)]
 mod tests {
-    use super::format_ports;
+    use super::{format_ports, parse_kill_args, KillArgs, USAGE};
 
     #[test]
     fn ports_column_stays_narrow() {
@@ -368,5 +392,46 @@ mod tests {
         );
         // 无论多少个端口，宽度都不超过「端口号 + ,+N」
         assert!(format_ports(&[65535; 9]).len() <= 8);
+    }
+
+    fn argv(args: &[&str]) -> Vec<String> {
+        args.iter().map(|s| s.to_string()).collect()
+    }
+
+    /// `-9` 与 `--force` 必须完全等价，且 `-9` 不得被误当成 PID。
+    /// 别名一旦无测试，就是「无保护的事实契约」——删改它不会有任何东西翻红。
+    #[test]
+    fn dash_nine_is_force_alias() {
+        let want = KillArgs {
+            pid: Some(4242),
+            start_unix: Some(1000),
+            force: true,
+        };
+        assert_eq!(
+            parse_kill_args(&argv(&["4242", "--start-unix", "1000", "-9"])).unwrap(),
+            want
+        );
+        assert_eq!(
+            parse_kill_args(&argv(&["4242", "--start-unix", "1000", "--force"])).unwrap(),
+            want
+        );
+        // 顺序无关：-9 在 PID 之前出现时，PID 仍被正确识别
+        assert_eq!(
+            parse_kill_args(&argv(&["-9", "4242", "--start-unix", "1000"])).unwrap(),
+            want
+        );
+    }
+
+    /// 别名必须在 USAGE 里记档 —— 帮助文本是 CLI 唯一的对外契约文档。
+    #[test]
+    fn dash_nine_is_documented() {
+        assert!(USAGE.contains("-9"), "USAGE 必须记录 -9 别名");
+    }
+
+    #[test]
+    fn kill_args_reject_garbage() {
+        assert_eq!(parse_kill_args(&argv(&["notapid"])), Err(2));
+        assert_eq!(parse_kill_args(&argv(&["4242", "--start-unix"])), Err(2));
+        assert_eq!(parse_kill_args(&argv(&["4242", "--nope"])), Err(2));
     }
 }

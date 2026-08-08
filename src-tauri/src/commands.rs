@@ -1,6 +1,6 @@
 use std::sync::{Mutex, PoisonError};
 
-use portreaper_core::{platform, scanner, Scanner};
+use portreaper_core::{kill, ProcessEntry, Scanner};
 use tauri::{AppHandle, Manager};
 
 use crate::whitelist;
@@ -17,7 +17,7 @@ pub struct ScannerState(pub Mutex<Scanner>);
 /// scan() 每 2s shell 出 lsof + 两次 ps + launchctl（几十到几百毫秒）会周期性
 /// 阻塞事件循环（托盘/窗口事件卡顿）。挪到阻塞线程池，主线程零占用。
 #[tauri::command]
-pub async fn scan_ports(app: AppHandle) -> Result<Vec<scanner::ProcessEntry>, String> {
+pub async fn scan_ports(app: AppHandle) -> Result<Vec<ProcessEntry>, String> {
     tauri::async_runtime::spawn_blocking(move || {
         let state = app.state::<ScannerState>();
         // try_lock 而非 lock（评审发现）：前端 10s 超时后仍每 2s 轮询，若某轮
@@ -53,7 +53,7 @@ pub async fn scan_ports(app: AppHandle) -> Result<Vec<scanner::ProcessEntry>, St
 /// legacy_contract_tests 钉住，改动前先看那组测试）。
 #[tauri::command]
 pub async fn kill_process(pid: u32, force: bool, start_unix: Option<u64>) -> Result<(), String> {
-    tauri::async_runtime::spawn_blocking(move || platform::kill(pid, force, start_unix))
+    tauri::async_runtime::spawn_blocking(move || kill(pid, force, start_unix))
         .await
         .map_err(|e| format!("kill task failed: {e}"))?
         .map_err(|e| e.to_legacy_string())
