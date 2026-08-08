@@ -160,7 +160,9 @@ GUI 持有一个长驻 `Scanner`，语义与今天完全一致。全局 static �
 
 ### 5.2 错误从字符串前缀改为枚举
 
-现在 kill 失败靠 `"ERR_PID_REUSED: ..."` 这种前缀字符串，前端 `startsWith` 解析。加一个消费者就要再写一份解析，且没有任何编译期保护。
+**状态：已完成**（引擎侧随本次拆分落地；桌面 IPC 边界的过渡层于 v0.9.0 删除，见 issue #35）。
+
+动因：kill 失败原先靠 `"ERR_PID_REUSED: ..."` 这种前缀字符串，前端 `includes` 子串解析。加一个消费者就要再写一份解析，且没有任何编译期保护 —— 漏改不会报错，只会静默退化成「把英文实现细节原样吐给用户」。
 
 ```rust
 #[derive(Debug, Serialize)]
@@ -175,7 +177,9 @@ pub enum KillError {
 }
 ```
 
-L1 负责翻译：`src-tauri` 序列化给前端（前端按 `code` 分支，不再 `startsWith`）；CLI 映射成稳定 exit code + stderr JSON。**`ERR_*` 前缀的字符串形态在 GUI IPC 边界上保留一个版本**作为过渡，避免前端与后端必须同一次发版。
+L1 负责翻译：`src-tauri` 直接返回 `Result<(), KillError>`（前端按 `code` 分支，不再 `includes`）；CLI 映射成稳定 exit code + stderr JSON。两条路径过河的是**同一个值、同一套 code**。
+
+`ERR_*` 前缀的字符串形态原计划在 GUI IPC 边界上保留一个版本作为过渡（避免前端与后端必须同一次发版）。实际保留了 v0.8.1 一个版本，v0.9.0 随 issue #35 删除 —— 单仓库同步发版，过渡层的收益从未兑现，留着只会诱使人再写一次字符串匹配。钉子测试也一并从 `legacy_contract_tests`（钉 `ERR_` token）改造成 `wire_contract_tests`（钉 serde `code`）。
 
 ### 5.3 白名单：值类型 + 显式路径
 

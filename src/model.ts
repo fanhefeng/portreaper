@@ -164,13 +164,66 @@ export function localizeActionError(err: string, t: Translator): string {
   return err;
 }
 
-/** 后端语义错误（ERR_* 前缀）→ 本地化文案；其余透传 OS 原文 */
-export function localizeKillError(err: string, t: Translator): string {
-  if (err.includes("ERR_PID_REUSED")) return t("error.pidReused");
-  if (err.includes("ERR_PROCESS_GONE")) return t("error.processGone");
-  if (err.includes("ERR_ACCESS_DENIED")) return t("error.accessDenied");
-  if (err.includes("ERR_IDENTITY_UNKNOWN")) return t("error.identityUnknown");
-  return localizeActionError(err, t);
+/** 引擎 `KillError` 的 serde 镜像（`platform.rs`，`#[serde(tag = "code")]`）。
+ *  桌面与 Raycast 吃的是**同一个值**：Tauri 直接返回它，CLI 把它 JSON 到 stderr。
+ *  新增变体时这里加一支，下面的 switch 立刻编译期报错 —— 这正是取代
+ *  `includes("ERR_…")` 的理由：字符串匹配漏改只会在运行时静默退化。 */
+export type KillError =
+  | { code: "identity_unknown" }
+  | { code: "process_gone" }
+  | { code: "pid_reused" }
+  | { code: "access_denied" }
+  | { code: "os"; message: string };
+
+/** invoke 的 reject 值是 `unknown`：可能是 KillError，也可能是 withTimeout 抛的
+ *  Error sentinel，或（IPC 层自身故障时）任意值。只认结构完整的那一种。 */
+function asKillError(err: unknown): KillError | null {
+  if (typeof err !== "object" || err === null || !("code" in err)) return null;
+  const { code } = err as { code: unknown };
+  switch (code) {
+    case "identity_unknown":
+    case "process_gone":
+    case "pid_reused":
+    case "access_denied":
+      return { code };
+    case "os": {
+      const { message } = err as { message?: unknown };
+      return { code, message: typeof message === "string" ? message : "" };
+    }
+    default:
+      return null;
+  }
+}
+
+/** 对象形态但 code 不认识（后端比前端新，例如用户没升桌面端就换了 CLI）：
+ *  `String(err)` 会渲染成 `[object Object]` —— 比旧的字符串契约还糟，用户拿不到
+ *  任何可搜索、可报 issue 的信息。故降级也要吐出 code 本身。 */
+function unknownErrorText(err: unknown): string | null {
+  if (typeof err !== "object" || err === null || !("code" in err)) return null;
+  const { code, message } = err as { code?: unknown; message?: unknown };
+  if (typeof code !== "string") return null;
+  return typeof message === "string" && message ? `${code}: ${message}` : code;
+}
+
+/** 后端语义错误（结构化 `{code}`）→ 本地化文案；OS 原文与超时 sentinel 透传。 */
+export function localizeKillError(err: unknown, t: Translator): string {
+  const killError = asKillError(err);
+  if (killError) {
+    switch (killError.code) {
+      case "pid_reused":
+        return t("error.pidReused");
+      case "process_gone":
+        return t("error.processGone");
+      case "access_denied":
+        return t("error.accessDenied");
+      case "identity_unknown":
+        return t("error.identityUnknown");
+      case "os":
+        // 无语义，原样展示。message 空则退回 code，绝不吐一个空横幅
+        return killError.message || killError.code;
+    }
+  }
+  return unknownErrorText(err) ?? localizeActionError(String(err), t);
 }
 
 /** scan_ports 无取消机制：后端子进程（lsof/launchctl）若卡死，invoke 会永不

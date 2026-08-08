@@ -3,7 +3,13 @@
 // 这一条反直觉的情形 —— 自身就在满核的健康构建（vite build / tsc）绝不能挂徽标，
 // 否则日常开发中它会常驻在半数行上，从示警退化成噪音。
 import { describe, it, expect } from "vite-plus/test";
-import { hasBusySubtree, subtreeCpuExceedsSelf, type ProcessEntry } from "./model";
+import {
+  hasBusySubtree,
+  localizeKillError,
+  subtreeCpuExceedsSelf,
+  type ProcessEntry,
+  type Translator,
+} from "./model";
 import { makeEntry } from "./test-fixtures";
 
 /** Gap 1 主案形态的语义化夹具：headless Chrome 自动化实例，CPU 两值参数化 */
@@ -53,6 +59,50 @@ describe("subtree CPU surfacing", () => {
     delete (stale as { cpu_percent_tree?: number }).cpu_percent_tree;
     expect(subtreeCpuExceedsSelf(stale)).toBe(false);
     expect(hasBusySubtree(stale)).toBe(false);
+  });
+});
+
+// kill 错误的 wire 契约（issue #35）：引擎按 `#[serde(tag = "code")]` 过 IPC，
+// 前端按 code 分派。此前是 `includes("ERR_…")` 子串匹配，漏改只会静默退化成
+// 「透传英文原文」—— 这组测试钉的就是那条退化路径不许再出现。
+describe("localizeKillError", () => {
+  // 只回显 key，断言「分派到了哪一支」而非具体译文（译文改动不该弄红这组测试）
+  const t = ((key: string) => key) as unknown as Translator;
+
+  it("四个语义 code 各自分派到对应的本地化键", () => {
+    const cases = [
+      ["pid_reused", "error.pidReused"],
+      ["process_gone", "error.processGone"],
+      ["access_denied", "error.accessDenied"],
+      ["identity_unknown", "error.identityUnknown"],
+    ] as const;
+    for (const [code, key] of cases) {
+      expect(localizeKillError({ code }, t)).toBe(key);
+    }
+  });
+
+  it("os 变体无语义，原样展示系统原文（不得被本地化吞掉）", () => {
+    expect(localizeKillError({ code: "os", message: "Operation not permitted" }, t)).toBe(
+      "Operation not permitted",
+    );
+  });
+
+  it("超时 sentinel 不是 KillError，仍走 localizeActionError", () => {
+    expect(localizeKillError(new Error("ERR_ACTION_TIMEOUT"), t)).toBe("error.actionTimeout");
+  });
+
+  it("认不出的形态一律透传，绝不吞成空横幅", () => {
+    // 未知 code（后端比前端新）：退回原文，用户至少看得见发生了什么
+    expect(localizeKillError({ code: "brand_new_variant" }, t)).toContain("brand_new_variant");
+    // message 为空的 os 变体：不能渲染出一条空错误
+    expect(localizeKillError({ code: "os", message: "" }, t)).not.toBe("");
+  });
+
+  it("回归：结构化错误被 String() 压平后不得再命中语义分支", () => {
+    // App.tsx 曾对 err 套一层 String()。压平后是 "[object Object]"，
+    // 这里断言它确实分派不出语义分支 —— 一旦有人重新加回 String()，
+    // 上面第一条测试会立刻变红，而不是在真机上静默退化成英文原文。
+    expect(localizeKillError(String({ code: "pid_reused" }), t)).not.toBe("error.pidReused");
   });
 });
 

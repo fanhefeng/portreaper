@@ -183,9 +183,21 @@ reviews:
     - path: "crates/portreaper-core/src/platform.rs"
       instructions: |
         Kill path. `kill_process(pid, force, start_unix)` re-reads process
-        creation time and refuses with ERR_PID_REUSED if it moved by >5s —
-        killing a recycled PID is a data-loss bug. Any change that skips,
+        creation time and refuses with `KillError::PidReused` if it moved by
+        >5s — killing a recycled PID is a data-loss bug. Any change that skips,
         weakens, or widens that tolerance is a serious finding.
+
+        Failures cross EVERY IPC boundary as the serde form `{code, message?}`
+        (`#[serde(tag = "code", rename_all = "snake_case")]`) — the Tauri
+        command returns `Result<(), KillError>` and the CLI writes the same
+        value to stderr. The `code` strings are a cross-process contract with
+        two consumers (`src/model.ts` localizeKillError, `integrations/raycast/
+        src/cli.ts` killErrorMessage): adding a variant obliges both switches
+        plus the `wire_contract_tests` table. Flag any reintroduction of
+        `ERR_*:`-prefixed error strings or of `includes()`-style substring
+        matching on error text — that legacy layer was deliberately deleted,
+        and its failure mode was silent (a missed frontend just degrades to
+        dumping raw English at the user).
 
         Windows has a single Terminate button on purpose: there is no reliable
         graceful kill for detached console processes. Do not accept added

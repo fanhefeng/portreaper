@@ -72,7 +72,7 @@ describe("error channels", () => {
       get_platform: () => "macos",
       scan_ports: () => [suspectEntry()],
       kill_process: () => {
-        throw "ERR_PID_REUSED: process identity changed";
+        throw { code: "pid_reused" };
       },
     });
     render(<App />);
@@ -104,7 +104,7 @@ describe("error channels", () => {
       get_platform: () => "macos",
       scan_ports: () => [suspectEntry()],
       kill_process: () => {
-        if (killFails) throw "ERR_PROCESS_GONE: process no longer exists";
+        if (killFails) throw { code: "process_gone" };
         return undefined;
       },
     });
@@ -172,7 +172,7 @@ describe("error channels", () => {
         return [suspectEntry()];
       },
       kill_process: () => {
-        throw "ERR_PROCESS_GONE: process no longer exists";
+        throw { code: "process_gone" };
       },
     });
     render(<App />);
@@ -227,7 +227,7 @@ describe("kill & sweep flow", () => {
       ],
       kill_process: (args) => {
         killCalls.push((args as { pid: number }).pid);
-        throw "ERR_PID_REUSED: process identity changed";
+        throw { code: "pid_reused" };
       },
     });
     render(<App />);
