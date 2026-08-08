@@ -227,7 +227,9 @@ reviews:
       instructions: |
         - Every user-facing string goes through the typed i18n dict in
           `src/i18n.ts`. A missing English key is a tsc error; a hardcoded
-          string is a finding.
+          string is a finding. Scope: the repo-root `src/` (the desktop webview)
+          ONLY. `integrations/raycast/src/` is deliberately English-only with no
+          dictionary — see its own rule below before flagging a literal there.
         - Pure logic belongs in `model.ts` / `describe.ts`, not in components —
           it is unit-tested there.
         - Frontends must NEVER re-derive the verdict or the whitelist key. Read
@@ -281,6 +283,18 @@ reviews:
         and `whitelist_key`, never re-derive them. This extension used to carry
         its own copy of the whitelist-key rule, which is exactly the failure the
         core split exists to kill.
+
+        DELIBERATE EXCEPTION — this extension is English-only and has NO i18n
+        dictionary. The Raycast Store accepts US English only, so a second
+        translation source (and a second drift path away from `src/i18n.ts`)
+        would be all cost and no benefit. `src/i18n.ts` is also unimportable
+        here: it touches `localStorage` / `navigator` at module top level, which
+        does not exist in the extension's Node context. User-facing strings in
+        this directory are inline English literals ON PURPOSE — do NOT report
+        them as missing i18n keys. The typed-bilingual-dict rule under
+        `src/**/*.{ts,tsx}` covers the repo-root desktop webview only.
+        Same reason verdict reasons render as raw engine codes (`ppid1_orphan`)
+        instead of prose — rationale in docs/RAYCAST-MAINTAINING.md.
 
   tools:
     # Already enforced locally (pre-push) and in CI. Duplicating them here
