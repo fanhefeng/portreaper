@@ -241,7 +241,7 @@ Raycast Beta 的支持目录）对一个人造孤儿 dev server 加星，另一�
 
       **教训记在这里**：「风险很低、不必亲眼看」正是这条 checklist 存在的理由。
       写方向有测试、读方向没有，而两边共用「共享状态」这一个说法，就没人再去分开验。
-- [x] **提交前跑一遍** `npm run lint` + `npm run build` + `npm outdated --prefix .`
+- [x] **提交前跑一遍** `npm run lint` + `npm run build` + `npm outdated --prefix integrations/raycast`
       —— 2026-08-08 全过：`ray lint` 三项 ready（ESLint/Prettier 未装是预期的，
       见《为什么不装 ESLint / Prettier》）、`ray build` 成功、`tsc --noEmit` 干净。
       `npm outdated` 报的 `@types/node` 26.1.2 → 26.2.0 已升，现已无过期项。
