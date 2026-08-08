@@ -22,9 +22,21 @@ npm run publish        # 自动 fork raycast/extensions 并开 PR
 （官方 CI 用 npm 构建）。这是唯一的例外，不影响仓库其余部分。
 
 **CI 覆盖**：`.github/workflows/ci.yml` 的 macOS 腿跑 `npm ci` + `npm run typecheck`。
-不跑 `ray build`（runner 上没有 Raycast 运行时）。`.github/dependabot.yml` 单独为本
-目录开了 npm 生态 —— 主仓库的 npm updater 被移除是因为 vite-plus 的 catalog: 布局
-解析不了，那个理由不适用于这里的普通 npm 布局。
+不跑 `ray build`（runner 上没有 Raycast 运行时）。
+
+## 依赖升级（没有 Dependabot，靠手跑）
+
+```bash
+npm outdated --prefix integrations/raycast    # 提交 Store 前必跑
+```
+
+`@raycast/api` 是这里唯一会实质漂移的依赖，而 Store 审核偏好较新的 API 版本。
+
+**为什么不交给 Dependabot**：给本目录配 npm 生态试过一次，每月必失败。Dependabot 的
+pnpm 探测只看父目录有没有 `pnpm-lock.yaml` + `pnpm-workspace.yaml`，命中就判定
+「workspace 子目录」并拒绝更新 —— 与本目录自身是不是规范的 npm 布局无关
+（它甚至会拿仓库根的 vite-plus 来 `npm install` 这个目录）。完整错误与结论记在
+`.github/dependabot.yml` 的头部注释里，别再加回来。
 
 ## portreaper-cli 的查找顺序
 
