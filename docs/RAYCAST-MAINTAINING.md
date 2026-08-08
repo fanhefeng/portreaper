@@ -286,7 +286,24 @@ Raycast Beta 的支持目录）对一个人造孤儿 dev server 加星，另一�
   > README 里引用的图片放**顶层 `media/`**，不能混进 `metadata/` 或 `assets/`。
   > 目前 README 未引用任何图片，故无需建 `media/`。
 
-- [ ] **提交**：`npm run publish`（自动 fork raycast/extensions 并开 PR）。
+- [x] **提交**：`npm run publish`（自动 fork raycast/extensions 并开 PR）。
       PR 描述里主动交代二进制来源（本项目自己的 GitHub Releases、构建流水线公开可溯源）、
       SHA-256 校验、校验失败即删、UI 明示，并引用上述先例 —— 这是审核最关注的一点，
       主动说明比等着被问效率高。
+
+      **当前状态：raycast/extensions#30075，OPEN，等待人工评审**
+      （2026-08-08 提交；raycastbot 提示初审最长 15 个工作日）。
+
+      机器人评审（greptile）提了三条，均成立、均已修并推到同一个 PR，
+      见 commit `Update portreaper extension`：schema 不兼容的托管副本换不掉、
+      无身份令牌的行仍摆着终止入口、偏好标题不合 title case 约定。
+
+      两条**再提交时的操作要点**：
+
+      - `ray publish` 要求工作区**干净**，否则直接报错退出（不是警告）。
+      - 修完再跑一次 `npm run publish` 会**更新同一个 PR**（提示语是
+        "Your submission has been updated"），不会开出重复 PR ——
+        它靠本地 tag `__raycast_latest_publish_ext/portreaper__` 记状态。
+        注意那个 tag 是本地工具产物：`git push --tags` 会把它推上公开仓库，
+        污染 tag 列表（本次已误推并删除；发版请用 `git push origin vX.Y.Z`
+        而不是 `--tags`）。
