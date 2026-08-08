@@ -51,7 +51,7 @@ import {
 type State =
   | { kind: "loading" }
   | { kind: "installing"; step: string }
-  | { kind: "ready"; cliPath: string; entries: ProcessEntry[] }
+  | { kind: "ready"; cliPath: string; platform: string; entries: ProcessEntry[] }
   | { kind: "no-cli"; searched: string[] }
   | { kind: "error"; message: string };
 
@@ -62,10 +62,37 @@ const CONFIDENCE_COLOR: Record<Confidence, Color> = {
   none: Color.SecondaryText,
 };
 
+/**
+ * 一行是否命中搜索词。语义与桌面版 `src/App.tsx` 的过滤保持一致
+ * （含 `:5173` 这种可原样复制粘贴的端口写法）——两处都是**展示层**过滤，
+ * 不涉及判定，故允许各自实现；改一边时请顺手看另一边。
+ *
+ * 刻意用子串匹配而非 Raycast 内建的模糊匹配：本命令的搜索对象是端口号与 PID，
+ * 模糊匹配会让 "517" 命中 pid 5170321 之类的无关行，对数字场景是负收益。
+ */
+export function matchesQuery(e: ProcessEntry, query: string): boolean {
+  const q = query.trim().toLowerCase();
+  if (q === "") return true;
+  // UI 全程以 ":5173" 展示端口 —— 用户原样复制粘贴也要能搜到
+  const portQ = q.startsWith(":") ? q.slice(1) : q;
+  return (
+    e.app_label.toLowerCase().includes(q) ||
+    e.command.toLowerCase().includes(q) ||
+    e.full_command.toLowerCase().includes(q) ||
+    e.app_category.toLowerCase().includes(q) ||
+    (portQ !== "" && e.ports.some((p) => String(p).includes(portQ))) ||
+    String(e.pid).includes(q)
+  );
+}
+
 export default function SearchPorts() {
   const [state, setState] = useState<State>({ kind: "loading" });
   // 默认展开详情：本工具的卖点是「为什么判它是残留」，藏起证据就只剩一个端口列表。
   const [showDetail, setShowDetail] = useState(true);
+  // 自己接管过滤（List 的 filtering={false}）：内建过滤只隐藏 item，分区标题的
+  // 计数仍由扩展按全量 entries 算，于是搜索时会出现「筛出 3 行却写着 Healthy 12」
+  // 的自相矛盾（真机 QA 发现）。把过滤前移到分桶之前，计数与条目就恒等一致。
+  const [searchText, setSearchText] = useState("");
 
   async function load() {
     const prefs = getPreferenceValues<Preferences.SearchPorts>();
@@ -95,7 +122,7 @@ export default function SearchPorts() {
         await verifyCli(cliPath, searched);
       }
       const report = await scan(cliPath);
-      setState({ kind: "ready", cliPath, entries: report.entries });
+      setState({ kind: "ready", cliPath, platform: report.platform, entries: report.entries });
     } catch (e) {
       if (e instanceof CliNotFoundError) {
         setState({ kind: "no-cli", searched: e.searched });
@@ -165,15 +192,19 @@ export default function SearchPorts() {
   const loading = state.kind === "loading";
   const entries = state.kind === "ready" ? state.entries : [];
   const cliPath = state.kind === "ready" ? state.cliPath : "";
+  const platform = state.kind === "ready" ? state.platform : "";
 
   // 分组与桌面版一致：疑似 → 收藏 → 其余。引擎已按「疑似优先 + 置信度」排好序，
   // 这里只做分桶，不再二次排序（排序规则属于引擎，前端重排会与桌面版视觉不一致）。
-  const suspects = entries.filter((e) => e.is_zombie_suspect);
-  const starred = entries.filter((e) => e.is_whitelisted);
-  const healthy = entries.filter((e) => !e.is_zombie_suspect && !e.is_whitelisted);
+  // 先过滤再分桶 —— 分区计数取自各桶长度，因此与实际渲染的行数恒等。
+  const visible = entries.filter((e) => matchesQuery(e, searchText));
+  const suspects = visible.filter((e) => e.is_zombie_suspect);
+  const starred = visible.filter((e) => e.is_whitelisted);
+  const healthy = visible.filter((e) => !e.is_zombie_suspect && !e.is_whitelisted);
 
   const shared = {
     cliPath,
+    platform,
     onChanged: load,
     showDetail,
     onToggleDetail: () => setShowDetail((v) => !v),
@@ -182,7 +213,9 @@ export default function SearchPorts() {
   return (
     <List
       isLoading={loading}
-      isShowingDetail={showDetail && entries.length > 0}
+      isShowingDetail={showDetail && visible.length > 0}
+      filtering={false}
+      onSearchTextChange={setSearchText}
       searchBarPlaceholder="Filter by name, port, or PID…"
     >
       <Section title="Suspects" entries={suspects} {...shared} />
@@ -195,12 +228,23 @@ export default function SearchPorts() {
           description="No listening processes and no orphaned dev processes."
         />
       )}
+      {/* 接管过滤后「搜索无结果」也得自己兜：内建过滤会渲染 Raycast 的
+          No Results 页，filtering={false} 之后那页不再出现，缺了就是一片空白。 */}
+      {!loading && entries.length > 0 && visible.length === 0 && (
+        <List.EmptyView
+          icon={Icon.MagnifyingGlass}
+          title="No matches"
+          description={`Nothing matches “${searchText.trim()}”. Try a port, a PID, or part of the process name.`}
+        />
+      )}
     </List>
   );
 }
 
 type SharedProps = {
   cliPath: string;
+  /** ScanReport.platform —— Windows 上动作布局要跟桌面版的产品决定对齐 */
+  platform: string;
   onChanged: () => void;
   showDetail: boolean;
   onToggleDetail: () => void;
@@ -246,7 +290,8 @@ function Row({ entry, ...shared }: { entry: ProcessEntry } & SharedProps) {
       title={entry.app_label || entry.command}
       subtitle={ports}
       accessories={accessories}
-      keywords={[String(entry.pid), ...entry.ports.map(String), entry.command, entry.app_category]}
+      // 不再声明 keywords：过滤已由 matchesQuery 接管（List filtering={false}），
+      // 留着会让人以为搜索命中范围由这里定义 —— 实际它已被忽略。
       detail={shared.showDetail ? <Detail entry={entry} /> : undefined}
       actions={<Actions entry={entry} {...shared} />}
     />
@@ -301,6 +346,7 @@ function Detail({ entry }: { entry: ProcessEntry }) {
 function Actions({
   entry,
   cliPath,
+  platform,
   onChanged,
   onToggleDetail,
 }: { entry: ProcessEntry } & SharedProps) {
@@ -369,13 +415,18 @@ function Actions({
           style={Action.Style.Destructive}
           onAction={() => doKill(false)}
         />
-        <Action
-          title="Force Kill"
-          icon={Icon.Trash}
-          style={Action.Style.Destructive}
-          shortcut={{ modifiers: ["cmd", "shift"], key: "backspace" }}
-          onAction={() => doKill(true)}
-        />
+        {/* Windows 只有单个 Terminate：detached 控制台进程没有可靠的温和 kill，
+            引擎两种口径都走 TerminateProcess —— 桌面版的既定产品决定，这里保持
+            一致，不承诺一个不存在的「温和/强制」区别 */}
+        {platform !== "windows" && (
+          <Action
+            title="Force Kill"
+            icon={Icon.Trash}
+            style={Action.Style.Destructive}
+            shortcut={{ modifiers: ["cmd", "shift"], key: "backspace" }}
+            onAction={() => doKill(true)}
+          />
+        )}
       </ActionPanel.Section>
       <ActionPanel.Section>
         <Action

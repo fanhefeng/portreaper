@@ -1,99 +1,44 @@
-# Portreaper for Raycast
+# Portreaper
 
-在 Raycast 里列出监听端口的进程与**不占端口的孤儿 dev 进程**，一键终止无人认领的那些。
+Find the orphaned dev-server processes squatting on your ports, and reap them from Raycast.
 
-判定逻辑与桌面版**完全相同** —— 都是 `portreaper-core` 这一个引擎。本扩展不做任何
-判定，只负责调用与展示。
+You kill a terminal, but the `vite` / `node` / `cargo run` it launched keeps running — reparented to the OS, still holding port 3000. Next time you `npm run dev` the port is "already in use" and you have no idea which ghost to kill.
 
-## 前置：portreaper-cli
+Portreaper is not a generic port viewer. Its job is to **decide which listeners are orphaned dev-server zombies**, so you can act on a verdict instead of a raw process list.
 
-扩展通过 `portreaper-cli` 与引擎通信，按以下顺序寻找它（`src/cli.ts` 的
-`resolveCliPath`，逐个 `existsSync` 探测；**不查 `PATH`** —— 只认下列固定路径）：
+## What you get
 
-1. 扩展偏好里的 `portreaper-cli path`（显式指定，优先级最高）
-2. 扩展支持目录下自动下载并校验过的副本（首次使用时自动获取）
-3. `/Applications/Portreaper.app/Contents/MacOS/portreaper-cli`（打包尚未落地，见下）
-4. `<repo>/target/release/portreaper-cli`、`<repo>/target/debug/portreaper-cli`（开发构建）
-5. `~/.cargo/bin/portreaper-cli`
+- **Every TCP listener**, plus **orphaned dev processes that hold no port at all**. A leftover `electron-vite` main process — adopted by launchd after its parent `node` died, listening on nothing — is invisible to a port scan, but it is exactly the kind of residue worth clearing.
+- **A verdict with its evidence.** Suspects are tiered `confirmed` / `likely` / `possible`, and every row shows the signals behind the call: reparented to PID 1, launcher chain ends at a dead shell, dead terminal session, dev-server command line, duplicate instance of the same project.
+- **Exemptions applied automatically.** Processes managed by `launchd`, `brew services`, or `pm2`, and anything installed in a standard location, are never flagged.
+- **Detail on demand:** launcher chain, uptime, memory, and subtree CPU — a headless browser burns CPU in child processes while its own row reads ~0%, so the subtree total is what tells you it is actually spinning.
+- **Star anything to exempt it permanently.** A daemon you detached on purpose is behaviorally identical to an accidental zombie; star it once and it stops being flagged.
 
-**一般不需要手工安装**：全部落空时扩展会自己从 GitHub release 下载对应平台的二进制
-并校验 SHA-256（见 `src/install.ts`——Raycast Store 不允许把安装工作丢给用户）。
-下载失败才渲染引导页，列出找过的位置。
+## Terminating is safe by construction
 
-从源码安装（开发者路径）：
+The engine captures each process's creation time during the scan and **re-checks it immediately before killing**. If it moved, the kill is refused. That closes the window where a PID gets recycled between the moment you look at the list and the moment you press Enter — killing a recycled PID would mean terminating an unrelated process.
 
-```bash
-# 方式一：装到 ~/.cargo/bin
-cargo install --path crates/portreaper-cli
+Termination always asks for confirmation first.
 
-# 方式二：本地构建后在扩展偏好里指向它
-cargo build --release -p portreaper-cli
-# → <repo>/target/release/portreaper-cli
-```
+## Shared with the desktop app
 
-> **随 `.app` 分发尚未实现。** Tauri 的 `externalBin` / `bundle.resources` 都要求文件在
-> dev 时也存在，会给日常 `pnpm tauri dev` 加一道脆弱前置；且完整 release 流程无法本地
-> 彩排。详见 `docs/ARCHITECTURE-CORE-SPLIT.md` 步骤 4。
+Portreaper also ships as a macOS menubar app. Both frontends run the same classification engine and read the same whitelist file, so a star you add here shows up in the desktop app's next scan (within ~2 seconds) and vice versa.
 
-## 开发
+The desktop app is optional — this extension works on its own.
 
-```bash
-npm install            # 本目录独立于主仓库的 pnpm workspace
-npm run typecheck      # tsc --noEmit
-npm run dev            # ray develop（需要本机装有 Raycast）
-npm run build          # ray build —— 提交 Store 前必须通过
-```
+## First run: the engine binary
 
-**为什么这里用 npm 而主仓库用 pnpm**：Raycast Store 要求扩展提交 `package-lock.json`
-（官方 CI 用 npm 构建）。这是唯一的例外，不影响仓库其余部分。
+The classification logic lives in a small command-line binary, `portreaper-cli`. On first use the extension **downloads it from the project's GitHub release and verifies it against the published SHA-256 checksum**; a binary that fails verification is deleted, never executed. Nothing is installed system-wide — the binary lives in the extension's own support directory.
 
-**为什么不装 ESLint / Prettier**：本仓库的格式与 lint 统一由 Vite+ 工具链
-（`vp check` = oxfmt + oxlint）负责，扩展代码也在其覆盖范围内。Raycast 官方模板
-默认带 ESLint + Prettier，但两者都**不是** Store 的硬性要求 —— 未安装时
-`ray lint` 只会 warn 一句并跳过格式检查，真正的硬指标（`package.json` 字段、
-图标规格）照常校验，`ray build` 也照常通过。
+If you already have it (built from source, or installed via `cargo install`), the extension finds it automatically. To point at a copy in an unusual location, set **portreaper-cli path** in the extension preferences.
 
-装上它们的代价是实打实的：Prettier 与 oxfmt 功能重叠、换行风格不同，同管一批文件
-会在 `vp check --fix` 和 `ray lint --fix` 之间来回改写，逼得整个目录必须从主仓库的
-格式门禁里排除 —— 在一个把「格式门禁统一」当教训写进 CLAUDE.md 的仓库里凿一个飞地，
-不划算。（另注：Prettier 是被 `@raycast/eslint-config` 当传递依赖拖进来的，
-只卸 prettier 没用，得连 eslint 一起去掉才会真正消失。）
+## Why verdict reasons look like `ppid1_orphan`
 
-**残余风险**：官方文档提到 lint 检查「之后也会通过 GitHub 自动检查跑一遍」。若
-Store 的 CI 用它自带的 Prettier 检查代码风格，PR 可能被标记格式问题。届时的处置是
-提交前单跑一次 `ray lint --fix`，而不是把这套工具链常驻进仓库。
+Reason codes are shown exactly as the engine emits them. This extension is for developers, and `ppid1_orphan` carries more information than a vague paraphrase — it names the precise signal that fired. The desktop app's detail panel explains each code in prose.
 
-## 与桌面版共享状态
+## Links
 
-星标（白名单）写的是**同一个文件**：
+- [Portreaper on GitHub](https://github.com/fanhefeng/portreaper) — source, releases, and the desktop app
+- [How detection works](https://github.com/fanhefeng/portreaper#how-detection-works) — the full signal/exemption/confidence model
 
-```
-~/Library/Application Support/com.fhf.portreaper/whitelist.json
-```
-
-在 Raycast 里加的星，桌面版下一轮扫描（2 秒内）就能看到，反之亦然。这由
-`portreaper_core::paths` 保证 —— 两边调用的是同一个函数，桌面版启动时还会逐一比对
-自解析结果与 Tauri 的解析，不一致就报警。
-
-> debug 构建的 CLI 指向 `.../com.fhf.portreaper/dev/whitelist.json`，与
-> `pnpm tauri dev` 配对；release 构建指向正式目录，与安装版配对。这是刻意设计，
-> 不是 bug。
-
-## 为什么理由显示成 `ppid1_orphan` 这样的机器码
-
-翻译属于「表达」，是前端的事，而桌面版的双语文案住在 `src/i18n.ts` —— 那个模块在顶层
-访问 `localStorage` / `navigator`，Node 环境 import 不进来。与其为 Raycast 复制第二份
-文案（第二份真相源 + 第二条漂移路径），不如诚实地显示引擎的原始判定码：本扩展的用户是
-开发者，`ppid1_orphan` 比一句含糊的翻译更有信息量。完整解释在桌面版的详情面板。
-
-## 安全性
-
-`kill` 强制携带扫描时捕获的 `start_unix`（进程创建时间）。引擎在终止前重新核对它，
-对不上就拒绝 —— 这防的是「scan 与点击之间 PID 被回收、误杀另一个进程」。这条防护
-在引擎侧是 fail-closed 的，所有前端自动继承，扩展这边没有也不该有绕过它的开关。
-
-## 未验证的部分
-
-扩展代码通过了 `tsc --noEmit`（`@raycast/api` 类型全部对上），CLI 侧的 scan / kill /
-whitelist 三条链路都在本机真机验证过。但**Raycast 内的 UI 交互尚未真机验证** ——
-需要在装有 Raycast 的机器上 `npm run dev` 走一遍（本目录用 npm，理由见「开发」一节）。
+MIT licensed.
