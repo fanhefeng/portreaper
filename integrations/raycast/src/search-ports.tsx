@@ -32,6 +32,7 @@ import {
   CliNotFoundError,
   SchemaMismatchError,
   type Confidence,
+  type Platform,
   type ProcessEntry,
   kill,
   resolveCliPath,
@@ -51,7 +52,7 @@ import {
 type State =
   | { kind: "loading" }
   | { kind: "installing"; step: string }
-  | { kind: "ready"; cliPath: string; platform: string; entries: ProcessEntry[] }
+  | { kind: "ready"; cliPath: string; platform: Platform; entries: ProcessEntry[] }
   | { kind: "no-cli"; searched: string[] }
   | { kind: "error"; message: string };
 
@@ -192,7 +193,7 @@ export default function SearchPorts() {
   const loading = state.kind === "loading";
   const entries = state.kind === "ready" ? state.entries : [];
   const cliPath = state.kind === "ready" ? state.cliPath : "";
-  const platform = state.kind === "ready" ? state.platform : "";
+  const platform: Platform = state.kind === "ready" ? state.platform : "unknown";
 
   // 分组与桌面版一致：疑似 → 收藏 → 其余。引擎已按「疑似优先 + 置信度」排好序，
   // 这里只做分桶，不再二次排序（排序规则属于引擎，前端重排会与桌面版视觉不一致）。
@@ -244,7 +245,7 @@ export default function SearchPorts() {
 type SharedProps = {
   cliPath: string;
   /** ScanReport.platform —— Windows 上动作布局要跟桌面版的产品决定对齐 */
-  platform: string;
+  platform: Platform;
   onChanged: () => void;
   showDetail: boolean;
   onToggleDetail: () => void;
@@ -417,8 +418,10 @@ function Actions({
         />
         {/* Windows 只有单个 Terminate：detached 控制台进程没有可靠的温和 kill，
             引擎两种口径都走 TerminateProcess —— 桌面版的既定产品决定，这里保持
-            一致，不承诺一个不存在的「温和/强制」区别 */}
-        {platform !== "windows" && (
+            一致，不承诺一个不存在的「温和/强制」区别。
+            判断写成 === "macos" 而非 !== "windows"：Force Kill 是破坏性动作，
+            只在确知平台支持 SIGTERM/SIGKILL 之分时才提供，unknown 一律不给 */}
+        {platform === "macos" && (
           <Action
             title="Force Kill"
             icon={Icon.Trash}
