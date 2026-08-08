@@ -8,11 +8,15 @@ use std::process::Command;
 use std::time::{SystemTime, UNIX_EPOCH};
 
 use super::classify::ReasonCode;
-use super::identify::{basename, is_script_runtime, project_binary_label, script_runtime_label};
+use super::identify::{basename, project_binary_label, AppIdentity};
 use super::model::{Collected, Listener, ParentRef, ProcMeta};
+use super::{
+    AUTOMATION_CATEGORY, DEV_SCRIPT_CATEGORY, INSTALLED_APP_CATEGORY, SYSTEM_CATEGORY,
+    UNKNOWN_CATEGORY, USER_BINARY_CATEGORY,
+};
 
 // 系统组件路径前缀 —— /System、/Library、/usr 等下的可执行文件视为系统组件。
-// identify_app 的「系统组件」归类（step 2c）与 is_standard_install_path 的豁免共用
+// identify_app 的「系统组件」归类（step 2b）与 is_standard_install_path 的豁免共用
 // 这一份，避免两处列表 drift（评审 E2）。/Applications/ 与 /private/var/folders/
 // 不在此列：前者归 installed-app（step 2a），后者要让 dev-build 产物先被 step 5 接住。
 const SYSTEM_COMPONENT_PREFIXES: &[&str] = &[
@@ -86,7 +90,7 @@ pub(crate) fn synth_chain_root() -> ParentRef {
     ParentRef {
         pid: 1,
         label: "launchd".to_string(),
-        category: "system".to_string(),
+        category: SYSTEM_CATEGORY.to_string(),
         exe_path: "/sbin/launchd".to_string(),
     }
 }
@@ -94,6 +98,15 @@ pub(crate) fn synth_chain_root() -> ParentRef {
 /// 链走到 PID 1 即 init；macOS 没有 Windows 那种「存活系统根」概念。
 pub(crate) fn chain_hits_init(parent_ppid: u32) -> bool {
     parent_ppid == 1
+}
+
+/// 链走到死根（ppid==0 / 父不在快照）时是否算「链到 init」——**否**。
+/// macOS 上这只是 kernel(0) 或两次快照间隙的瞬态，保守收尾、不下结论；
+/// 真正的 init 终点由 `chain_hits_init`（PID 1 = launchd）表达。
+/// 与 windows.rs 的同签名钩子成对（那边为 true）—— 平台语义 100% 收敛在
+/// 叶子文件，编排层（chain.rs）不再内嵌 `cfg!(windows)`。
+pub(crate) fn dead_root_terminates_chain() -> bool {
+    false
 }
 
 pub(crate) fn is_live_session_root(_exe_path: &str) -> bool {
@@ -109,42 +122,32 @@ pub(crate) fn is_live_session_root(_exe_path: &str) -> bool {
 /// 类别 dev-script / automation-instance）也照停 —— 见
 /// `chain_stopper_stops_at_dev_runtimes_on_purpose` 的理由。
 pub(crate) fn is_chain_stopper(exe_path: &str, category: &str) -> bool {
-    category == "installed-app" || exe_path.contains(".app/")
+    category == INSTALLED_APP_CATEGORY || exe_path.contains(".app/")
 }
 
-/// (label, category) —— macOS 路径阶梯。顺序敏感：脚本/模块身份 → 自动化实例 →
+/// macOS 路径阶梯。顺序敏感：脚本/模块身份 → 自动化实例 →
 /// 非 .app dev 运行时 → .app → /Applications 裸 → 系统 → 裸脚本运行时 →
 /// Homebrew CLI → cargo 产物 → 用户目录 → unknown。脚本/模块必须最先判：
 /// 解释器自身可能就住在 .app bundle / 系统路径里（Python.app、/usr/bin/python3）。
-pub(crate) fn identify_app(
-    full_command: &str,
-    short_command: &str,
-    exe_path: &str,
-) -> (String, String) {
+pub(crate) fn identify_app(full_command: &str, short_command: &str, exe_path: &str) -> AppIdentity {
     let exe = exe_path;
 
-    // 0. 脚本/模块身份优先于一切路径与 .app 判定 —— brew / python.org 的
-    //    Python 都以 .../Python.app/Contents/MacOS/Python 形态存在，若先走
-    //    .app 阶梯会被归 installed-app 豁免（真实漏报：孤儿 python -m
-    //    http.server 占着 8000 端口，解释器在 Cellar 的 Python.app 里）。
-    if is_script_runtime(short_command) {
-        if let Some(script) = super::identify::extract_script_arg(full_command) {
-            if is_standard_install_path(script) {
-                // 系统自带的脚本任务（/System/.../foo.py）仍归系统
-                return (basename(script).to_string(), "system".to_string());
-            }
-            return (
-                script_runtime_label(full_command, short_command),
-                "dev-script".to_string(),
-            );
-        }
-        // `-m 模块` 调用：身份是模块（python -m http.server）
-        if let Some(module) = super::identify::extract_module_arg(full_command) {
-            return (
-                format!("{} · {}", module, short_command),
-                "dev-script".to_string(),
-            );
-        }
+    // 0. 脚本/模块身份优先于一切路径与 .app 判定 —— 决策树共享在
+    //    identify::script_identity_step（双平台逐行同构，曾各写一份且真漂移过）。
+    //    macOS 侧注入的差异：标签用原样 short_command；脚本自身也在标准路径时
+    //    归「系统自带的脚本任务」（/System/.../foo.py → system）。
+    if let Some(id) = super::identify::script_identity_step(
+        full_command,
+        short_command,
+        short_command,
+        short_command,
+        is_standard_install_path,
+        |script| AppIdentity {
+            label: basename(script).to_string(),
+            category: SYSTEM_CATEGORY.to_string(),
+        },
+    ) {
+        return id;
     }
 
     // 0b. 一次性自动化浏览器实例 —— 身份在命令行，不在路径（与阶梯 0 的脚本身份
@@ -152,10 +155,10 @@ pub(crate) fn identify_app(
     //     可执行文件就住在 /Applications，被归 installed-app 即吃硬豁免、永远漏网
     //     （KNOWN-GAPS Gap 1 的真实案例：空转 7 小时、子进程满核）。
     if super::identify::is_automation_instance(full_command) {
-        return (
-            super::identify::automation_label(exe, short_command),
-            super::AUTOMATION_CATEGORY.to_string(),
-        );
+        return AppIdentity {
+            label: super::identify::automation_label(exe, short_command),
+            category: AUTOMATION_CATEGORY.to_string(),
+        };
     }
 
     // 0c. 非 .app 形态的 dev 运行时 —— Playwright 新默认的 chromium_headless_shell、
@@ -165,7 +168,10 @@ pub(crate) fn identify_app(
     //     整行不可见（评审发现的调用位置漂移）。.app 形态留给阶梯 1 接住，取更
     //     友好的 app 名作标签。
     if !exe.contains(".app/") && super::identify::is_dev_tool_runtime_path(exe) {
-        return (basename(exe).to_string(), "dev-script".to_string());
+        return AppIdentity {
+            label: basename(exe).to_string(),
+            category: DEV_SCRIPT_CATEGORY.to_string(),
+        };
     }
 
     // 1. .app bundle —— 抽出 .app 名（exe 来自 ps comm，含空格也完整）
@@ -180,33 +186,46 @@ pub(crate) fn identify_app(
             // 父进程的孤儿 dev runtime 会因「长得像已安装应用」永远漏网。
             // 用户安装的应用绝不会住在这些目录里，故此信号零误伤（判定见 identify.rs）。
             if super::identify::is_dev_tool_runtime_path(exe) {
-                return (app_name.to_string(), "dev-script".to_string());
+                return AppIdentity {
+                    label: app_name.to_string(),
+                    category: DEV_SCRIPT_CATEGORY.to_string(),
+                };
             }
             let category = if exe.starts_with("/System/") || exe.starts_with("/Library/") {
-                "system"
+                SYSTEM_CATEGORY
             } else {
-                "installed-app"
+                INSTALLED_APP_CATEGORY
             };
-            return (app_name.to_string(), category.to_string());
+            return AppIdentity {
+                label: app_name.to_string(),
+                category: category.to_string(),
+            };
         }
     }
 
     // 2a. /Applications/ 下的裸二进制
     if exe.starts_with("/Applications/") {
-        return (basename(exe).to_string(), "installed-app".to_string());
+        return AppIdentity {
+            label: basename(exe).to_string(),
+            category: INSTALLED_APP_CATEGORY.to_string(),
+        };
     }
 
-    // 2c. 系统组件（与 is_standard_install_path 共用 SYSTEM_COMPONENT_PREFIXES）
+    // 2b. 系统组件（与 is_standard_install_path 共用 SYSTEM_COMPONENT_PREFIXES）
+    //     （曾编号 2c —— 当年 2b 台阶被删后编号未回收，首读会去找不存在的分支）
     if SYSTEM_COMPONENT_PREFIXES.iter().any(|p| exe.starts_with(p)) {
-        return (basename(exe).to_string(), "system".to_string());
+        return AppIdentity {
+            label: basename(exe).to_string(),
+            category: SYSTEM_CATEGORY.to_string(),
+        };
     }
 
-    // 3. 无脚本参数的脚本运行时（node REPL、python -m 等）—— 按 exe 走原阶梯
-    if is_script_runtime(short_command) {
-        return (
-            script_runtime_label(full_command, short_command),
-            "dev-script".to_string(),
-        );
+    // 3. 无脚本参数的脚本运行时（node REPL 等）—— 按 exe 走原阶梯
+    if super::identify::is_script_runtime(short_command) {
+        return AppIdentity {
+            label: super::identify::script_runtime_label(full_command, short_command),
+            category: DEV_SCRIPT_CATEGORY.to_string(),
+        };
     }
 
     // 4. /usr/local/, /opt/homebrew/, /opt/local/ → 用户安装的 CLI
@@ -214,7 +233,10 @@ pub(crate) fn identify_app(
         || exe.starts_with("/opt/homebrew/")
         || exe.starts_with("/opt/local/")
     {
-        return (basename(exe).to_string(), "user-binary".to_string());
+        return AppIdentity {
+            label: basename(exe).to_string(),
+            category: USER_BINARY_CATEGORY.to_string(),
+        };
     }
 
     // 5. Rust/Cargo 产物、`go run` 临时编译产物（/private/var/folders/.../go-build*/exe/main）——
@@ -222,14 +244,20 @@ pub(crate) fn identify_app(
     //    孤儿 go run 服务整体豁免（评审发现的真实漏报；该前缀本为 App Translocation 设，
     //    而那些路径含 .app/ 早被阶梯 1 接住）。判定片段集中在 identify::is_dev_build_artifact。
     if super::identify::is_dev_build_artifact(exe) {
-        return (project_binary_label(exe), "dev-script".to_string());
+        return AppIdentity {
+            label: project_binary_label(exe),
+            category: DEV_SCRIPT_CATEGORY.to_string(),
+        };
     }
 
     // 6. /Users/... → 用户目录下的自定义二进制。
     //    注意类别是 user-binary 而非 dev-script：「位于用户目录」只说明位置，
     //    不构成 dev 证据 —— dev-script 会把裸孤儿二进制直升 Confirmed 入清扫。
     if exe.starts_with("/Users/") {
-        return (project_binary_label(exe), "user-binary".to_string());
+        return AppIdentity {
+            label: project_binary_label(exe),
+            category: USER_BINARY_CATEGORY.to_string(),
+        };
     }
 
     // 7. fallback
@@ -239,7 +267,10 @@ pub(crate) fn identify_app(
     } else {
         bin.to_string()
     };
-    (label, "unknown".to_string())
+    AppIdentity {
+        label,
+        category: UNKNOWN_CATEGORY.to_string(),
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -819,7 +850,10 @@ n[::1]:9333->[::1]:60123
     #[test]
     fn identify_ladder() {
         // .app bundle（含空格路径）
-        let (label, cat) = identify_app(
+        let AppIdentity {
+            label,
+            category: cat,
+        } = identify_app(
             "/Applications/Visual Studio Code.app/Contents/MacOS/Electron --type=utility",
             "Electron",
             "/Applications/Visual Studio Code.app/Contents/MacOS/Electron",
@@ -830,7 +864,7 @@ n[::1]:9333->[::1]:60123
         // node_modules 下的 Electron.app（electron / electron-vite 的 dev runtime）：
         // 形态与 /Applications 的真应用相同，但必须归 dev-script 才不会被 installed-app
         // 豁免吞掉 —— 否则孤儿 Electron（dev 残留）永远检测不到。
-        let (label, cat) = identify_app(
+        let AppIdentity { label, category: cat } = identify_app(
             "/Users/x/proj/node_modules/.pnpm/electron@33.4.11/node_modules/electron/dist/Electron.app/Contents/MacOS/Electron .",
             "Electron",
             "/Users/x/proj/node_modules/.pnpm/electron@33.4.11/node_modules/electron/dist/Electron.app/Contents/MacOS/Electron",
@@ -839,12 +873,18 @@ n[::1]:9333->[::1]:60123
         assert_eq!(cat, "dev-script");
 
         // 系统组件
-        let (label, cat) = identify_app("/usr/sbin/cupsd -l", "cupsd", "/usr/sbin/cupsd");
+        let AppIdentity {
+            label,
+            category: cat,
+        } = identify_app("/usr/sbin/cupsd -l", "cupsd", "/usr/sbin/cupsd");
         assert_eq!(label, "cupsd");
         assert_eq!(cat, "system");
 
         // 脚本运行时 + 项目提取
-        let (label, cat) = identify_app(
+        let AppIdentity {
+            label,
+            category: cat,
+        } = identify_app(
             "node /Users/x/proj/node_modules/vite/bin/vite.js",
             "node",
             "/usr/local/bin/node",
@@ -853,7 +893,10 @@ n[::1]:9333->[::1]:60123
         assert_eq!(cat, "dev-script");
 
         // Homebrew CLI
-        let (label, cat) = identify_app(
+        let AppIdentity {
+            label,
+            category: cat,
+        } = identify_app(
             "/opt/homebrew/bin/redis-server *:6379",
             "redis-server",
             "/opt/homebrew/bin/redis-server",
@@ -862,7 +905,7 @@ n[::1]:9333->[::1]:60123
         assert_eq!(cat, "user-binary");
 
         // Cargo 产物
-        let (_, cat) = identify_app(
+        let AppIdentity { category: cat, .. } = identify_app(
             "/Users/x/rust/mytool/target/debug/mytool",
             "mytool",
             "/Users/x/rust/mytool/target/debug/mytool",
@@ -872,7 +915,10 @@ n[::1]:9333->[::1]:60123
         // 回归（评审发现的真实漏报）：go run 临时编译产物在 /private/var/folders
         // 下，必须拿到 dev-script 身份 —— 否则被标准路径前缀整体豁免，
         // 孤儿 go run 服务永远不可见（CLAUDE.md 明示 cargo run 同类是产品目标）
-        let (label, cat) = identify_app(
+        let AppIdentity {
+            label,
+            category: cat,
+        } = identify_app(
             "/private/var/folders/dx/T/go-build123/b001/exe/server --port 8080",
             "server",
             "/private/var/folders/dx/T/go-build123/b001/exe/server",
@@ -884,7 +930,7 @@ n[::1]:9333->[::1]:60123
         // 必须用完整真实路径：brew 的 Python 住在 Cellar 的 Python.app bundle
         // 里，曾被 .app 阶梯先一步归 installed-app 豁免（真实漏报案例：
         // 孤儿 python -m http.server 占着 8000 端口）。
-        let (label, cat) = identify_app(
+        let AppIdentity { label, category: cat } = identify_app(
             "/opt/homebrew/Cellar/python@3.14/3.14.5/Frameworks/Python.framework/Versions/3.14/Resources/Python.app/Contents/MacOS/Python -m http.server 8000",
             "Python",
             "/opt/homebrew/Cellar/python@3.14/3.14.5/Frameworks/Python.framework/Versions/3.14/Resources/Python.app/Contents/MacOS/Python",
@@ -893,7 +939,7 @@ n[::1]:9333->[::1]:60123
         assert_eq!(cat, "dev-script");
 
         // 同形态跑用户脚本：身份是脚本，.app 包装不豁免
-        let (label, cat) = identify_app(
+        let AppIdentity { label, category: cat } = identify_app(
             "/Library/Frameworks/Python.framework/Versions/3.12/Resources/Python.app/Contents/MacOS/Python /Users/x/bot/main.py",
             "Python",
             "/Library/Frameworks/Python.framework/Versions/3.12/Resources/Python.app/Contents/MacOS/Python",
@@ -901,7 +947,10 @@ n[::1]:9333->[::1]:60123
         assert_eq!(label, "main.py · Python");
         assert_eq!(cat, "dev-script");
 
-        let (label, cat) = identify_app(
+        let AppIdentity {
+            label,
+            category: cat,
+        } = identify_app(
             "/usr/bin/python3 -m http.server 9000",
             "python3",
             "/usr/bin/python3",
@@ -912,7 +961,10 @@ n[::1]:9333->[::1]:60123
         // KNOWN-GAPS Gap 1：headless 自动化实例的身份在命令行 —— 必须先于
         // .app / /Applications 阶梯判定，否则归 installed-app 即吃硬豁免。
         const CHROME: &str = "/Applications/Google Chrome.app/Contents/MacOS/Google Chrome";
-        let (label, cat) = identify_app(
+        let AppIdentity {
+            label,
+            category: cat,
+        } = identify_app(
             &format!(
                 "{CHROME} --headless=new --user-data-dir=/private/tmp/sess/prof \
                  --remote-debugging-port=9339 about:blank"
@@ -924,14 +976,20 @@ n[::1]:9333->[::1]:60123
         assert_eq!(cat, super::super::AUTOMATION_CATEGORY);
 
         // 对照：同一个 exe，无自动化开关 ⇒ 仍是用户日常那个 Chrome
-        let (label, cat) = identify_app(CHROME, "Google Chrome", CHROME);
+        let AppIdentity {
+            label,
+            category: cat,
+        } = identify_app(CHROME, "Google Chrome", CHROME);
         assert_eq!(label, "Google Chrome");
         assert_eq!(cat, "installed-app");
 
         // Playwright 下载到 Caches 的 Chromium.app：形态同真应用，但归 dev-script
         //（与 node_modules 下的 Electron.app 同一条不变量）
         let pw = "/Users/x/Library/Caches/ms-playwright/chromium-1148/chrome-mac/Chromium.app/Contents/MacOS/Chromium";
-        let (label, cat) = identify_app(pw, "Chromium", pw);
+        let AppIdentity {
+            label,
+            category: cat,
+        } = identify_app(pw, "Chromium", pw);
         assert_eq!(label, "Chromium");
         assert_eq!(cat, "dev-script");
     }
@@ -943,23 +1001,26 @@ n[::1]:9333->[::1]:60123
     fn dev_tool_runtime_without_app_bundle_is_dev_script() {
         // Playwright 新默认下载的 headless shell（无 .app 包装）
         let hs = "/Users/x/Library/Caches/ms-playwright/chromium_headless_shell-1155/chrome-mac/headless_shell";
-        let (label, cat) = identify_app(hs, "headless_shell", hs);
+        let AppIdentity {
+            label,
+            category: cat,
+        } = identify_app(hs, "headless_shell", hs);
         assert_eq!(label, "headless_shell");
         assert_eq!(cat, "dev-script");
 
         // Selenium Manager 下载的 chromedriver
         let cd = "/Users/x/.cache/selenium/chromedriver/mac-arm64/chromedriver --port=9515";
         let exe = "/Users/x/.cache/selenium/chromedriver/mac-arm64/chromedriver";
-        assert_eq!(identify_app(cd, "chromedriver", exe).1, "dev-script");
+        assert_eq!(identify_app(cd, "chromedriver", exe).category, "dev-script");
 
         // node_modules 下的平台二进制（esbuild）
         let es = "/Users/x/proj/node_modules/@esbuild/darwin-arm64/bin/esbuild --serve";
         let exe = "/Users/x/proj/node_modules/@esbuild/darwin-arm64/bin/esbuild";
-        assert_eq!(identify_app(es, "esbuild", exe).1, "dev-script");
+        assert_eq!(identify_app(es, "esbuild", exe).category, "dev-script");
 
         // 对照：用户目录下的普通二进制不受影响，仍是 user-binary
         let ub = "/Users/x/bin/mytool";
-        assert_eq!(identify_app(ub, "mytool", ub).1, "user-binary");
+        assert_eq!(identify_app(ub, "mytool", ub).category, "user-binary");
     }
 
     /// `.app/` 兜底刻意**不**服从 `identify_app` 的身份判定 —— 这与
@@ -988,7 +1049,10 @@ n[::1]:9333->[::1]:60123
         // node_modules 里的 Electron：身份是 dev-script，但**照样**是链终点
         let electron =
             "/Users/x/proj/node_modules/electron/dist/Electron.app/Contents/MacOS/Electron";
-        assert_eq!(identify_app(electron, "Electron", electron).1, "dev-script");
+        assert_eq!(
+            identify_app(electron, "Electron", electron).category,
+            "dev-script"
+        );
         assert!(
             is_chain_stopper(electron, "dev-script"),
             "父健在的 Electron 主进程必须终止链，否则其 renderer 会被误报为孤儿"

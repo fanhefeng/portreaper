@@ -1,6 +1,5 @@
 use serde::Serialize;
 
-use super::identify::{basename, strip_exe};
 use super::model::ProcessSnapshot;
 
 /// 僵尸判定原因 —— 机器码，serde 蛇形小写输出，前端按 `reason.<code>` 做 i18n。
@@ -60,6 +59,22 @@ pub enum Confidence {
     Confirmed,
 }
 
+impl Confidence {
+    /// wire 形态（serde lowercase）的唯一非 serde 出口 —— CLI 表格等人类可读输出
+    /// 必须与 JSON 同源。曾用 `format!("{:?}").to_lowercase()` 重构 wire 名：
+    /// 四个变体恰好都是单词才侥幸等价，将来任何多词变体（rename_all 与
+    /// Debug+lowercase 对多词的结果不同源）会让两种输出静默分叉。
+    /// 与 serde 的一致性由 `confidence_as_str_matches_serde_wire_format` 钉住。
+    pub fn as_str(&self) -> &'static str {
+        match self {
+            Confidence::None => "none",
+            Confidence::Possible => "possible",
+            Confidence::Likely => "likely",
+            Confidence::Confirmed => "confirmed",
+        }
+    }
+}
+
 #[derive(Debug)]
 pub(crate) struct Verdict {
     pub is_suspect: bool,
@@ -77,131 +92,20 @@ impl Verdict {
     }
 }
 
-/// dev-server 长关键字：整行小写、词界锚定的子串匹配（双平台共用）——
-/// 出现在脚本路径片段里（node_modules/vite/bin/vite.js）同样是真实 dev 证据。
-/// 词界锚定不可省：vite⊂invite、astro⊂gastro/disastrous、remix⊂premix、
-/// tauri⊂centauri、electron⊂electronics —— 与 "serve"⊂redis-server 同型的
-/// Confirmed 误升级面（评审实锤），只是残留在长词表里；真实 dev 工具在命令行里
-/// 两侧总是 / \ . @ - 空白等分隔符，锚定后仍全部命中。
-const DEV_SERVER_SUBSTRINGS: &[&str] = &[
-    "vite",
-    "remix",
-    "nuxt",
-    "astro",
-    "svelte",
-    "uvicorn",
-    "gunicorn",
-    "flask",
-    "fastapi",
-    "django",
-    "hypercorn",
-    "ts-node",
-    "esbuild",
-    "webpack",
-    "rspack",
-    "turbopack",
-    "rollup",
-    "parcel",
-    "snowpack",
-    "tauri",
-    "electron",
-    "tomcat",
-    "jetty",
-    "go run",
-    "cargo run",
-    "cargo-watch",
-    "artisan",
-    "http.server",
-    "live-server",
-    "browser-sync",
-    "http-server",
-    "ngrok",
-    "cloudflared",
-    "streamlit",
-    "gradio",
-    "jupyter",
-    "next dev",
-    "next-server",
-    "next start",
-    // 运行时名内嵌异词 / 无版本号连字符后缀，token_is 的「数字开头」闸挡不住又确为
-    // dev 工具的，在此显式收录（评审发现的回归：旧 "node"/"php" 裸子串曾命中它们）。
-    "nodemon",
-    "php-fpm",
-    // 浏览器自动化工具链（KNOWN-GAPS Gap 1 的同族）：driver 与测试运行器本身占端口
-    // （chromedriver 9515 等），孤儿化后就是纯残留。
-    "chromedriver",
-    "geckodriver",
-    "msedgedriver",
-    "safaridriver",
-    "webdriver",
-    "playwright",
-    "puppeteer",
-    "selenium",
-    "cypress",
-    "appium",
-];
-
-/// dev-server 短关键字：常见词，裸子串会大面积误伤（评审实锤的 Confirmed 误升级：
-/// "serve"⊂redis-server/myserver/observer、"node"⊂prometheus-node-exporter、
-/// "java"⊂javascript-engine、"bun"⊂ubuntu-report）。只按「token 基名 == 关键字」
-/// 匹配，容忍数字/点版本后缀与 .exe：/opt/homebrew/bin/node、python3.12、
-/// java.exe 命中；redis-server、javascript-engine、guardrails 不命中。
-/// 误伤面收紧的代价（npx serve 等包装丢失 token）由 dev_category 兜底 ——
-/// classify 的 dev_like = keyword || category 本就是双保险。
-const DEV_SERVER_TOKENS: &[&str] = &[
-    "node", "next", "nest", "python", "ruby", "rails", "puma", "unicorn", "deno", "bun", "bunx",
-    "tsx", "java", "php", "serve", "air",
-];
-
-/// token 基名（去路径、去 .exe）等于关键字，或其后仅是「版本/构建/架构」装饰：
-/// 必须以数字（版本号）开头，之后才放行字母数字 / 点 / 连字符 —— node18、python3.12、
-/// python3.13t（自由线程构建）、node20.11.0-arm64 命中。
-/// 「数字开头」是关键防误伤闸：关键字后直接接异词的 node-exporter、unicorn-tool、
-/// javascript（→ "-exporter"/"-tool"/"script-engine" 非数字开头）不命中 ——
-/// 真·dev 工具里有此形态的（nodemon、php-fpm）改由 DEV_SERVER_SUBSTRINGS 显式收录。
-fn token_is(token: &str, pat: &str) -> bool {
-    match strip_exe(basename(token)).strip_prefix(pat) {
-        Some("") => true,
-        Some(rest) => {
-            rest.starts_with(|c: char| c.is_ascii_digit())
-                && rest
-                    .chars()
-                    .all(|c| c.is_ascii_alphanumeric() || c == '.' || c == '-')
-        }
-        None => false,
-    }
-}
-
-/// 子串命中且两侧邻字符都不是 ASCII 字母数字。needle 全 ASCII；haystack 若含
-/// 多字节字符，其任一字节都 >= 0x80、天然通过「非字母数字」边界判定，字节索引安全
-/// （needle 命中区间内的 abs+1 必为字符边界）。
-fn contains_bounded(haystack: &str, needle: &str) -> bool {
-    let bytes = haystack.as_bytes();
-    let mut start = 0;
-    while let Some(pos) = haystack[start..].find(needle) {
-        let abs = start + pos;
-        let end = abs + needle.len();
-        let before_ok = abs == 0 || !bytes[abs - 1].is_ascii_alphanumeric();
-        let after_ok = end == bytes.len() || !bytes[end].is_ascii_alphanumeric();
-        if before_ok && after_ok {
-            return true;
-        }
-        start = abs + 1;
-    }
-    false
-}
-
-pub(crate) fn is_dev_server(cmd: &str) -> bool {
-    let lower = cmd.to_lowercase();
-    if DEV_SERVER_SUBSTRINGS
-        .iter()
-        .any(|p| contains_bounded(&lower, p))
-    {
-        return true;
-    }
-    lower
-        .split_whitespace()
-        .any(|tok| DEV_SERVER_TOKENS.iter().any(|p| token_is(tok, p)))
+/// 「dev-like」判据的唯一实现 —— 两个消费方必须同源：
+///   1. 本文件的置信度分层（孤儿 × dev ⇒ Confirmed）；
+///   2. mod.rs 的孤儿预闸 `orphan_gate_dev_like`（无端口行的纳入门槛）。
+///
+/// 将来新增 dev 信号（新类别、新的命令行证据）只改这里，预闸自动跟上 ——
+/// 不存在「分层认、预闸不认」的静默漂移（曾是两份靠约定同步的内联表达式）。
+pub(super) fn is_dev_like(
+    dev_keyword: bool,
+    dev_category: bool,
+    automation_instance: bool,
+) -> bool {
+    // 自动化实例与 dev-script 同权：都是「意图明确的开发期产物」，
+    // 孤儿 × 它们 ⇒ Confirmed（浏览器可执行文件装在哪与此无关）。
+    dev_keyword || dev_category || automation_instance
 }
 
 /// 启动后的宽限期（秒）：刚被收养/刚重启的进程降级为 Possible，防闪报、防误扫。
@@ -245,9 +149,7 @@ pub(crate) fn classify(s: &ProcessSnapshot) -> Verdict {
 
     // ---- 3. 收集正向信号 ----
     let direct_orphan = s.direct_orphan.is_some();
-    // 自动化实例与 dev-script 同权：都是「意图明确的开发期产物」，
-    // 孤儿 × 它们 ⇒ Confirmed（浏览器可执行文件装在哪与此无关）。
-    let dev_like = s.dev_keyword || s.dev_category || s.automation_instance;
+    let dev_like = is_dev_like(s.dev_keyword, s.dev_category, s.automation_instance);
     let chain_orphan = s.chain_terminates_at_init && (dev_like || s.chain_has_orphan_shell);
 
     // ---- 4. 无任何孤儿信号 → 不是嫌疑 ----
@@ -357,7 +259,11 @@ mod tests {
         snap: ProcessSnapshot,
         want_suspect: bool,
         want_conf: Confidence,
-        /// 判定原因必须包含的码（集合包含校验，与顺序无关）
+        /// 判定原因的**完整**集合（顺序无关的集合相等断言）。
+        /// 曾是「包含」校验 —— 多出一条不该有的 reason 表格察觉不到，而本项目
+        /// 修过的两个真 bug（OrphanedChain 同义反复、NonstandardPath 说错话）
+        /// 恰恰都是这一类；「必须缺席」只能另写专项测试才表达得了。相等断言让
+        /// 表本身就钉住缺席（专项测试保留其回归叙事）。
         want_reasons: &'static [ReasonCode],
     }
 
@@ -507,7 +413,12 @@ mod tests {
                 },
                 want_suspect: true,
                 want_conf: Confirmed,
-                want_reasons: &[Ppid1Orphan, OrphanedSession, DevServerKeyword],
+                want_reasons: &[
+                    Ppid1Orphan,
+                    OrphanedSession,
+                    NonstandardPath,
+                    DevServerKeyword,
+                ],
             },
             // ============ 分级灰区 ============
             Case {
@@ -520,7 +431,12 @@ mod tests {
                 },
                 want_suspect: true,
                 want_conf: Possible,
-                want_reasons: &[Ppid1Orphan, JustReparented],
+                want_reasons: &[
+                    Ppid1Orphan,
+                    NonstandardPath,
+                    DevServerKeyword,
+                    JustReparented,
+                ],
             },
             Case {
                 name: "12 nohup 脱离的非 dev 二进制：孤儿但意图不可证 → Likely",
@@ -570,7 +486,7 @@ mod tests {
                 },
                 want_suspect: true,
                 want_conf: Confirmed,
-                want_reasons: &[ParentExited, DevServerKeyword],
+                want_reasons: &[ParentExited, NonstandardPath, DevServerKeyword],
             },
             Case {
                 name: "17 Win PID 槽位复用（父创建时间晚于子）—— 强证据保持 Likely",
@@ -704,23 +620,20 @@ mod tests {
                 "[{}] confidence (got {:?})",
                 c.name, v.confidence
             );
-            for r in c.want_reasons {
-                assert!(
-                    v.reasons.contains(r),
-                    "[{}] reasons {:?} 应包含 {:?}",
-                    c.name,
-                    v.reasons,
-                    r
-                );
-            }
-            if c.want_reasons.is_empty() {
-                assert!(
-                    v.reasons.is_empty(),
-                    "[{}] 应无 reasons，得到 {:?}",
-                    c.name,
-                    v.reasons
-                );
-            }
+            // 顺序无关的集合相等（ReasonCode 无 Ord，借 Debug 名排序归一）：
+            // 多一条、少一条都在此翻红，无需为「必须缺席」另立断言
+            let sorted = |rs: &[ReasonCode]| {
+                let mut v: Vec<String> = rs.iter().map(|r| format!("{r:?}")).collect();
+                v.sort();
+                v
+            };
+            assert_eq!(
+                sorted(&v.reasons),
+                sorted(c.want_reasons),
+                "[{}] reasons 必须与期望集合完全相等（实得 {:?}）",
+                c.name,
+                v.reasons
+            );
         }
     }
 
@@ -826,111 +739,6 @@ mod tests {
     }
 
     #[test]
-    fn dev_keyword_matches_windows_exe_names() {
-        assert!(is_dev_server(
-            "C:\\Program Files\\nodejs\\node.exe server.js"
-        ));
-        assert!(is_dev_server("vite"));
-        assert!(!is_dev_server("C:\\Windows\\System32\\svchost.exe"));
-    }
-
-    /// 回归（评审实锤的误升级面）：短关键字不得因路径/名字里的偶然子串命中。
-    /// 曾经的后果：nohup 脱离的 /usr/local/bin/redis-server（手装非 brew）因
-    /// "serve" 子串获得 dev_keyword，从 Likely 误升 Confirmed；Windows 上裸
-    /// ParentExited 的 myserver.exe 绕过 weak_parent_exited 降级直入清扫。
-    #[test]
-    fn dev_keyword_short_words_require_exact_command_token() {
-        // 误伤面：全部必须不命中
-        for fp in [
-            "/usr/local/bin/redis-server --port 6379",
-            "/Users/x/bin/myserver --listen 8080",
-            "/Users/x/bin/observer-daemon",
-            "/Users/x/bin/javascript-engine --port 9000",
-            "/usr/local/bin/prometheus-node-exporter",
-            "/Users/x/.cargo/bin/unicorn-tool",
-            "/opt/guardrails/bin/guardrails",
-            "/usr/local/bin/ubuntu-report",
-            "C:\\Users\\x\\tools\\myserver.exe --port 8080",
-            "/Users/x/bin/conserver",
-        ] {
-            assert!(!is_dev_server(fp), "误伤: {fp}");
-        }
-        // 真阳性：全部必须保持命中
-        for tp in [
-            "node",                                        // lsof 短命令名
-            "node.exe server.js",                          // Windows 运行时
-            "/opt/homebrew/bin/node /Users/x/p/server.js", // exe 全路径 token
-            "python3 -m http.server 8000",                 // 版本后缀 + 模块子串
-            "Python3.12 app.py",                           // 多级版本后缀
-            "java -jar app.jar",
-            "serve -s build", // 真·serve CLI
-            "air",            // 裸 air（旧 "air " 带尾空格时漏报）
-            "bunx vite dev",
-            "/Users/x/p/node_modules/.bin/vite --port 5173", // 长词子串路径证据
-            "next-server (v14.2.3)",
-            // 评审实锤的收紧回归：版本/架构装饰（数字开头）必须仍命中
-            "/usr/local/bin/node20.11.0-arm64 server.js",
-            "python3.13t app.py", // 自由线程 CPython 构建（t 后缀）
-            "php8.2-fpm",         // 版本号 + -fpm
-            // 内嵌异词形态由 DEV_SERVER_SUBSTRINGS 兜底
-            "nodemon server.js",
-            "/usr/sbin/php-fpm",
-        ] {
-            assert!(is_dev_server(tp), "漏报: {tp}");
-        }
-    }
-
-    /// 浏览器自动化工具链的 driver / 测试运行器本身也是 dev 残留（Gap 1 同族）。
-    /// 词形独特 + 词界锚定，零误伤面 —— 但仍锁一遍回归。
-    #[test]
-    fn dev_keyword_covers_browser_automation_toolchain() {
-        for tp in [
-            "/Users/x/p/node_modules/chromedriver/lib/chromedriver/chromedriver --port=9515",
-            "/opt/homebrew/bin/geckodriver --port 4444",
-            "C:\\Users\\x\\tools\\msedgedriver.exe",
-            "/Users/x/p/node_modules/.bin/playwright test",
-            "node /Users/x/p/node_modules/puppeteer/lib/esm/puppeteer/node/ProductLauncher.js",
-            "java -jar selenium-server-4.18.jar standalone",
-            "/Users/x/Library/Caches/Cypress/13.6.0/Cypress.app/Contents/MacOS/Cypress",
-        ] {
-            assert!(is_dev_server(tp), "漏报: {tp}");
-        }
-        // 误伤面：普通浏览器与同形异义的用户程序不得命中
-        assert!(!is_dev_server(
-            "/Applications/Google Chrome.app/Contents/MacOS/Google Chrome"
-        ));
-        assert!(!is_dev_server("/Users/x/bin/driverless-car-sim"));
-    }
-
-    /// 长关键字的词界锚定：普通英文词的内嵌形态不得命中（评审实锤 ——
-    /// 与 "serve"⊂redis-server 同型的 Confirmed 误升级面，此前残留在长词表：
-    /// 一个 nohup 脱离的 invite-mailer 会经孤儿路径直升 Confirmed 进一键清扫）。
-    #[test]
-    fn dev_keyword_long_words_require_word_boundary() {
-        for fp in [
-            "/Users/x/bin/invite-mailer --daemon",   // vite ⊂ invite
-            "/opt/tools/gastronomy-planner",         // astro ⊂ gastro
-            "/Users/x/bin/disastrous-recovery-tool", // astro ⊂ disastrous
-            "/usr/local/bin/premix-audio",           // remix ⊂ premix
-            "/Users/x/bin/centauri-sync",            // tauri ⊂ centauri
-            "/Users/x/bin/electronics-inventory",    // electron ⊂ electronics
-        ] {
-            assert!(!is_dev_server(fp), "误伤: {fp}");
-        }
-        // 真阳性：分隔符（/ \ . @ - 空白）两侧的真实工具形态必须保持命中
-        for tp in [
-            "node /app/node_modules/vite/bin/vite.js",
-            "node /app/node_modules/.pnpm/vite@5.4.0/node_modules/vite/bin/vite.js",
-            "npx remix vite:dev",
-            "cargo-tauri dev",
-            "/app/node_modules/electron/dist/Electron.app/Contents/MacOS/Electron .",
-            "node /app/node_modules/astro/astro.js dev",
-        ] {
-            assert!(is_dev_server(tp), "漏报: {tp}");
-        }
-    }
-
-    #[test]
     fn reason_codes_serialize_snake_case() {
         // i18n parity 脚本依赖这些 serde 名称稳定
         let json = serde_json::to_string(&ReasonCode::Ppid1Orphan).unwrap();
@@ -939,5 +747,20 @@ mod tests {
         assert_eq!(json, "\"dev_server_keyword\"");
         let json = serde_json::to_string(&Confidence::Confirmed).unwrap();
         assert_eq!(json, "\"confirmed\"");
+    }
+
+    /// `as_str` 与 serde wire 形态同源 —— 全变体遍历断言，防止 rename_all
+    /// 与手写 match 各自演化后 CLI 表格与 JSON 悄悄分叉。
+    #[test]
+    fn confidence_as_str_matches_serde_wire_format() {
+        for c in [
+            Confidence::None,
+            Confidence::Possible,
+            Confidence::Likely,
+            Confidence::Confirmed,
+        ] {
+            let wire = serde_json::to_string(&c).unwrap();
+            assert_eq!(wire, format!("\"{}\"", c.as_str()), "{c:?}");
+        }
     }
 }

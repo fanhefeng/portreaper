@@ -83,6 +83,28 @@ pub(crate) struct ProcMeta {
     pub tty_orphaned: bool,
 }
 
+#[cfg(test)]
+impl ProcMeta {
+    /// 测试夹具的唯一构造点 —— 曾在 5 个测试模块各手抄一份全字段初始化，
+    /// ProcMeta 每加一个字段就要同步 5 处（tty_orphaned / start_unix 当年就是
+    /// 这么逐份补的）。差异字段由调用方对返回值直接改写（struct-update 风格）。
+    pub(crate) fn fixture(ppid: u32, exe: &str, cmd: &str) -> Self {
+        ProcMeta {
+            ppid,
+            exe_path: exe.to_string(),
+            full_command: cmd.to_string(),
+            user: String::new(),
+            start_unix: Some(1000),
+            elapsed_secs: 3600,
+            cpu_percent: 0.0,
+            rss_kb: 0,
+            tty: None,
+            state: None,
+            tty_orphaned: false,
+        }
+    }
+}
+
 /// 一次平台采集的全部产物。
 pub(crate) struct Collected {
     pub listeners: Vec<Listener>,
@@ -100,6 +122,21 @@ pub(crate) struct Collected {
     /// 所有 TCP 连接拉进这次最贵的调用）；Windows 的 GetExtendedTcpTable 本就返回
     /// 全状态连接表，纯过滤条件改动、零额外成本，故全量填充。
     pub established_local_ports: std::collections::HashMap<u32, Vec<u16>>,
+}
+
+#[cfg(test)]
+impl Collected {
+    /// 测试夹具：仅进程表，其余通道为空（曾以 `col_of` 之名在两个测试模块各写一份）。
+    /// ProcMeta 非 Clone：Collected 直接 move 持有 procs，build_entry 借 col.procs。
+    pub(crate) fn of_procs(procs: std::collections::HashMap<u32, ProcMeta>) -> Self {
+        Collected {
+            listeners: vec![],
+            procs,
+            launchd_pids: Default::default(),
+            cwds: Default::default(),
+            established_local_ports: Default::default(),
+        }
+    }
 }
 
 /// 喂给纯分类器的进程信号快照 —— 不含任何平台/子进程依赖，可直接构造做表驱动单测。

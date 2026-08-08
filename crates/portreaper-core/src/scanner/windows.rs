@@ -24,16 +24,24 @@ use windows::Win32::UI::Shell::{
 
 use super::classify::ReasonCode;
 use super::identify::{
-    basename, is_script_runtime, project_binary_label, script_runtime_label, strip_exe,
+    basename, is_script_runtime, project_binary_label, script_runtime_label, strip_exe, AppIdentity,
 };
 use super::model::{Collected, Listener, ParentRef, ProcMeta};
+use super::{
+    AUTOMATION_CATEGORY, DEV_SCRIPT_CATEGORY, INSTALLED_APP_CATEGORY, SYSTEM_CATEGORY,
+    UNKNOWN_CATEGORY, USER_BINARY_CATEGORY,
+};
 
 // ---------------------------------------------------------------------------
 // 已知文件夹（SHGetKnownFolderPath，比环境变量可靠：位数无关、重定向感知）
 // ---------------------------------------------------------------------------
 
 /// 全部小写、以 `\` 结尾的前缀集合。测试可手工构造。
-pub(crate) struct KnownPaths {
+///
+/// 私有：平台叶子文件的对外面**只有**那组 cfg 对称函数 + PlatformState —— 这个
+/// 类型连同 `paths()` / `identify_app_with` 都是本文件的实现细节（评审发现：
+/// 曾标 pub(crate) 却无任何跨模块使用，可见性自身就该把边界说清楚）。
+struct KnownPaths {
     pub windows_dir: String,       // c:\windows\
     pub program_files: String,     // c:\program files\
     pub program_files_x86: String, // c:\program files (x86)\
@@ -163,17 +171,26 @@ pub(crate) fn chain_hits_init(_parent_ppid: u32) -> bool {
     false // Windows 无 init PID；链端点 = 父缺失，在 walk 中处理
 }
 
+/// 链走到死根（ppid==0 / 父不在快照）时是否算「链到 init」——**是**。
+/// Windows 不收养孤儿：父一退出，PID 就悬空/被复用，「父不在表里」正是这里
+/// 唯一的链终止形态（`chain_hits_init` 恒 false，无 PID 1 可依）。
+/// 与 macos.rs 的同签名钩子成对（那边为 false）—— 平台语义 100% 收敛在
+/// 叶子文件，编排层（chain.rs）不再内嵌 `cfg!(windows)`。
+pub(crate) fn dead_root_terminates_chain() -> bool {
+    true
+}
+
 /// 链回溯的「用户可见 App」终点（Windows：installed-app 即可，
 /// 存活系统根 explorer/services 另由 is_live_session_root 处理）。
 pub(crate) fn is_chain_stopper(_exe_path: &str, category: &str) -> bool {
-    category == "installed-app"
+    category == INSTALLED_APP_CATEGORY
 }
 
 pub(crate) fn synth_chain_root() -> ParentRef {
     ParentRef {
         pid: 0,
         label: "System".to_string(),
-        category: "system".to_string(),
+        category: SYSTEM_CATEGORY.to_string(),
         exe_path: String::new(),
     }
 }
@@ -200,12 +217,8 @@ pub(crate) fn direct_orphan(
     }
 }
 
-/// (label, category) —— Windows 路径阶梯。
-pub(crate) fn identify_app(
-    full_command: &str,
-    short_command: &str,
-    exe_path: &str,
-) -> (String, String) {
+/// Windows 路径阶梯。
+pub(crate) fn identify_app(full_command: &str, short_command: &str, exe_path: &str) -> AppIdentity {
     identify_app_with(paths(), full_command, short_command, exe_path)
 }
 
@@ -214,38 +227,32 @@ fn identify_app_with(
     full_command: &str,
     short_command: &str,
     exe_path: &str,
-) -> (String, String) {
+) -> AppIdentity {
     if exe_path.is_empty() {
         // 读不到 exe：保守 unknown，标签用进程名（System / Registry / 提权进程等）
-        return (short_command.to_string(), "unknown".to_string());
+        return AppIdentity {
+            label: short_command.to_string(),
+            category: UNKNOWN_CATEGORY.to_string(),
+        };
     }
     let p = normalize_path(exe_path);
 
-    // 0. 带脚本参数的运行时优先 —— node.exe 通常装在 Program Files\nodejs\，
-    //    若先按路径归 installed-app 会被豁免，Windows 上的孤儿 vite 将永远漏报。
-    //    进程身份是「脚本」：脚本在用户空间 ⇒ dev-script；脚本也在标准路径 ⇒ 随应用归类。
-    if is_script_runtime(short_command) {
-        if let Some(script) = super::identify::extract_script_arg(full_command) {
-            if !is_standard_install_with(kp, script) {
-                return (
-                    script_runtime_label(full_command, strip_exe(short_command)),
-                    "dev-script".to_string(),
-                );
-            }
-            return (
-                strip_exe(basename(script)).to_string(),
-                "installed-app".to_string(),
-            );
-        }
-        // `-m 模块` 调用：身份是模块（python.exe -m http.server）。必须在
-        // Program Files / WindowsApps 阶梯之前判，否则按解释器安装位置归
-        // installed-app 被豁免（与 macOS 同源的漏报）。
-        if let Some(module) = super::identify::extract_module_arg(full_command) {
-            return (
-                format!("{} · {}", module, strip_exe(short_command).to_lowercase()),
-                "dev-script".to_string(),
-            );
-        }
+    // 0. 脚本/模块身份优先于一切路径判定 —— 决策树共享在
+    //    identify::script_identity_step（双平台逐行同构，曾各写一份且真漂移过）。
+    //    Windows 侧注入的差异：标签里的运行时名去掉 .exe（模块标签额外小写）；
+    //    脚本自身也在标准路径时归 installed-app（macOS 侧对应 system）。
+    if let Some(id) = super::identify::script_identity_step(
+        full_command,
+        short_command,
+        strip_exe(short_command),
+        &strip_exe(short_command).to_lowercase(),
+        |script| is_standard_install_with(kp, script),
+        |script| AppIdentity {
+            label: strip_exe(basename(script)).to_string(),
+            category: INSTALLED_APP_CATEGORY.to_string(),
+        },
+    ) {
+        return id;
     }
 
     // 0b. 一次性自动化浏览器实例 —— 身份在命令行，不在路径（与阶梯 0 的脚本身份
@@ -253,10 +260,10 @@ fn identify_app_with(
     //     Program Files，被归 installed-app 即吃硬豁免、永远漏网（KNOWN-GAPS Gap 1
     //     的 Windows 平行情形；判据 --headless 等开关两平台逐字相同，故实现共享）。
     if super::identify::is_automation_instance(full_command) {
-        return (
-            super::identify::automation_label(exe_path, short_command),
-            super::AUTOMATION_CATEGORY.to_string(),
-        );
+        return AppIdentity {
+            label: super::identify::automation_label(exe_path, short_command),
+            category: AUTOMATION_CATEGORY.to_string(),
+        };
     }
 
     // 0c. 开发工具下载的浏览器 runtime（Playwright 的 %LOCALAPPDATA%\ms-playwright、
@@ -264,14 +271,20 @@ fn identify_app_with(
     //     同理：它们是项目的开发期 runtime，不是用户安装的应用。必须先于 5b 的
     //     LOCALAPPDATA→installed-app 阶梯，否则孤儿化的下载浏览器会被整体豁免。
     if super::identify::is_dev_tool_runtime_path(exe_path) {
-        return (project_binary_label(exe_path), "dev-script".to_string());
+        return AppIdentity {
+            label: project_binary_label(exe_path),
+            category: DEV_SCRIPT_CATEGORY.to_string(),
+        };
     }
 
     // 1. MSIX / Store 应用：去掉发布者哈希与版本，取包名友好形式
     if p.starts_with(&kp.windows_apps()) || p.starts_with(&kp.appdata_windows_apps()) {
         let label = msix_friendly_name(exe_path)
             .unwrap_or_else(|| strip_exe(basename(exe_path)).to_string());
-        return (label, "installed-app".to_string());
+        return AppIdentity {
+            label,
+            category: INSTALLED_APP_CATEGORY.to_string(),
+        };
     }
 
     // 2. Program Files / LOCALAPPDATA\Programs → 已安装应用（标签 = 根目录下的应用文件夹名）
@@ -283,24 +296,27 @@ fn identify_app_with(
         if !root.is_empty() && p.starts_with(root) {
             let label = first_segment_after(exe_path, &p, root.len())
                 .unwrap_or_else(|| strip_exe(basename(exe_path)).to_string());
-            return (label, "installed-app".to_string());
+            return AppIdentity {
+                label,
+                category: INSTALLED_APP_CATEGORY.to_string(),
+            };
         }
     }
 
     // 3. SystemRoot → 系统组件
     if !kp.windows_dir.is_empty() && p.starts_with(&kp.windows_dir) {
-        return (
-            strip_exe(basename(exe_path)).to_string(),
-            "system".to_string(),
-        );
+        return AppIdentity {
+            label: strip_exe(basename(exe_path)).to_string(),
+            category: SYSTEM_CATEGORY.to_string(),
+        };
     }
 
     // 4. 脚本运行时（node.exe / python.exe / ...）
     if is_script_runtime(short_command) {
-        return (
-            script_runtime_label(full_command, strip_exe(short_command)),
-            "dev-script".to_string(),
-        );
+        return AppIdentity {
+            label: script_runtime_label(full_command, strip_exe(short_command)),
+            category: DEV_SCRIPT_CATEGORY.to_string(),
+        };
     }
 
     // 5. 包管理器安装的 CLI：scoop / chocolatey / winget links
@@ -311,10 +327,10 @@ fn identify_app_with(
             && p.starts_with(&format!("{}chocolatey\\", kp.program_data)))
         || p.contains("\\microsoft\\winget\\")
     {
-        return (
-            strip_exe(basename(exe_path)).to_string(),
-            "user-binary".to_string(),
-        );
+        return AppIdentity {
+            label: strip_exe(basename(exe_path)).to_string(),
+            category: USER_BINARY_CATEGORY.to_string(),
+        };
     }
 
     // 5b. AppData 根目录下的应用（Squirrel/Electron 布局：Discord、Spotify、
@@ -326,7 +342,10 @@ fn identify_app_with(
         if !root.is_empty() && p.starts_with(root) && !p.starts_with(&format!("{root}temp\\")) {
             let label = first_segment_after(exe_path, &p, root.len())
                 .unwrap_or_else(|| strip_exe(basename(exe_path)).to_string());
-            return (label, "installed-app".to_string());
+            return AppIdentity {
+                label,
+                category: INSTALLED_APP_CATEGORY.to_string(),
+            };
         }
     }
 
@@ -334,21 +353,27 @@ fn identify_app_with(
     //    与 macOS 侧共用 identify::is_dev_build_artifact（分隔符/大小写归一），
     //    避免两平台各维护一份片段列表而漂移。
     if super::identify::is_dev_build_artifact(exe_path) {
-        return (project_binary_label(exe_path), "dev-script".to_string());
+        return AppIdentity {
+            label: project_binary_label(exe_path),
+            category: DEV_SCRIPT_CATEGORY.to_string(),
+        };
     }
 
     // 7. 用户目录下的自定义二进制。类别 user-binary 而非 dev-script ——
     //    「位于用户目录」只说明位置，不构成 dev 证据（dev-script 会把
     //    裸孤儿二进制直升 Confirmed 入清扫）。
     if p.contains("\\users\\") {
-        return (project_binary_label(exe_path), "user-binary".to_string());
+        return AppIdentity {
+            label: project_binary_label(exe_path),
+            category: USER_BINARY_CATEGORY.to_string(),
+        };
     }
 
     // 8. fallback
-    (
-        strip_exe(basename(exe_path)).to_string(),
-        "unknown".to_string(),
-    )
+    AppIdentity {
+        label: strip_exe(basename(exe_path)).to_string(),
+        category: UNKNOWN_CATEGORY.to_string(),
+    }
 }
 
 /// `...\WindowsApps\Microsoft.WindowsTerminal_1.18.2_x64__8wekyb3d8bbwe\wt.exe`
@@ -593,8 +618,9 @@ fn table_buf_words(reported: u32) -> usize {
 /// 一次表查询的两路产物：监听端口，以及**本地端**处于 ESTABLISHED 的端口。
 /// 后者是自动化实例的存活性证据（KNOWN-GAPS Gap 1/A2）——「调试端口上有客户端
 /// 连着」⇒ 有人正在驱动它，一票否决。
+/// 私有：与 `KnownPaths` 同理，属本文件的实现细节（`tcp_tables()` 本身就是私有 fn）。
 #[derive(Default)]
-pub(crate) struct TcpTables {
+struct TcpTables {
     listeners: HashMap<u32, Vec<u16>>,
     established_local: HashMap<u32, Vec<u16>>,
 }
@@ -804,7 +830,10 @@ mod tests {
     fn identify_ladder_windows() {
         let kp = fake_paths();
 
-        let (label, cat) = identify_app_with(
+        let AppIdentity {
+            label,
+            category: cat,
+        } = identify_app_with(
             &kp,
             "C:\\Users\\fhf\\AppData\\Local\\Programs\\Microsoft VS Code\\Code.exe --type=utility",
             "Code.exe",
@@ -813,7 +842,10 @@ mod tests {
         assert_eq!(label, "Microsoft VS Code");
         assert_eq!(cat, "installed-app");
 
-        let (label, cat) = identify_app_with(
+        let AppIdentity {
+            label,
+            category: cat,
+        } = identify_app_with(
             &kp,
             "C:\\Windows\\System32\\svchost.exe -k netsvcs",
             "svchost.exe",
@@ -824,7 +856,7 @@ mod tests {
 
         // 关键：node.exe 装在 Program Files，但脚本在用户空间 → 必须 dev-script
         //（否则 Windows 上孤儿 vite 会被 installed-app 路径豁免吞掉 = 永久漏报）
-        let (label, cat) = identify_app_with(
+        let AppIdentity { label, category: cat } = identify_app_with(
             &kp,
             "C:\\Program Files\\nodejs\\node.exe C:\\Users\\fhf\\code\\myapp\\node_modules\\vite\\bin\\vite.js",
             "node.exe",
@@ -834,7 +866,7 @@ mod tests {
         assert_eq!(label, "myapp · vite.js");
 
         // scoop 安装的运行时同样走 dev-script
-        let (label, cat) = identify_app_with(
+        let AppIdentity { label, category: cat } = identify_app_with(
             &kp,
             "C:\\Users\\fhf\\scoop\\apps\\nodejs\\node.exe C:\\Users\\fhf\\code\\myapp\\node_modules\\vite\\bin\\vite.js",
             "node.exe",
@@ -843,7 +875,7 @@ mod tests {
         assert_eq!(cat, "dev-script");
         assert_eq!(label, "myapp · vite.js");
 
-        let (_, cat) = identify_app_with(
+        let AppIdentity { category: cat, .. } = identify_app_with(
             &kp,
             "C:\\Users\\fhf\\code\\mytool\\target\\debug\\mytool.exe",
             "mytool.exe",
@@ -853,7 +885,7 @@ mod tests {
 
         // go run 临时编译产物（%TEMP%\go-build*）：与 macOS 对齐归 dev-script
         //（Temp 已被 5b 的 installed-app 例外排除，落到本规则）
-        let (_, cat) = identify_app_with(
+        let AppIdentity { category: cat, .. } = identify_app_with(
             &kp,
             "C:\\Users\\fhf\\AppData\\Local\\Temp\\go-build123\\b001\\exe\\server.exe",
             "server.exe",
@@ -861,7 +893,10 @@ mod tests {
         );
         assert_eq!(cat, "dev-script");
 
-        let (label, cat) = identify_app_with(&kp, "", "System", "");
+        let AppIdentity {
+            label,
+            category: cat,
+        } = identify_app_with(&kp, "", "System", "");
         assert_eq!(label, "System");
         assert_eq!(cat, "unknown");
     }
@@ -874,7 +909,10 @@ mod tests {
         let kp = fake_paths();
         const CHROME: &str = "C:\\Program Files\\Google\\Chrome\\Application\\chrome.exe";
 
-        let (label, cat) = identify_app_with(
+        let AppIdentity {
+            label,
+            category: cat,
+        } = identify_app_with(
             &kp,
             &format!(
                 "{CHROME} --headless=new \
@@ -888,11 +926,12 @@ mod tests {
         assert_eq!(cat, super::super::AUTOMATION_CATEGORY);
 
         // 对照（防误杀）：同一个 exe、无自动化开关 ⇒ 用户日常的 Chrome 仍豁免
-        let (_, cat) = identify_app_with(&kp, CHROME, "chrome.exe", CHROME);
+        let AppIdentity { category: cat, .. } =
+            identify_app_with(&kp, CHROME, "chrome.exe", CHROME);
         assert_eq!(cat, "installed-app");
 
         // 对照（A2 反例）：有头的活跃自动化实例同样必须留在 installed-app
-        let (_, cat) = identify_app_with(
+        let AppIdentity { category: cat, .. } = identify_app_with(
             &kp,
             &format!("{CHROME} --remote-debugging-port=9222 --user-data-dir=C:\\Users\\fhf\\AppData\\Local\\Temp\\prof"),
             "chrome.exe",
@@ -912,7 +951,7 @@ mod tests {
             "C:\\Users\\fhf\\.cache\\puppeteer\\chrome\\win64-131\\chrome-win64\\chrome.exe",
             "C:\\Users\\fhf\\code\\app\\node_modules\\electron\\dist\\electron.exe",
         ] {
-            let (_, cat) = identify_app_with(&kp, exe, "chrome.exe", exe);
+            let AppIdentity { category: cat, .. } = identify_app_with(&kp, exe, "chrome.exe", exe);
             assert_eq!(cat, "dev-script", "{exe}");
         }
     }
@@ -938,7 +977,10 @@ mod tests {
         let kp = fake_paths();
 
         // Discord：%LOCALAPPDATA%\Discord\app-1.0.x\Discord.exe（监听 RPC 端口）
-        let (label, cat) = identify_app_with(
+        let AppIdentity {
+            label,
+            category: cat,
+        } = identify_app_with(
             &kp,
             "C:\\Users\\fhf\\AppData\\Local\\Discord\\app-1.0.9151\\Discord.exe",
             "Discord.exe",
@@ -948,7 +990,10 @@ mod tests {
         assert_eq!(label, "Discord");
 
         // Spotify：%APPDATA%\Spotify\Spotify.exe（监听 4380/4381）
-        let (label, cat) = identify_app_with(
+        let AppIdentity {
+            label,
+            category: cat,
+        } = identify_app_with(
             &kp,
             "C:\\Users\\fhf\\AppData\\Roaming\\Spotify\\Spotify.exe",
             "Spotify.exe",
@@ -958,7 +1003,7 @@ mod tests {
         assert_eq!(label, "Spotify");
 
         // Temp 下解包的可执行不算安装
-        let (_, cat) = identify_app_with(
+        let AppIdentity { category: cat, .. } = identify_app_with(
             &kp,
             "C:\\Users\\fhf\\AppData\\Local\\Temp\\unpacked\\server.exe",
             "server.exe",
@@ -972,7 +1017,7 @@ mod tests {
     #[test]
     fn bare_user_binary_not_dev_script() {
         let kp = fake_paths();
-        let (_, cat) = identify_app_with(
+        let AppIdentity { category: cat, .. } = identify_app_with(
             &kp,
             "C:\\Users\\fhf\\tools\\myserver.exe --port 8080",
             "myserver.exe",
