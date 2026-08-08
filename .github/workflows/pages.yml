@@ -34,12 +34,19 @@ jobs:
       - name: Checkout
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v6
 
+      # pnpm 先于 setup-node，理由同 ci.yml（cache: pnpm 需要先找到 pnpm 二进制）。
+      - name: Install pnpm
+        uses: pnpm/action-setup@0ebf47130e4866e96fce0953f49152a61190b271 # v6
+        with:
+          version: 11
+
       # Pin Node via .node-version（与 release.yml 的 verify-version 同一理由）：
       # guard 脚本不应跑在会独立漂移的 runner 默认 Node 上。
       - name: Setup Node
         uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v6
         with:
           node-version-file: .node-version
+          cache: pnpm
 
       # website/** is paths-ignored by ci.yml — without these checks a JS
       # syntax error or a renamed download asset would deploy straight to prod.
@@ -50,6 +57,16 @@ jobs:
 
       - name: Release asset name parity check
         run: node scripts/check-release-assets.mjs
+
+      # website/* 同样在 `vp check`（fmt+lint）的全仓扫描范围内，而 website-only
+      # 提交因 paths-ignore 不经过 ci.yml —— 若格式问题从这里溜进 main，翻红的
+      # 会是**下一个**触碰其他文件的提交（与 v0.6.0 事故同构、更难归因）。
+      # 部署前补一道 vp check，把翻红钉在肇事提交上。
+      - name: Install dependencies
+        run: pnpm install --frozen-lockfile
+
+      - name: Format + lint (vp check)
+        run: pnpm exec vp check
 
       - name: Configure Pages
         uses: actions/configure-pages@45bfe0192ca1faeb007ade9deae92b16b8254a0d # v6

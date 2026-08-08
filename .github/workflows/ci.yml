@@ -99,11 +99,13 @@ jobs:
       # `tauri build` in CI — we don't bundle/sign here, so Windows needs no
       # extra Tauri system deps). All frontend tooling goes through Vite+ (vp);
       # tsc stays explicit because `vp check` does not yet cover type-checking.
+      # `typecheck` 覆盖两个 project：应用侧 tsconfig.json（webview 代码，无 Node
+      # 全局）+ tsconfig.test.json（测试，含 @types/node）—— 裸 tsc 只查前者。
       - name: Format + lint (vp check)
         run: pnpm exec vp check
 
       - name: Type-check (tsc)
-        run: pnpm exec tsc --noEmit
+        run: pnpm run typecheck
 
       - name: Frontend tests (vp test)
         run: pnpm exec vp test run
@@ -154,6 +156,27 @@ jobs:
       - name: Paths parity check
         if: runner.os == 'macOS'
         run: node scripts/check-paths-parity.mjs
+
+      # Rust 工具链版本三处写死（rust-toolchain.toml / ci.yml / release.yml），
+      # 漂移的症状是「本地 fmt 过、CI 的 rustfmt 换行启发不同而翻红」。
+      - name: Toolchain parity check
+        if: runner.os == 'macOS'
+        run: node scripts/check-toolchain-parity.mjs
+
+      # ProcessEntry/ParentRef 有三份镜像（Rust model.rs / src/model.ts /
+      # raycast cli.ts）——serde 契约加字段漏改任何一份都在此翻红。
+      - name: Model parity check
+        if: runner.os == 'macOS'
+        run: node scripts/check-model-parity.mjs
+
+      # integrations/raycast 是独立 npm 项目（不在 pnpm workspace 内），此前
+      # 完全游离于 CI —— 而它承载扩展里最敏感的逻辑（下载/校验/执行二进制）。
+      # 只做 typecheck，不 ray build（无 Raycast 运行时）。
+      - name: Raycast extension typecheck
+        if: runner.os == 'macOS'
+        run: |
+          npm ci --prefix integrations/raycast
+          npm run typecheck --prefix integrations/raycast
 
       # 五处版本清单（package.json / tauri.conf.json / 两个 Cargo.toml / Cargo.lock）
       # 必须自洽：以 package.json 为基准。此前该检查只在 release.yml 的
