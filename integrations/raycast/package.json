@@ -6,20 +6,31 @@
     "Developer Tools",
     "System"
   ],
+  "keywords": [
+    "dev server",
+    "kill",
+    "localhost",
+    "port",
+    "process",
+    "zombie"
+  ],
   "license": "MIT",
   "author": "fhf1121",
   "scripts": {
     "dev": "ray develop",
     "build": "ray build -e dist",
+    "lint": "ray lint",
+    "fix-lint": "ray lint --fix",
+    "publish": "npx @raycast/api@latest publish",
     "typecheck": "tsc --noEmit"
   },
   "dependencies": {
-    "@raycast/api": "^1.83.0"
+    "@raycast/api": "^1.104.24"
   },
   "devDependencies": {
-    "@types/node": "^22.0.0",
+    "@types/node": "^26.1.2",
     "@types/react": "^19.0.10",
-    "typescript": "^5.6.0"
+    "typescript": "^7.0.2"
   },
   "icon": "command-icon.png",
   "commands": [
@@ -30,6 +41,9 @@
       "description": "List listening processes and orphaned dev processes, then terminate the ones nobody owns.",
       "mode": "view"
     }
+  ],
+  "platforms": [
+    "macOS"
   ],
   "preferences": [
     {

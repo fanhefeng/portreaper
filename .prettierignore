@@ -4,3 +4,10 @@
 #   docs/RELEASING.md 跨行代码段所在的 blockquote 连续行丢失 `>` 前缀。
 # 本仓库 md 是双语内容型文档，格式化收益为零、风险真实存在。oxfmt 的 md 支持成熟后可解禁。
 *.md
+
+# `ray build` 从 package.json 的 preferences 生成，每次跑都按它自己的风格重写
+# （无分号、属性名加引号）。它虽然入库（Raycast 官方模板如此，且 tsc 需要它），
+# 但**是生成物**：交给 oxfmt 管就会陷入「ray build 改回去 / vp check --fix 再改回来」
+# 的往复 churn —— 与 integrations/raycast 不装 Prettier 的理由同源
+# （见 integrations/raycast/MAINTAINING.md）。生成文件不进格式门禁。
+integrations/raycast/raycast-env.d.ts
