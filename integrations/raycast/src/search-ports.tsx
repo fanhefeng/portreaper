@@ -34,6 +34,7 @@ import {
   type Confidence,
   type Platform,
   type ProcessEntry,
+  type ScanReport,
   kill,
   resolveCliPath,
   scan,
@@ -125,7 +126,25 @@ export default function SearchPorts() {
         cliPath = await install();
         await verifyCli(cliPath, searched);
       }
-      const report = await scan(cliPath);
+      let report: ScanReport;
+      try {
+        report = await scan(cliPath);
+      } catch (e) {
+        // 托管副本能跑但 schema 与本扩展对不上：`verifyCli` 只跑 --version，
+        // 陈旧二进制照样通过，要到 scan 才被拒。此时 Retry 会一次次选中同一份，
+        // 用户视角是死循环。取一份最新的再试 —— 与上面「换掉不可用副本」同一套路。
+        //
+        // 只换**我们自己下载的那份**（用户显式指定的路径不擅自删），且**只换一次**：
+        // 新下的仍对不上，说明扩展与已发布的 CLI 确实不同代，那是真错误，
+        // 必须如实报给用户，绝不无限重下。
+        if (!(e instanceof SchemaMismatchError)) throw e;
+        if (cliPath !== installedCliPath(supportPath)) throw e;
+        setState({ kind: "installing", step: "Updating the engine…" });
+        await rm(cliPath, { force: true });
+        cliPath = await install();
+        await verifyCli(cliPath, searched);
+        report = await scan(cliPath);
+      }
       setState({ kind: "ready", cliPath, platform: report.platform, entries: report.entries });
     } catch (e) {
       if (e instanceof CliNotFoundError) {
@@ -418,28 +437,34 @@ function Actions({
 
   return (
     <ActionPanel>
-      <ActionPanel.Section>
-        <Action
-          title="Terminate"
-          icon={Icon.Trash}
-          style={Action.Style.Destructive}
-          onAction={() => doKill(false)}
-        />
-        {/* Windows 只有单个 Terminate：detached 控制台进程没有可靠的温和 kill，
-            引擎两种口径都走 TerminateProcess —— 桌面版的既定产品决定，这里保持
-            一致，不承诺一个不存在的「温和/强制」区别。
-            判断写成 === "macos" 而非 !== "windows"：Force Kill 是破坏性动作，
-            只在确知平台支持 SIGTERM/SIGKILL 之分时才提供，unknown 一律不给 */}
-        {platform === "macos" && (
+      {/* 没有身份令牌的行**不提供**终止入口：引擎 fail-closed，doKill 也会拦，
+          但一个点下去只能得到失败提示的破坏性动作本身就是坏体验 —— 何况它长得
+          和能用的那个一模一样。doKill 里的那道检查照旧保留：这里管的是「不呈现」，
+          那里管的是「即便被呈现出来也绝不放行」（比如将来新增别的调用点）。 */}
+      {entry.start_unix != null && (
+        <ActionPanel.Section>
           <Action
-            title="Force Kill"
+            title="Terminate"
             icon={Icon.Trash}
             style={Action.Style.Destructive}
-            shortcut={{ modifiers: ["cmd", "shift"], key: "backspace" }}
-            onAction={() => doKill(true)}
+            onAction={() => doKill(false)}
           />
-        )}
-      </ActionPanel.Section>
+          {/* Windows 只有单个 Terminate：detached 控制台进程没有可靠的温和 kill，
+              引擎两种口径都走 TerminateProcess —— 桌面版的既定产品决定，这里保持
+              一致，不承诺一个不存在的「温和/强制」区别。
+              判断写成 === "macos" 而非 !== "windows"：Force Kill 是破坏性动作，
+              只在确知平台支持 SIGTERM/SIGKILL 之分时才提供，unknown 一律不给 */}
+          {platform === "macos" && (
+            <Action
+              title="Force Kill"
+              icon={Icon.Trash}
+              style={Action.Style.Destructive}
+              shortcut={{ modifiers: ["cmd", "shift"], key: "backspace" }}
+              onAction={() => doKill(true)}
+            />
+          )}
+        </ActionPanel.Section>
+      )}
       <ActionPanel.Section>
         <Action
           title={entry.is_whitelisted ? "Remove Star" : "Star (Exempt from Suspicion)"}

@@ -8,7 +8,7 @@
 /* eslint-disable @typescript-eslint/ban-types */
 
 type ExtensionPreferences = {
-  /** portreaper-cli path - Leave empty to auto-detect. Set this if the binary lives somewhere unusual. */
+  /** Portreaper CLI Path - Leave empty to auto-detect. Set this if the binary lives somewhere unusual. */
   "cliPath": string
 }
 

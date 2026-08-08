@@ -48,7 +48,7 @@
   "preferences": [
     {
       "name": "cliPath",
-      "title": "portreaper-cli path",
+      "title": "Portreaper CLI Path",
       "description": "Leave empty to auto-detect. Set this if the binary lives somewhere unusual.",
       "type": "textfield",
       "required": false,

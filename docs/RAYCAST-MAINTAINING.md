@@ -239,6 +239,16 @@ Raycast Beta 的支持目录）对一个人造孤儿 dev server 加星，另一�
       修复：`Whitelist::refresh()`（替换语义，取消星标同样传播）+ `get_all()` 每轮调它。
       两条测试钉住：引擎语义一条、「桌面侧到底有没有调」一条。
 
+      **修复后复验（同一台机器，v0.9.0）**：桌面版在自身零操作的前提下，把另一个
+      前端进程写入的星标吃了进去 —— 托盘从 `30 ⚠` 变成 `30`（⚠ 是 `suspect_count > 0`
+      的布尔量，故须把当时全部 suspect 都加星才看得出跨越，事后已全部撤回、白名单
+      恢复为空）。
+
+      > 复验时踩到的坑，值得记下来：**别拿 release 版 CLI 去验 `pnpm tauri dev`**。
+      > 按 `paths.rs` 的分环境隔离，release CLI 写 prod 目录、debug 构建写 `dev/`，
+      > 两边根本不是同一个 whitelist.json —— 星标「没生效」会看起来像 bug 复发。
+      > 要么用 `cargo run -p portreaper-cli`，要么拿装好的 `.app` 配 release CLI。
+
       **教训记在这里**：「风险很低、不必亲眼看」正是这条 checklist 存在的理由。
       写方向有测试、读方向没有，而两边共用「共享状态」这一个说法，就没人再去分开验。
 - [x] **提交前跑一遍** `npm run lint` + `npm run build` + `npm outdated --prefix integrations/raycast`
