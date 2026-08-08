@@ -72,7 +72,11 @@ magick "$WORK/win.png" "$WORK/mask.png" \
 
 # 品牌渐变背景（取自应用图标：深青 → 深藏蓝）+ 投影 + 居中合成
 magick -size 2000x1250 gradient:'#0d7d93-#16202e' PNG32:"$WORK/bg.png"
-magick PNG32:"$WORK/rounded.png" \
+# 坑 4（评审发现）：窗口截图可能比画布还大 —— Retina 上一个铺开的 Raycast 窗口
+# 轻松超过 2000px。`-composite` 居中合成时只会把超出画布的部分裁掉，产出尺寸
+# 仍是规规矩矩的 2000x1250，ray lint 也照过，只是内容被切了边看不出来。
+# 合成前先缩进安全区（留 100px 给投影扩散）；'>' 表示只缩不放，窗口本来就小就原样保留。
+magick PNG32:"$WORK/rounded.png" -resize '1800x1100>' \
   \( +clone -background black -shadow 55x28+0+16 \) \
   +swap -background none -layers merge +repage PNG32:"$WORK/shadowed.png"
 magick PNG32:"$WORK/bg.png" PNG32:"$WORK/shadowed.png" \

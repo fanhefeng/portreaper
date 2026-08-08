@@ -59,7 +59,9 @@ function App() {
     setActionError(null);
     clearScanError();
   }, [clearScanError]);
-  const [killingPid, setKillingPid] = useState<number | null>(null);
+  // 按 PID 成集，而不是单个「当前正在杀谁」（评审发现）：kill 是可并发发起的，
+  // 单值状态会被后发起的那个覆盖，先发起的行随即恢复可点 —— 其请求明明还在飞。
+  const [killingPids, setKillingPids] = useState<ReadonlySet<number>>(() => new Set());
   const [confirm, setConfirm] = useState<KillConfirm | null>(null);
   const [batchConfirm, setBatchConfirm] = useState<ProcessEntry[] | null>(null);
   const [sweeping, setSweeping] = useState(false);
@@ -164,7 +166,7 @@ function App() {
   const doKill = async () => {
     if (!confirm) return;
     const { pid, force, startUnix } = confirm;
-    setKillingPid(pid);
+    setKillingPids((cur) => new Set(cur).add(pid));
     setConfirm(null);
     try {
       await runAction(
@@ -176,9 +178,13 @@ function App() {
         (err, tr) => tr("error.killFailed", { err: localizeKillError(String(err), tr) }),
       );
     } finally {
-      // 函数式更新（评审发现）：kill A 在飞行中用户又对 B 发起 kill 时，
-      // A 的收尾不能把 B 的 killing 标记清掉（B 的按钮会提前恢复可点）。
-      setKillingPid((cur) => (cur === pid ? null : cur));
+      // 只摘掉自己那一个：并发的 kill 各自收尾，互不影响对方的禁用态。
+      setKillingPids((cur) => {
+        if (!cur.has(pid)) return cur;
+        const next = new Set(cur);
+        next.delete(pid);
+        return next;
+      });
     }
   };
 
@@ -281,21 +287,22 @@ function App() {
     [],
   );
 
-  // useMemo:回调已稳定,shared 只在 os/lang/killingPid/sweeping 变化时新建 ——
+  // useMemo:回调已稳定,shared 只在 os/lang/killingPids/sweeping 变化时新建 ——
   // Row 的 memo 按它的对象身份比较(见 ProcessRow rowPropsEqual),2s 轮询不再
   // 无谓重渲染全表。这里的依赖数组是 shared 唯一的手工维护点。
+  // killingPids 是不可变 Set:每次增删都换新身份,memo 才会跟着失效。
   const shared = useMemo(
     () => ({
       os,
       lang,
-      killingPid,
+      killingPids,
       sweeping,
       onAskKill: askKill,
       onToggleWhitelist: handleToggleWhitelist,
       onOpenPort: handleOpen,
       onToggleExpand: toggleExpand,
     }),
-    [os, lang, killingPid, sweeping, askKill, handleToggleWhitelist, handleOpen, toggleExpand],
+    [os, lang, killingPids, sweeping, askKill, handleToggleWhitelist, handleOpen, toggleExpand],
   );
 
   return (
@@ -376,7 +383,7 @@ function App() {
               className="btn-sweep"
               // 单杀飞行中禁止发起清扫（与「清扫中禁用行内终止」互为镜像）：
               // 清扫快照仍含正被杀的 PID，二次 kill 只会制造多余的失败横幅（评审发现）
-              disabled={sweeping || killingPid !== null}
+              disabled={sweeping || killingPids.size > 0}
               onClick={askKillAllSuspects}
               title={t("sweep.title")}
             >
