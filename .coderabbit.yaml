@@ -53,6 +53,18 @@ reviews:
         the platform collectors, or the decision tree stops being table-testable
         on both platforms.
 
+        `is_dev_like` is the single definition of "dev-like", consumed BOTH by
+        the confidence tiering here and by mod.rs's `orphan_gate_dev_like`.
+        Reject any change that re-inlines the expression in either place — they
+        used to be two convention-synced copies, so a new dev signal reached
+        the tiering without the orphan gate following.
+
+        Fixture reasons are asserted as order-independent SET EQUALITY. Do not
+        weaken it back to `contains`: the two reason bugs this project actually
+        shipped (OrphanedChain restating the direct-orphan signal;
+        NonstandardPath stating a falsehood) were both "one extra reason", which
+        a containment assertion cannot see.
+
         Decision order is load-bearing and must not be reordered:
           1. state contains Z (defunct) -> suspect, Confirmed.
           2. Hard exemptions, in this order: launchd_managed ->
@@ -102,10 +114,12 @@ reviews:
         - `extract_module_arg`: `python -m http.server` is dev-script regardless
           of where the interpreter lives.
 
-    - path: "crates/portreaper-core/src/scanner/mod.rs"
+    - path: "crates/portreaper-core/src/scanner/{mod,postprocess,chain}.rs"
       instructions: |
-        Orchestration: collect -> build_entry (snapshot -> classify -> chain walk)
-        -> sort, plus the cross-entry post-passes.
+        Orchestration (mod.rs): collect -> build_entry (snapshot -> classify ->
+        chain walk) -> sort. The cross-entry post-passes (mark_duplicates,
+        fill_subtree_cpu) live in postprocess.rs; the parent-chain walk
+        (build_parent_chain, ChainFlags) lives in chain.rs.
 
         - TWO PATH PREDICATES, NEVER INTERCHANGEABLE. `is_standard_install_path`
           is the *exemption policy* and deliberately errs toward true (macOS
@@ -240,7 +254,12 @@ reviews:
         without a matching test, defeats the purpose. check-reason-parity keeps
         Rust ReasonCode in sync with the i18n render paths;
         check-release-assets pins the stable asset names used by the website
-        and README.
+        and README; check-paths-parity pins the bundle identifier shared by
+        core paths.rs and tauri.conf.json; check-toolchain-parity pins the
+        Rust toolchain version across rust-toolchain.toml / ci.yml /
+        release.yml; check-model-parity pins the ProcessEntry/ParentRef field
+        sets across the Rust struct and its two TS mirrors (src/model.ts,
+        integrations/raycast/src/cli.ts).
 
     - path: ".github/workflows/**"
       instructions: |
