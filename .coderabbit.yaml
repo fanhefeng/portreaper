@@ -212,6 +212,14 @@ reviews:
 
         - `commands.rs` fns must stay thin wrappers; new `#[tauri::command]`
           fns must be registered in `lib.rs` invoke_handler!.
+        - `whitelist.rs` keeps a process-wide INSTANCE, never cached CONTENTS:
+          `get_all()` must call `refresh()` on every scan. The whitelist is
+          shared across three frontend processes; a stale read means a star
+          added in Raycast stays invisible to the desktop app — the row keeps
+          counting in the tray and KEEPS SITTING IN THE SWEEP TARGET SET, so
+          one-click sweep kills what the user just starred. Flag any change
+          that reintroduces content caching (mtime gates included) or that
+          turns `refresh` into a union — un-starring must propagate too.
         - `paths.rs` scopes every persisted dir by build profile via
           cfg(debug_assertions) — no env vars — so dev never pollutes installed
           app data.
