@@ -44,6 +44,7 @@ import {
 } from "./cli";
 import {
   ChecksumMismatchError,
+  DownloadFailedError,
   UnsupportedPlatformError,
   installCli,
   installedCliPath,
@@ -53,7 +54,9 @@ type State =
   | { kind: "loading" }
   | { kind: "installing"; step: string }
   | { kind: "ready"; cliPath: string; platform: Platform; entries: ProcessEntry[] }
-  | { kind: "no-cli"; searched: string[] }
+  // downloadError：走到引导页的原因是「下载没成功」而不是「哪儿都没找到」。
+  // 两者的用户处境不同（前者该看网络，后者该看安装），引导页据此换措辞。
+  | { kind: "no-cli"; searched: string[]; downloadError?: string }
   | { kind: "error"; message: string };
 
 const CONFIDENCE_COLOR: Record<Confidence, Color> = {
@@ -127,6 +130,10 @@ export default function SearchPorts() {
     } catch (e) {
       if (e instanceof CliNotFoundError) {
         setState({ kind: "no-cli", searched: e.searched });
+      } else if (e instanceof DownloadFailedError) {
+        // 断网 / 代理 / release 404：**必须**落到引导页，不能只甩一句 fetch failed。
+        // 这是首次使用的默认失败路径，用户手里还没有引擎，错误页里得有出口。
+        setState({ kind: "no-cli", searched, downloadError: e.detail });
       } else if (e instanceof UnsupportedPlatformError) {
         setState({
           kind: "error",
@@ -171,7 +178,9 @@ export default function SearchPorts() {
     );
   }
   if (state.kind === "no-cli") {
-    return <NotFoundView searched={state.searched} onRetry={load} />;
+    return (
+      <NotFoundView searched={state.searched} downloadError={state.downloadError} onRetry={load} />
+    );
   }
   if (state.kind === "error") {
     return (
@@ -466,12 +475,41 @@ function Actions({
  * 只有在「自动安装也失败了」之后才会看到这一页 —— 正常路径是静默下载并校验。
  * 到这里说明二进制存在但跑不起来（架构不符 / 被安全策略拦下 / 偏好路径写错）。
  */
-function NotFoundView({ searched, onRetry }: { searched: string[]; onRetry: () => void }) {
+function NotFoundView({
+  searched,
+  downloadError,
+  onRetry,
+}: {
+  searched: string[];
+  downloadError?: string;
+  onRetry: () => void;
+}) {
+  // 两种处境，同一个页面：下载失败该看网络，遍寻不获该看安装。开头几行据此分叉，
+  // 后半段（找过哪儿 / Retry / 自建）两者都用得上。
+  const title = downloadError
+    ? "Could not download portreaper-cli"
+    : "Could not run portreaper-cli";
+  const lead = downloadError
+    ? [
+        "The extension drives the same engine as the Portreaper desktop app, and downloads it",
+        "on first use. That download did not go through:",
+        "",
+        `> ${downloadError}`,
+        "",
+        "This is usually no network connection, a proxy blocking github.com, or a VPN.",
+        "Nothing was installed — retrying once you are back online is safe.",
+      ]
+    : [
+        "The extension drives the same engine as the Portreaper desktop app. It tried the",
+        "locations below, and none of them produced a working binary.",
+      ];
+
   const md = [
-    "# Could not run portreaper-cli",
+    `# ${title}`,
     "",
-    "The extension drives the same engine as the Portreaper desktop app. It tried the",
-    "locations below, and none of them produced a working binary.",
+    ...lead,
+    "",
+    "Looked in:",
     "",
     ...searched.map((s) => `- \`${s}\``),
     "",
@@ -486,8 +524,11 @@ function NotFoundView({ searched, onRetry }: { searched: string[]; onRetry: () =
   return (
     <List isShowingDetail>
       <List.Item
-        icon={{ source: Icon.QuestionMark, tintColor: Color.Orange }}
-        title="Could not run portreaper-cli"
+        icon={{
+          source: downloadError ? Icon.WifiDisabled : Icon.QuestionMark,
+          tintColor: Color.Orange,
+        }}
+        title={title}
         detail={<List.Item.Detail markdown={md} />}
         actions={
           <ActionPanel>
