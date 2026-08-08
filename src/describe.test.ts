@@ -6,35 +6,19 @@
 import { describe, it, expect } from "vite-plus/test";
 import { describeEntry } from "./describe";
 import type { ProcessEntry } from "./model";
+import { makeEntry } from "./test-fixtures";
 
+/** 语义化夹具：无启动链信息的 server.js 孤儿（describeEntry 只看身份字段） */
 function entry(over: Partial<ProcessEntry>): ProcessEntry {
-  return {
-    pid: 1,
-    ppid: 1,
-    ports: [5173],
-    command: "node",
+  return makeEntry({
     full_command: "node /Users/x/proj/server.js",
-    exe_path: "/opt/homebrew/bin/node",
     app_label: "proj · server.js",
-    app_category: "dev-script",
-    parent_chain: [],
     launcher_label: "?",
     user: "",
-    tty: "",
-    elapsed_secs: 3600,
-    start_unix: 1000,
-    cpu_percent: 0,
-    cpu_percent_tree: 0,
     mem_mb: 0,
-    state: "S",
-    is_zombie_suspect: true,
-    confidence: "confirmed",
     zombie_reasons: [],
-    is_whitelisted: false,
-    whitelist_key: "/opt/homebrew/bin/node",
-    duplicate_of: null,
     ...over,
-  };
+  });
 }
 
 describe("describeEntry identity-pattern word boundaries", () => {

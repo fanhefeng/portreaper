@@ -1,4 +1,4 @@
-import { useI18n, type I18nKey } from "../i18n";
+import { categoryKey, reasonKey, reasonTipKey, useI18n } from "../i18n";
 import {
   exemptReasons,
   formatDuration,
@@ -16,13 +16,8 @@ export function ProcessDetail({ e, os, id }: { e: ProcessEntry; os: Os | null; i
   // 链末节点用主名（app_label 可能带 " · node" 次级说明，链里不需要）
   const selfName = splitLabel(e.app_label).name;
 
-  const catKey = (
-    ["installed-app", "system", "dev-script", "automation-instance", "user-binary"].includes(
-      e.app_category,
-    )
-      ? `cat.${e.app_category}`
-      : "cat.unknown"
-  ) as I18nKey;
+  // 合法类别清单由 i18n 字典本身承担（cat.* 键族），未知类别落 cat.unknown
+  const catKey = categoryKey(e.app_category);
 
   const exempt = exemptReasons(e);
 
@@ -130,13 +125,13 @@ export function ProcessDetail({ e, os, id }: { e: ProcessEntry; os: Os | null; i
           {e.zombie_reasons.map((r) => (
             <div className="evidence-item" key={r}>
               <span className="evidence-name">
-                {t(`reason.${r}` as I18nKey)}
+                {t(reasonKey(r))}
                 {/* 重复实例的可操作目标（对端 PID）必须在详情里可见（评审发现） */}
                 {r === "duplicate_dev_server" && e.duplicate_of != null && (
                   <span className="detail-dim"> · PID {e.duplicate_of}</span>
                 )}
               </span>
-              <span className="evidence-text">{t(`reasonTip.${r}` as I18nKey)}</span>
+              <span className="evidence-text">{t(reasonTipKey(r))}</span>
             </div>
           ))}
         </div>
@@ -147,10 +142,8 @@ export function ProcessDetail({ e, os, id }: { e: ProcessEntry; os: Os | null; i
           <div className="evidence-title">{t("detail.whyNot")}</div>
           {exempt.map((r) => (
             <div className="evidence-item" key={r}>
-              <span className="evidence-name evidence-name-ok">
-                ✓ {t(`reason.${r}` as I18nKey)}
-              </span>
-              <span className="evidence-text">{t(`reasonTip.${r}` as I18nKey)}</span>
+              <span className="evidence-name evidence-name-ok">✓ {t(reasonKey(r))}</span>
+              <span className="evidence-text">{t(reasonTipKey(r))}</span>
             </div>
           ))}
         </div>

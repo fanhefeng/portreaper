@@ -777,7 +777,7 @@ button {
   font-variant-numeric: tabular-nums;
 }
 
-/* ───── Modal（仅 kill 确认） ───── */
+/* ───── Modal（ConfirmModal 骨架：单杀确认 + 批量清扫共用） ───── */
 
 .modal-backdrop {
   position: fixed;

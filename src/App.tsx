@@ -4,8 +4,6 @@ import { openUrl } from "@tauri-apps/plugin-opener";
 import { useI18n } from "./i18n";
 import {
   ACTION_TIMEOUT_MS,
-  SCAN_TIMEOUT_MS,
-  formatPorts,
   legacyWhitelistKey,
   localizeActionError,
   localizeKillError,
@@ -17,18 +15,11 @@ import {
   type ProcessEntry,
   type Translator,
 } from "./model";
-import { ConfirmModal } from "./components/ConfirmModal";
+import { useScan } from "./useScan";
 import { Section } from "./components/Section";
+import { BatchConfirmModal } from "./components/BatchConfirmModal";
+import { KillConfirmModal, type KillConfirm } from "./components/KillConfirmModal";
 import "./App.css";
-
-type ConfirmState = {
-  pid: number;
-  command: string;
-  ports: number[];
-  app_label: string;
-  force: boolean;
-  startUnix: number | null;
-} | null;
 
 /** 操作错误存「渲染函数」而非成品文案：横幅挂着时切换语言要跟着重译 ——
  *  与 scanError（存原始码、渲染时翻译）的语义对称（评审发现）。 */
@@ -38,7 +29,7 @@ type BatchFailure = { pid: number; label: string; raw: string };
 
 /** 变更类 invoke（kill / 白名单）统一包超时：后端挂起时各调用方的 finally
  *  才能执行，sweeping/killingPid 不会永久卡死按钮（评审发现；scan 侧的同类
- *  防护是 runScan 里的 withTimeout，缘由见 model.ts ACTION_TIMEOUT_MS）。 */
+ *  防护是 useScan.runScan 里的 withTimeout，缘由见 model.ts ACTION_TIMEOUT_MS）。 */
 function invokeAction(cmd: string, args: Record<string, unknown>): Promise<void> {
   return withTimeout(invoke<void>(cmd, args), ACTION_TIMEOUT_MS, "ERR_ACTION_TIMEOUT");
 }
@@ -49,13 +40,14 @@ function App() {
   // Windows 单按钮），落定前不渲染，避免 Windows 上首帧闪现 SIGTERM 双按钮（评审发现）。
   // get_platform 失败时回退 macOS（保守：双按钮语义在 Windows 后端也安全 —— force 被忽略）。
   const [os, setOs] = useState<Os | null>(null);
-  const [entries, setEntries] = useState<ProcessEntry[]>([]);
+  // 扫描轮询（entries / scanError / freshScan）整体在 useScan 里：并发语义
+  //（inFlight 复用、freshScan 等在途）在那儿有直接单测。
+  const { entries, scanError, clearScanError, freshScan } = useScan();
   const [filter, setFilter] = useState<Filter>("all");
   const [search, setSearch] = useState("");
-  // 错误分两路（评审发现）：扫描错误由下一次成功轮询自动清除（自愈语义）；
+  // 错误分两路（评审发现）：扫描错误由下一次成功轮询自动清除（自愈语义，useScan 负责）；
   // 操作错误（kill / 清扫 / 收藏 / 打开浏览器）只能用户点击关闭 ——
   // 否则 2s 轮询会在用户看清之前把失败原因静默冲掉。
-  const [scanError, setScanError] = useState<string | null>(null);
   const [actionError, setActionError] = useState<ActionError | null>(null);
   const error = actionError
     ? actionError.render(t)
@@ -65,14 +57,13 @@ function App() {
   // 横幅关闭集中一处：onClick 与键盘（Enter/空格）共用，防两路清除逻辑漂移
   const dismissError = useCallback(() => {
     setActionError(null);
-    setScanError(null);
-  }, []);
+    clearScanError();
+  }, [clearScanError]);
   const [killingPid, setKillingPid] = useState<number | null>(null);
-  const [confirm, setConfirm] = useState<ConfirmState>(null);
+  const [confirm, setConfirm] = useState<KillConfirm | null>(null);
   const [batchConfirm, setBatchConfirm] = useState<ProcessEntry[] | null>(null);
   const [sweeping, setSweeping] = useState(false);
   const [expandedPid, setExpandedPid] = useState<number | null>(null);
-  const inFlight = useRef<Promise<void> | null>(null);
   // 弹窗关闭后焦点还给触发按钮（a11y：键盘用户不丢上下文）
   const modalTrigger = useRef<HTMLElement | null>(null);
 
@@ -81,52 +72,6 @@ function App() {
       .then(setOs)
       .catch(() => setOs("macos"));
   }, []);
-
-  const runScan = useCallback(async () => {
-    try {
-      const data = await withTimeout(
-        invoke<ProcessEntry[]>("scan_ports"),
-        SCAN_TIMEOUT_MS,
-        "ERR_SCAN_TIMEOUT",
-      );
-      setEntries(data);
-      setScanError(null);
-      // 托盘只计入会被清扫的层级（Confirmed + Likely），避免宽限期内的闪烁。
-      // 托盘更新是装饰性的 —— fire-and-forget（与 i18n.ts 的 set_tray_language
-      // 同一约定），绝不能让它把一次成功的扫描标成错误（评审发现）。
-      const suspectCount = sweepableEntries(data).length;
-      const totalPorts = data.reduce((sum, e) => sum + e.ports.length, 0);
-      invoke("update_tray_title", {
-        count: totalPorts,
-        suspectCount,
-      }).catch(() => {});
-    } catch (e) {
-      setScanError(String(e));
-    }
-  }, []);
-
-  /** 轮询入口：已有扫描在跑则复用它的 Promise（防并发扫描） */
-  const refresh = useCallback(() => {
-    if (!inFlight.current) {
-      inFlight.current = runScan().finally(() => {
-        inFlight.current = null;
-      });
-    }
-    return inFlight.current;
-  }, [runScan]);
-
-  /** kill 之后用：先等正在跑的扫描收尾，再扫一次，确保拿到 kill 后的真实状态
-   *（runScan 内部消化所有异常，这里的 await 不会抛） */
-  const freshScan = useCallback(async () => {
-    if (inFlight.current) await inFlight.current;
-    return refresh();
-  }, [refresh]);
-
-  useEffect(() => {
-    refresh();
-    const id = setInterval(refresh, 2000);
-    return () => clearInterval(id);
-  }, [refresh]);
 
   // Esc 关闭弹窗 / 收起详情
   useEffect(() => {
@@ -281,8 +226,10 @@ function App() {
   };
 
   const doBatchKill = async () => {
-    const suspects = batchConfirm;
-    if (!suspects || suspects.length === 0) return;
+    // targets 是弹窗打开那一刻的清扫快照 —— 与上面 suspects（当前过滤视图的
+    // 渲染子集）语义不同，命名刻意区分（评审发现：曾同名遮蔽）。
+    const targets = batchConfirm;
+    if (!targets || targets.length === 0) return;
     setBatchConfirm(null);
     setSweeping(true);
     // Windows 无 SIGTERM：单一 TerminateProcess 语义（force）
@@ -291,7 +238,7 @@ function App() {
       await runAction(
         async () => {
           const failures: BatchFailure[] = [];
-          for (const s of suspects) {
+          for (const s of targets) {
             try {
               await invokeAction("kill_process", {
                 pid: s.pid,
@@ -313,7 +260,7 @@ function App() {
             return (
               tr("error.batchFailed", {
                 failed: fails.length,
-                total: suspects.length,
+                total: targets.length,
               }) +
               // 分隔符语言无关（评审发现：全角「；」会出现在英文界面）
               fails
@@ -334,9 +281,10 @@ function App() {
     [],
   );
 
-  // useMemo:回调已稳定,rowProps 只在 os/lang/killingPid/sweeping 变化时新建,
-  // 配合 Row 的 memo 让 2s 轮询不再无谓重渲染全表。
-  const rowProps = useMemo(
+  // useMemo:回调已稳定,shared 只在 os/lang/killingPid/sweeping 变化时新建 ——
+  // Row 的 memo 按它的对象身份比较(见 ProcessRow rowPropsEqual),2s 轮询不再
+  // 无谓重渲染全表。这里的依赖数组是 shared 唯一的手工维护点。
+  const shared = useMemo(
     () => ({
       os,
       lang,
@@ -478,12 +426,11 @@ function App() {
             {filter !== "whitelist" && suspects.length > 0 && (
               <Section
                 title={t("section.suspects")}
-                count={suspects.length}
                 sub={t("section.suspects.sub")}
                 danger
                 entries={suspects}
                 expandedPid={expandedPid}
-                rowProps={rowProps}
+                shared={shared}
               />
             )}
 
@@ -510,20 +457,18 @@ function App() {
             {filter === "all" && healthy.length > 0 && (
               <Section
                 title={t("section.healthy")}
-                count={healthy.length}
                 entries={healthy}
                 expandedPid={expandedPid}
-                rowProps={rowProps}
+                shared={shared}
               />
             )}
 
             {filter === "whitelist" && (
               <Section
                 title={t("section.starred")}
-                count={filtered.length}
                 entries={filtered}
                 expandedPid={expandedPid}
-                rowProps={rowProps}
+                shared={shared}
               />
             )}
           </>
@@ -535,89 +480,21 @@ function App() {
       </footer>
 
       {batchConfirm && (
-        <ConfirmModal
-          titleId="batch-modal-title"
-          title={t("batch.title", { n: batchConfirm.length })}
-          cancelLabel={t("batch.cancel")}
-          confirmLabel={t("batch.confirm")}
+        <BatchConfirmModal
+          targets={batchConfirm}
+          os={os}
           onCancel={() => setBatchConfirm(null)}
           onConfirm={doBatchKill}
-        >
-          <div className="modal-row">
-            <span className="modal-label">{t("batch.signal")}</span>
-            <span className="mono">
-              {os === "windows" ? t("batch.signal.windows") : t("batch.signal.macos")}
-            </span>
-          </div>
-          <div className="modal-row modal-row-top">
-            <span className="modal-label">{t("batch.procs")}</span>
-            <div className="batch-list">
-              {batchConfirm.slice(0, 8).map((s) => (
-                <div key={s.pid} className="batch-item mono">
-                  <span className="batch-pid">PID {s.pid}</span>
-                  <span className="batch-label">{s.app_label}</span>
-                  <span className="batch-ports muted">{formatPorts(s.ports)}</span>
-                </div>
-              ))}
-              {batchConfirm.length > 8 && (
-                <div className="muted batch-more">
-                  {t("batch.more", { n: batchConfirm.length - 8 })}
-                </div>
-              )}
-            </div>
-          </div>
-          <div className="modal-row">
-            <span className="muted">{t("batch.scope.note")}</span>
-          </div>
-        </ConfirmModal>
+        />
       )}
 
       {confirm && (
-        <ConfirmModal
-          titleId="confirm-modal-title"
-          title={
-            confirm.force && os !== "windows" ? t("confirm.title.force") : t("confirm.title.kill")
-          }
-          cancelLabel={t("confirm.cancel")}
-          confirmLabel={confirm.force && os !== "windows" ? t("confirm.force") : t("confirm.kill")}
+        <KillConfirmModal
+          confirm={confirm}
+          os={os}
           onCancel={() => setConfirm(null)}
           onConfirm={doKill}
-        >
-          <div className="modal-row">
-            <span className="modal-label">{t("confirm.app")}</span>
-            <span>{confirm.app_label}</span>
-          </div>
-          <div className="modal-row">
-            <span className="modal-label">{t("confirm.cmd")}</span>
-            <span className="mono">{confirm.command}</span>
-          </div>
-          <div className="modal-row">
-            <span className="modal-label">{t("confirm.pid")}</span>
-            <span className="mono">{confirm.pid}</span>
-          </div>
-          <div className="modal-row">
-            <span className="modal-label">{t("confirm.ports")}</span>
-            <span className="mono">
-              {formatPorts(confirm.ports, "  ")}
-              {confirm.ports.length > 1 && (
-                <span className="muted">
-                  {" "}
-                  {t("confirm.portsRelease", { n: confirm.ports.length })}
-                </span>
-              )}
-            </span>
-          </div>
-          <div className="modal-row">
-            <span className="modal-label">{t("confirm.signal")}</span>
-            <span className="mono">
-              {os === "windows"
-                ? t("confirm.signal.win")
-                : confirm.force
-                  ? t("confirm.signal.kill")
-                  : t("confirm.signal.term")}
-            </span>
-          </div>
-        </ConfirmModal>
+        />
       )}
     </div>
   );

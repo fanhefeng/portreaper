@@ -1,0 +1,12 @@
+{
+  // 测试专用 project：唯一注入 node 类型的地方（security-config.test.ts 读
+  // node:fs，App.test.tsx 用 vi 假定时器）。与主 tsconfig 的分工见那边
+  // "types" 处的注释；两个 project 由 `pnpm run typecheck` 一起把关。
+  "extends": "./tsconfig.json",
+  "compilerOptions": {
+    "types": ["node"]
+  },
+  "include": ["src/**/*.test.ts", "src/**/*.test.tsx", "src/test-fixtures.ts", "src/vite-env.d.ts"],
+  // 必须显式清空：extends 会继承主配置的 exclude（恰好就是上面这些文件）
+  "exclude": []
+}
