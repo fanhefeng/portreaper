@@ -232,6 +232,16 @@ reviews:
           equivalents, so webview Cmd+C/V/W/Q depend on the Edit/Window
           submenus staying.
         - Logout/shutdown (AppleEvent quit) must still exit for real.
+        - Startup focus (RunEvent::Ready → set_focus): macOS never activates an
+          Accessory/LSUIElement app on launch, so the window opens behind other
+          apps without it. Two constraints: it must run on a SPAWNED THREAD
+          (tao's set_focus is run_on_main — called inline from the event
+          callback it runs in place and the launch sequence overwrites the
+          activation), and it must stay in Ready, not setup (setup drops the
+          activation policy first — policy down, then focus). Flag any change
+          that inlines it, moves it to setup, or gates RunEvent::Reopen on
+          has_visible_windows (visible-but-buried is exactly why the user
+          clicked the app again).
 
     - path: "src-tauri/capabilities/**"
       instructions: |

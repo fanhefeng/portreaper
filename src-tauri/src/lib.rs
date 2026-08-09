@@ -490,17 +490,47 @@ pub fn run() {
             // ⌘Q 的「仅托盘退出」语义由上面的自定义应用菜单实现（terminate: 不经
             // 此事件，拦了也没用 —— 实测验证）。
             #[cfg(target_os = "macos")]
-            if let tauri::RunEvent::Reopen {
-                has_visible_windows,
-                ..
-            } = event
-            {
-                if !has_visible_windows {
+            match event {
+                // 启动时把窗口抢到最前 —— Accessory / LSUIElement 应用不会被
+                // macOS 自动激活：窗口 orderFront 了，应用却不是 active app，于是
+                // 压在别的窗口底下、也拿不到键盘焦点（用户报「每次启动打开之后没
+                // 显示在最前面」）。set_focus 走的 makeKeyAndOrderFront +
+                // activateIgnoringOtherApps 正是缺的那一步；此前只有托盘点击 /
+                // 托盘「显示」/ Reopen 三条路径调它，启动路径一条都没有。
+                //
+                // 两个实测约束，别按「看起来更直接」的写法改回去：
+                // 1) 必须开线程，不能在本回调里同步调 set_focus —— tao 的实现是
+                //    run_on_main，已在主线程时就地执行，那样的 activate 会被尚未
+                //    跑完的启动流程盖掉（实测拿不到焦点）；从别的线程发起才会排进
+                //    主线程队列、在本回调返回之后执行，实测一次即中。
+                // 2) 必须是 Ready 而不是 setup。setup 里还要先 set_activation_policy
+                //    降到 Accessory，先降策略后抢焦点，顺序不能反。
+                // 重试是给冷启动兜底（实测冷启动时 Ready 本身能晚 ~1.8s）。锁屏时
+                // 系统禁止任何应用抢前台，届时重试到上限放弃即可 —— 属预期行为。
+                tauri::RunEvent::Ready => {
+                    if let Some(w) = app.get_webview_window("main") {
+                        let _ = w.show();
+                        std::thread::spawn(move || {
+                            for _ in 0..8 {
+                                let _ = w.set_focus();
+                                std::thread::sleep(std::time::Duration::from_millis(200));
+                                if w.is_focused().unwrap_or(false) {
+                                    break;
+                                }
+                            }
+                        });
+                    }
+                }
+                // 应用已在运行时又被启动一次（Spotlight / Launchpad / Finder）。
+                // 无条件前置：窗口「可见但被别的窗口挡住」恰恰是用户再点一次的
+                // 原因，按 has_visible_windows 短路会让这次点击毫无反应。
+                tauri::RunEvent::Reopen { .. } => {
                     if let Some(w) = app.get_webview_window("main") {
                         let _ = w.show();
                         let _ = w.set_focus();
                     }
                 }
+                _ => {}
             }
             #[cfg(not(target_os = "macos"))]
             {
