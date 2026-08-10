@@ -282,6 +282,17 @@ reviews:
           that inlines it, moves it to setup, or gates RunEvent::Reopen on
           has_visible_windows (visible-but-buried is exactly why the user
           clicked the app again).
+        - Do NOT accept a PR that bounces the activation policy to Regular to
+          "win" activation. Tried on macOS 26.5: it does take the front, but it
+          leaves a Dock icon behind after dropping back to Accessory — which is
+          exactly what LSUIElement exists to remove, and it drags the
+          "Dock icon ⇒ ⌘Q should quit" HIG conflict back in. The existing
+          Ready → spawned-thread → set_focus path already works there.
+        - Reports of "the window opens behind other apps" must be verified with
+          a SCREENSHOT (or the window's own is_focused()), never with
+          System Events' `frontmost` / `AXFocused`: a UIElement app never owns
+          the menu bar, so those two always name the other app and manufacture
+          a false reproduction. Also confirm the screen is unlocked first.
 
     - path: "src-tauri/capabilities/**"
       instructions: |
