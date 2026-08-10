@@ -64,10 +64,17 @@ This confirms `Cargo.lock` is consistent after the bump and that the crate still
 git add -A
 git commit -m "chore(release): vX.Y.Z"
 git tag vX.Y.Z
-git push origin main --tags
+git push origin main
+git push origin vX.Y.Z     # 逐个推 tag —— 不要用 --tags，见下
 ```
 
 The tag **must** match the version from step 1 (`v` prefix on the tag, none in the files). CI gates on this — see `verify-version` below.
+
+> ⚠️ **不要用 `git push --tags`。** `ray publish`（Raycast Store 提交）会在本地留下
+> 一个 `__raycast_latest_publish_ext/portreaper__` tag 来记状态，`--tags` 会把它一并
+> 推上公开仓库、污染 tag 列表 —— 已经误推并删除过一次，记录在
+> `docs/RAYCAST-MAINTAINING.md`。发版只推**这一个**版本 tag。
+> （本手册此前正是写的 `--tags`，与那条教训直接冲突，v0.10.0 发版时更正。）
 
 ### 4. Watch the release workflow
 
