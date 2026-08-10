@@ -38,6 +38,23 @@ describe("security config guards", () => {
     // 'unsafe-eval' 同理：构建产物里没有 eval / new Function，放行它只是白送
     // 一条注入后的代码执行路径。整串查即可 —— 它出现在任何指令里都不可接受。
     expect(s).not.toContain("'unsafe-eval'");
+    // frame-ancestors 没有 default-src 回退（object-src 有，故不必单列）——
+    // 不写死它，一次意外的 iframe 嵌入就没有任何东西拦得住。
+    expect(s).toContain("frame-ancestors 'none'");
+  });
+
+  it("三个未设防的侧面：不得关掉 CSP 注入、不得开 assetProtocol、不得另开 devCsp", () => {
+    const security: Record<string, unknown> = conf.app?.security ?? {};
+    // 关掉它，Tauri 为自身资源注入的 nonce / hash 源全部失效 —— 上面那条
+    // 「CSP 非空」照样通过，而实际保护已经归零。
+    expect(security.dangerousDisableAssetCspModification).toBeUndefined();
+    // asset: 协议把本地文件暴露给 webview。本应用一个字节的本地文件都不需要读，
+    // 而它承载的是用户完整命令行 —— 开它是纯负债。
+    const asset = security.assetProtocol as { enable?: boolean } | undefined;
+    expect(asset?.enable ?? false).toBe(false);
+    // devCsp 缺省时 dev 沿用 csp。单独给 dev 放宽 = 平时跑的根本不是发布态的
+    // 安全配置，问题只会在发版那天出现。
+    expect(security.devCsp).toBeUndefined();
   });
 
   it("权限面是精确的全量白名单：core:default + log:default + scoped opener，不多一项", () => {

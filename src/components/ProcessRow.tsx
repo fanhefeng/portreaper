@@ -141,8 +141,17 @@ function RowImpl({ e, expanded, shared }: RowProps) {
 
         <div className="row-main">
           <div className="row-title">
-            <span className="row-name">{name}</span>
-            {nameSub && <span className="row-name-sub">{nameSub}</span>}
+            {/* 名称/次级说明在 960px 下必被 CSS 省略号截断，而详情一次只能展开
+                一行 —— 不挂 title 的话，用户认出「这是哪个项目」的唯一出路就是
+                逐行展开。完整命令行比 app_label 更能定身份，故用它当悬浮内容。 */}
+            <span className="row-name" title={e.full_command || e.command}>
+              {name}
+            </span>
+            {nameSub && (
+              <span className="row-name-sub" title={e.full_command || e.command}>
+                {nameSub}
+              </span>
+            )}
             <span className="row-ports mono">
               {e.ports.length === 0 ? (
                 // 孤儿进程不监听端口：用徽标占位，避免端口列空白让人误以为数据缺失

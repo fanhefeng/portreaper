@@ -1,4 +1,4 @@
-import { categoryKey, reasonKey, reasonTipKey, useI18n } from "../i18n";
+import { categoryKey, reasonKey, reasonTipKey, stateKey, useI18n } from "../i18n";
 import {
   exemptReasons,
   formatDuration,
@@ -20,6 +20,11 @@ export function ProcessDetail({ e, os, id }: { e: ProcessEntry; os: Os | null; i
   const catKey = categoryKey(e.app_category);
 
   const exempt = exemptReasons(e);
+
+  // ps state 的人话（认不出就只显示原码）；`T` = 被挂起，见下方注释
+  const sk = stateKey(e.state);
+  const stateWord = sk ? t(sk) : null;
+  const isStopped = e.state.includes("T");
 
   // 启动链：根（顶端 App / 系统）在前，依次到直接父进程，最后是进程本身
   const chainTopDown = [...e.parent_chain].reverse();
@@ -59,13 +64,18 @@ export function ProcessDetail({ e, os, id }: { e: ProcessEntry; os: Os | null; i
             </>
           )}
           {/* ps state 标志（如 S+ / Z）：defunct 等判定的原始佐证，
-              与 user/tty 同理不再只收不显（评审发现） */}
+              与 user/tty 同理不再只收不显（评审发现）。
+              原码 + 人话并列：原码是给会看 ps 的用户的证据，人话是给其他人的 ——
+              一个孤零零的 `T` 解释不了「为什么终止它像是没反应」。 */}
           {e.state && (
             <>
               <span className="detail-sep">·</span>
               <span className="detail-dim" title={t("detail.state")}>
                 {e.state}
+                {stateWord && <> {stateWord}</>}
               </span>
+              {/* 挂起态是「温和终止看似无效」的经典成因，值得一句完整解释 */}
+              {isStopped && <span className="detail-note">{t("detail.state.stopped.tip")}</span>}
             </>
           )}
           {os === "macos" && e.ppid === 1 && (

@@ -9,6 +9,12 @@
    每个 token 先声明 sRGB 回退再用 oklch 覆盖：macOS 10.15–12.2 的
    WKWebView（Safari < 15.4）不认 oklch，没有回退会导致全部颜色失效。 */
 :root {
+  /* 纯暗色 UI 必须显式声明，否则滚动条、<input>、选区高亮、文本插入符、
+     UA 默认聚焦环全部按浅色渲染 —— 在深色面板上就是一道道刺眼的白。
+     这与「要不要做浅色主题」是两笔账：DESIGN.md 的 Dark only 是既定决定，
+     这一行只是去兑现它。 */
+  color-scheme: dark;
+
   --bg: #0b0e0d;
   --bg: oklch(0.16 0.006 165);
   --bg-elev: #111513;
@@ -295,6 +301,29 @@ button {
   flex-shrink: 0;
 }
 
+.notice-region {
+  flex-shrink: 0;
+}
+
+/* 「信号送到了但进程没死」——不是错误，故**不用**红色：中性底 + 一个可操作的
+   出口。与 .error 用同一条带位置，但语义与配色都刻意分开。 */
+.notice {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  background: var(--surface);
+  color: var(--text);
+  padding: 7px 18px;
+  border-bottom: 1px solid var(--border);
+  font-size: 12px;
+  flex-shrink: 0;
+}
+
+.notice > span:first-child {
+  flex: 1;
+  min-width: 0;
+}
+
 /* ───── List：判定分组 ───── */
 
 .list {
@@ -361,6 +390,48 @@ button {
   color: var(--text-dim);
   padding: 80px 20px;
   font-size: 13px;
+}
+
+.empty-action {
+  display: block;
+  margin: 10px auto 0;
+}
+
+/* ───── 渲染崩溃兜底页（ErrorBoundary） ─────
+   刻意双语并列：这一层在 i18n Provider 之外（Provider 自己也可能是崩溃源），
+   不能依赖字典。 */
+.crash {
+  padding: 40px 32px;
+  max-width: 720px;
+  margin: 0 auto;
+  color: var(--text);
+  font-size: 13px;
+  line-height: 1.6;
+}
+
+.crash h1 {
+  font-size: 16px;
+  margin: 0 0 12px;
+  color: var(--danger-text);
+}
+
+.crash-detail {
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  padding: 10px 12px;
+  font-family: var(--mono);
+  font-size: 12px;
+  white-space: pre-wrap;
+  word-break: break-word;
+  user-select: text;
+}
+
+.crash-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  margin-top: 16px;
 }
 
 /* ───── Row：两行式（名称+端口 / 人话描述），单击展开详情 ───── */
@@ -768,6 +839,10 @@ button {
 /* ───── Footer 状态栏 ───── */
 
 .footer {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 12px;
   flex-shrink: 0;
   padding: 7px 18px;
   border-top: 1px solid var(--border);
@@ -775,6 +850,30 @@ button {
   color: var(--text-dim);
   font-size: 11.5px;
   font-variant-numeric: tabular-nums;
+}
+
+.footer-version {
+  color: var(--text-faint, var(--text-dim));
+  opacity: 0.75;
+  user-select: text;
+}
+
+/* ───── 焦点可见性 ─────
+   此前全项目只有三处 focus 样式，而 ConfirmModal 把 autoFocus 放在**取消**键上
+   正是「Enter 永远不该直接触发终止」这条安全不变量的实现 —— 用户看不出焦点在
+   哪个按钮上时，按 Enter 就是在赌。全局兜底 + 毁灭性控件用红色焦点环
+   （绿色 accent 与「红色只给僵尸判定与 kill」的配色纪律冲突）。 */
+/* 只设 outline，**不设 border-radius** —— 那会真的改掉被聚焦元素本身的圆角
+   （而且只改到匹配这条规则的那部分元素），焦点态下控件形状会跳变。 */
+:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 2px;
+}
+
+.btn-danger-solid:focus-visible,
+.btn-kill:focus-visible,
+.btn-force:focus-visible {
+  outline-color: var(--danger);
 }
 
 /* ───── Modal（ConfirmModal 骨架：单杀确认 + 批量清扫共用） ───── */

@@ -39,6 +39,62 @@ afterEach(() => {
   mockInvoke.mockImplementation(() => Promise.resolve(undefined));
 });
 
+describe("useScan 对外契约（终止后存活确认依赖它）", () => {
+  it("freshScan 返回本轮 entries —— 只写 state 的话调用方拿不到与本次动作对应的快照", async () => {
+    route({ scan_ports: () => [makeEntry({ pid: 777 })] });
+    const { result } = renderHook(() => useScan());
+    await advance(0);
+
+    let rows: unknown = "unset";
+    await act(async () => {
+      rows = await result.current.freshScan();
+    });
+    expect(Array.isArray(rows)).toBe(true);
+    expect((rows as { pid: number }[])[0].pid).toBe(777);
+  });
+
+  it("扫描失败时 freshScan 返回 null（= 没有证据），不是空数组（= 什么都不剩）", async () => {
+    route({
+      scan_ports: () => {
+        throw "boom";
+      },
+    });
+    const { result } = renderHook(() => useScan());
+    await advance(0);
+
+    let rows: unknown = "unset";
+    await act(async () => {
+      rows = await result.current.freshScan();
+    });
+    // 这个区分是存活确认的安全阀：空数组会被读成「目标已消失」
+    expect(rows).toBeNull();
+  });
+
+  it("lastScanOk 独立于可点掉的 scanError —— 清掉横幅不该让空态退化成「一切正常」", async () => {
+    route({
+      scan_ports: () => {
+        throw "boom";
+      },
+    });
+    const { result } = renderHook(() => useScan());
+    await advance(0);
+
+    expect(result.current.hasScanned).toBe(true);
+    expect(result.current.lastScanOk).toBe(false);
+    act(() => result.current.clearScanError());
+    expect(result.current.scanError).toBeNull();
+    expect(result.current.lastScanOk).toBe(false);
+  });
+
+  it("hasScanned 在首轮落定前为假 —— 否则启动首帧会宣布「没有发现任何监听端口」", async () => {
+    route({ scan_ports: () => [makeEntry()] });
+    const { result } = renderHook(() => useScan());
+    expect(result.current.hasScanned).toBe(false);
+    await advance(0);
+    expect(result.current.hasScanned).toBe(true);
+  });
+});
+
 describe("useScan polling", () => {
   it("挂载即扫描一次，此后每 2s 轮询", async () => {
     let scans = 0;

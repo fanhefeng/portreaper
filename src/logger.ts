@@ -24,6 +24,13 @@ function logError(msg: string): void {
   void error(msg).catch(() => {});
 }
 
+/** React 错误边界捕获到的渲染崩溃。
+ *  与上面两条监听走同一条桥（同样吞掉自身失败，不会自激）—— 渲染崩溃不会触发
+ *  `window.onerror`（React 自己 catch 掉了），不显式记一条就什么都留不下。 */
+export function logRenderCrash(err: Error, componentStack: string): void {
+  logError(`render crash: ${err.stack ?? `${err.name}: ${err.message}`}\n${componentStack}`);
+}
+
 export function initFrontendLogging(): void {
   if (typeof window === "undefined" || !("__TAURI_INTERNALS__" in window)) {
     return;
