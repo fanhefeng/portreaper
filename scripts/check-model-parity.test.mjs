@@ -147,6 +147,15 @@ test("任一处被改宽即失败", () => {
   assert.match(errs[0], /不一致/);
 });
 
+test("三处一起改宽同样失败 —— 只校验「相等」会让 CLAUDE.md 的 ±5s 静默变成假话", () => {
+  const widened = Object.fromEntries(
+    Object.entries(TOL).map(([k, v]) => [k, v.replace("= 5;", "= 10;")]),
+  );
+  const errs = checkToleranceParity(widened);
+  assert.equal(errs.length, 1);
+  assert.match(errs[0], /必须是 5 秒/);
+});
+
 test("常量被改名/挪走时响亮失败，而不是「没找到 = 没问题」", () => {
   const errs = checkToleranceParity({ ...TOL, desktopSrc: "export const RENAMED = 5;" });
   assert.equal(errs.length, 1);

@@ -119,6 +119,20 @@ function diffFields(rustFields, mirrorFields) {
  * 推导，而 `etime` 只有秒级粒度 —— 同一个进程在连续两轮扫描里读到的值会
  * ±1s 抖动（实测 14 轮采样、13 个进程全部出现 1 秒极差）。
  */
+/**
+ * 容差的**期望取值**，与三处源码一起钉死。
+ *
+ * 只校验「三处相等」是不够的：三处一起从 5 改成 10 会照常通过，而
+ * `CLAUDE.md` 与 `.coderabbit.yaml` 里白纸黑字写的是「±5s」—— 文档会就此
+ * 静默变成假话，且身份匹配窗口被悄悄放宽（评审发现）。
+ *
+ * 这个数不是物理常量，是留了余量的工程取值（实测抖动 ±1~2s，取 5）。真要改它
+ * 是一次**需要被评审**的决定：改这里、改三处源码、改 CLAUDE.md 与
+ * .coderabbit.yaml 里点名 ±5s 的那两句 —— 守卫的作用正是逼出这一步，
+ * 而不是让它顺手滑过去。
+ */
+const EXPECTED_TOLERANCE_SECS = 5;
+
 const TOLERANCE_SITES = [
   {
     label: "crates/portreaper-core/src/platform.rs",
@@ -148,12 +162,15 @@ export function checkToleranceParity(sources) {
     }
     found.push({ label: site.label, value: Number(m[1]) });
   }
+  const where = found.map((f) => `${f.label}=${f.value}`).join("，");
   const values = new Set(found.map((f) => f.value));
   if (values.size > 1) {
+    return [`身份容差三处不一致：${where} —— 放宽它会让被复用的 PID 被认成同一个进程`];
+  }
+  if (found[0].value !== EXPECTED_TOLERANCE_SECS) {
     return [
-      "身份容差三处不一致：" +
-        found.map((f) => `${f.label}=${f.value}`).join("，") +
-        " —— 放宽它会让被复用的 PID 被认成同一个进程",
+      `身份容差必须是 ${EXPECTED_TOLERANCE_SECS} 秒，实际 ${where} —— ` +
+        "CLAUDE.md 与 .coderabbit.yaml 都点名了 ±5s；真要改请连同这个守卫与那两处文档一起改",
     ];
   }
   return [];
