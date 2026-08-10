@@ -195,6 +195,35 @@ function asKillError(err: unknown): KillError | null {
   }
 }
 
+/**
+ * 判断「两次扫描里的这一行是不是同一个进程」时，`start_unix` 允许的偏差（秒）。
+ *
+ * **绝不能用 `===`**：macOS 的 `start_unix` 是 `now - etime` 推导出来的，而 `etime`
+ * 只有秒级粒度 —— 同一个进程在连续两轮扫描里读到的值会 ±1s 抖动（本机实测：
+ * 14 轮采样，13 个进程**全部**出现 1 秒极差）。用严格相等做存活确认，会把
+ * 「进程还在」随机读成「进程已消失」，正好废掉终止后确认这件事。
+ *
+ * 取值与引擎的 `START_TOLERANCE_SECS` 一致，理由也一致：被复用的 PID 其创建时间
+ * 必然晚于扫描时刻，远超这个容差，不会被误判成同一个进程。
+ */
+export const START_MATCH_TOLERANCE_SECS = 5;
+
+/** 两次扫描里的行是否指向同一个进程（PID + 创建时间，带容差）。 */
+export function isSameProcess(e: ProcessEntry, pid: number, startUnix: number | null): boolean {
+  if (e.pid !== pid) return false;
+  if (startUnix == null || e.start_unix == null) return true; // 没有令牌可比，只能认 PID
+  return Math.abs(e.start_unix - startUnix) <= START_MATCH_TOLERANCE_SECS;
+}
+
+/** 结构化失败的语义码；不是已知形态时 null。
+ *
+ *  给**流程分叉**用（例如「目标在点击前已自行退出」不该弹红条），文案仍走
+ *  `localizeKillError`。**绝不能**退化成对错误文本的子串匹配 —— v0.9.0 删掉
+ *  `ERR_*:` 前缀契约要根除的正是那个。 */
+export function killErrorCode(err: unknown): KillError["code"] | null {
+  return asKillError(err)?.code ?? null;
+}
+
 /** 对象形态但 code 不认识（后端比前端新，例如用户没升桌面端就换了 CLI）：
  *  `String(err)` 会渲染成 `[object Object]` —— 比旧的字符串契约还糟，用户拿不到
  *  任何可搜索、可报 issue 的信息。故降级也要吐出 code 本身。 */

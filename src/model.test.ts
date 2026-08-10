@@ -5,6 +5,7 @@
 import { describe, it, expect } from "vite-plus/test";
 import {
   hasBusySubtree,
+  isSameProcess,
   localizeKillError,
   subtreeCpuExceedsSelf,
   type ProcessEntry,
@@ -110,3 +111,36 @@ describe("localizeKillError", () => {
 // 前端那份手推实现已删除（App.tsx 改为直读 ProcessEntry.whitelist_key，与
 // Raycast 侧同一约定），只剩一份真相源后一致性断言便失去了对象 —— 键推导规则
 // 本身由 Rust 侧 scanner::mod::helper_tests 覆盖。
+
+// 「两次扫描里的这一行还是同一个进程吗」——终止后存活确认的地基。
+// 用严格相等会随机误判（start_unix 由 now-etime 推导，秒级粒度导致 ±1s 抖动），
+// 而误判的方向恰好是「进程已消失」，也就是把杀不掉的进程报成杀掉了。
+describe("isSameProcess", () => {
+  it("±1s 抖动内仍是同一个进程", () => {
+    const e = makeEntry({ pid: 4242, start_unix: 1000 });
+    expect(isSameProcess(e, 4242, 1000)).toBe(true);
+    expect(isSameProcess(e, 4242, 999)).toBe(true);
+    expect(isSameProcess(e, 4242, 1001)).toBe(true);
+    expect(isSameProcess(e, 4242, 1005)).toBe(true); // 容差边界（内侧）
+  });
+
+  it("超出容差即不算同一个进程 —— 上界也要钉住，否则放宽容差不会翻红", () => {
+    const e = makeEntry({ pid: 4242, start_unix: 1000 });
+    expect(isSameProcess(e, 4242, 1006)).toBe(false);
+    expect(isSameProcess(e, 4242, 994)).toBe(false);
+  });
+
+  it("PID 被复用（创建时间晚得多）不算同一个进程", () => {
+    const recycled = makeEntry({ pid: 4242, start_unix: 9000 });
+    expect(isSameProcess(recycled, 4242, 1000)).toBe(false);
+  });
+
+  it("PID 不同一律不算", () => {
+    expect(isSameProcess(makeEntry({ pid: 1 }), 2, 1000)).toBe(false);
+  });
+
+  it("缺令牌时退化为只认 PID（没有可比的东西，宁可认成同一个也不谎报已消失）", () => {
+    expect(isSameProcess(makeEntry({ pid: 7, start_unix: null }), 7, 1000)).toBe(true);
+    expect(isSameProcess(makeEntry({ pid: 7, start_unix: 1000 }), 7, null)).toBe(true);
+  });
+});

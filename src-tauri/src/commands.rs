@@ -55,11 +55,48 @@ pub async fn scan_ports(app: AppHandle) -> Result<Vec<ProcessEntry>, String> {
 /// 四种已知原因之一，冒充任何一个都会给出误导性的处置建议。
 #[tauri::command]
 pub async fn kill_process(pid: u32, force: bool, start_unix: Option<u64>) -> Result<(), KillError> {
-    tauri::async_runtime::spawn_blocking(move || kill(pid, force, start_unix))
-        .await
-        .map_err(|e| KillError::Os {
+    tauri::async_runtime::spawn_blocking(move || {
+        let result = kill(pid, force, start_unix);
+        // 审计日志：kill 是本应用唯一不可撤销的操作，而在此之前它一个字都不落盘 ——
+        // 成功的那些在界面上无声消失（一键清扫可以一次杀掉 N 个），事后想问
+        // 「我刚才到底杀了什么」，UI 和日志里都查不到。
+        //
+        // **只记 pid / 信号 / 结果，不记 app_label 或命令行**：那两样可能含用户的
+        // 项目目录名，与 README 承诺的「不上报任何进程信息」同向 —— 日志虽然只在
+        // 本机，但它是用户会主动贴进 issue 的东西。
+        // 两条路径的字段集必须一致：pid + 信号 + 结果。`force` 就是这一层能表达的
+        // 「信号」（macOS 是 SIGKILL / SIGTERM，Windows 只有一种终止方式，具体由
+        // 引擎决定，这里不冒充知道信号名）。`start_unix` 刻意不记 —— 它是防误杀的
+        // 输入，不是审计事实，事后也无从据它行动。
+        let signal = if force { "force" } else { "graceful" };
+        match &result {
+            Ok(()) => log::info!("kill pid={pid} signal={signal} -> ok"),
+            Err(e) => log::warn!("kill pid={pid} signal={signal} -> {e}"),
+        }
+        result
+    })
+    .await
+    .map_err(|e| {
+        // join 失败（panic / 运行时关停）在 IPC 上会被前端展示，但落不了盘 ——
+        // 而这恰恰是最需要事后追查的一类失败
+        log::error!("kill task failed pid={pid}: {e}");
+        KillError::Os {
             message: format!("kill task failed: {e}"),
-        })?
+        }
+    })?
+}
+
+/// 打开日志目录 —— 与托盘菜单的 `open-log-dir` 同一个动作，只是多一个前端入口。
+///
+/// 存在的理由是 ErrorBoundary：渲染崩溃时窗口里只剩兜底页，托盘菜单固然还在，
+/// 但让一个刚看到崩溃页的用户去菜单栏里翻，等于没有入口。
+///
+/// 这是本 crate 自己的 `#[tauri::command]`，**不经过 capabilities 的 ACL**
+/// （那份白名单管的是核心/插件命令），故 `security-config.test.ts` 的精确断言
+/// 一个字都不用改。
+#[tauri::command]
+pub fn open_log_dir(app: tauri::AppHandle) {
+    crate::open_app_dir(&app, crate::paths::log_dir(&app));
 }
 
 /// 前端平台感知（驱动平台分叉的文案与按钮布局），不引入额外 JS 插件。

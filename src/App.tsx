@@ -4,6 +4,8 @@ import { openUrl } from "@tauri-apps/plugin-opener";
 import { useI18n } from "./i18n";
 import {
   ACTION_TIMEOUT_MS,
+  isSameProcess,
+  killErrorCode,
   legacyWhitelistKey,
   localizeActionError,
   localizeKillError,
@@ -36,6 +38,33 @@ function invokeAction(cmd: string, args: Record<string, unknown>): Promise<void>
   return withTimeout(invoke<void>(cmd, args), ACTION_TIMEOUT_MS, "ERR_ACTION_TIMEOUT");
 }
 
+/** 终止后的存活确认窗口。SIGTERM 是异步的，收到它的 dev server 关 HTTP
+ *  keep-alive、停 esbuild service 常要 0.3–2s，过早宣布「还活着」会变成一片误报；
+ *  超过这个上限还在，才是真的没死。 */
+const CONFIRM_KILL_DEADLINE_MS = 2500;
+const CONFIRM_KILL_POLL_MS = 400;
+
+const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
+
+/**
+ * 终止之后**没有死掉**的那个目标。
+ *
+ * 在此之前，三层（引擎 / IPC / UI）都把「信号已投递」当成「进程已终止」：
+ * `libc::kill` 返回 0 就是成功。对忽略 SIGTERM 的进程，用户点完终止只会看到
+ * 那一行安静地留在列表里 —— 没有红条，也没有任何解释。
+ *
+ * 自带重开确认框所需的全部信息（label/command/ports），**不依赖那一行还在
+ * entries 里**：横幅挂着的这段时间里列表一直在刷新，去 `entries.find` 取目标
+ * 会在进程刚好换了形态时静默失败 —— 一个点下去什么都不发生的按钮。
+ */
+type Survivor = {
+  pid: number;
+  label: string;
+  startUnix: number;
+  command: string;
+  ports: number[];
+};
+
 function App() {
   const { t, lang, setLang } = useI18n();
   // os 在 get_platform 落定前为 null：终止按钮的布局是平台分叉的（macOS 双按钮 /
@@ -44,7 +73,7 @@ function App() {
   const [os, setOs] = useState<Os | null>(null);
   // 扫描轮询（entries / scanError / freshScan）整体在 useScan 里：并发语义
   //（inFlight 复用、freshScan 等在途）在那儿有直接单测。
-  const { entries, scanError, clearScanError, freshScan } = useScan();
+  const { entries, scanError, hasScanned, lastScanOk, clearScanError, freshScan } = useScan();
   const [filter, setFilter] = useState<Filter>("all");
   const [search, setSearch] = useState("");
   // 错误分两路（评审发现）：扫描错误由下一次成功轮询自动清除（自愈语义，useScan 负责）；
@@ -64,6 +93,10 @@ function App() {
   // 按 PID 成集，而不是单个「当前正在杀谁」（评审发现）：kill 是可并发发起的，
   // 单值状态会被后发起的那个覆盖，先发起的行随即恢复可点 —— 其请求明明还在飞。
   const [killingPids, setKillingPids] = useState<ReadonlySet<number>>(() => new Set());
+  // 与 actionError 并列的第三路提示：它不是「操作失败」（信号确实送到了），
+  // 而是「操作没有达成目的」，且带一个可操作的出口（强制终止）。用中性色，
+  // 别混进红色错误横幅 —— 那会让「杀不掉」和「调用出错」看起来是一回事。
+  const [survivor, setSurvivor] = useState<Survivor | null>(null);
   const [confirm, setConfirm] = useState<KillConfirm | null>(null);
   const [batchConfirm, setBatchConfirm] = useState<ProcessEntry[] | null>(null);
   const [sweeping, setSweeping] = useState(false);
@@ -76,6 +109,14 @@ function App() {
       .then(setOs)
       .catch(() => setOs("macos"));
   }, []);
+
+  // 目标终于自己退了（或被别的方式清掉了）：横幅自动收起。没有这一条它会一直
+  // 挂着，直到用户手动关 —— 而它描述的事实那时早已不成立。
+  useEffect(() => {
+    if (survivor && !entries.some((e) => isSameProcess(e, survivor.pid, survivor.startUnix))) {
+      setSurvivor(null);
+    }
+  }, [entries, survivor]);
 
   // Esc 关闭弹窗 / 收起详情
   useEffect(() => {
@@ -165,17 +206,70 @@ function App() {
     [],
   );
 
+  /** 目标是否真的消失了。轮询到 deadline 为止 —— 单次 250ms 后的快照会把
+   *  「正在优雅退出」误报成「杀不掉」。身份用 (pid, start_unix) **成对**比较
+   *  （只比 PID 的话，PID 被回收后新起的另一个进程会被当成「没杀掉」），且必须
+   *  走 `isSameProcess` 的容差比较 —— start_unix 逐轮抖动，`===` 会随机误判。
+   *
+   *  口径说明：这里的「消失」= **不再出现在扫描结果里**。扫描只列监听端口的进程
+   *  与 dev-like 的无端口孤儿，所以一个释放了端口却仍活着的进程也会算「消失」。
+   *  对本产品这是可接受的口径（用户要的是端口回来），但别把它当成 `kill(pid,0)`。 */
+  const confirmGone = useCallback(
+    async (pid: number, startUnix: number): Promise<boolean> => {
+      const deadline = Date.now() + CONFIRM_KILL_DEADLINE_MS;
+      for (;;) {
+        const rows = await freshScan();
+        // 扫描失败（返回 null）时不下结论：这一轮没有证据，交给常规轮询
+        if (rows === null) return true;
+        if (!rows.some((r) => isSameProcess(r, pid, startUnix))) return true;
+        if (Date.now() >= deadline) return false;
+        await sleep(CONFIRM_KILL_POLL_MS);
+      }
+    },
+    [freshScan],
+  );
+
+  /** 批量版的存活确认：整批共用一个 deadline，轮询到全部消失或到期为止。
+   *  与 `confirmGone` 同一套语义（同样的容差比较、同样的 2.5s 上限、扫描失败时
+   *  不下结论），只是一次判一批 —— 逐个串行调 confirmGone 会把上限乘以目标数。 */
+  const confirmGoneAll = useCallback(
+    async (targets: ProcessEntry[]): Promise<ProcessEntry[]> => {
+      const deadline = Date.now() + CONFIRM_KILL_DEADLINE_MS;
+      for (;;) {
+        const rows = await freshScan();
+        // 扫描失败：这一轮没有证据，不把它当成「都还活着」
+        if (rows === null) return [];
+        const alive = targets.filter((s) =>
+          rows.some((r) => isSameProcess(r, s.pid, s.start_unix)),
+        );
+        if (alive.length === 0 || Date.now() >= deadline) return alive;
+        await sleep(CONFIRM_KILL_POLL_MS);
+      }
+    },
+    [freshScan],
+  );
+
   const doKill = async () => {
     if (!confirm) return;
-    const { pid, force, startUnix } = confirm;
+    const { pid, force, startUnix, app_label, command, ports } = confirm;
     setKillingPids((cur) => new Set(cur).add(pid));
     setConfirm(null);
+    setSurvivor(null);
     try {
       await runAction(
         async () => {
-          await invokeAction("kill_process", { pid, force, startUnix });
-          await new Promise((r) => setTimeout(r, 250));
-          await freshScan();
+          try {
+            await invokeAction("kill_process", { pid, force, startUnix });
+          } catch (err) {
+            // 扫描到点击之间有 0–2s 窗口：dev server 自己退了、清扫刚跑完、
+            // 双击了终止键 —— 后端如实返回 process_gone，而用户明明达成了目的。
+            // 把它渲染成红色「终止失败」直接损伤「这个工具的判断可以信」的基调。
+            if (killErrorCode(err) !== "process_gone") throw err;
+          }
+          await sleep(250);
+          if (startUnix != null && !(await confirmGone(pid, startUnix))) {
+            setSurvivor({ pid, label: app_label, startUnix, command, ports });
+          }
         },
         // 原值直传（不套 String）：kill 错误是结构化的 {code, message?}，
         // 先转字符串会把它压成 "[object Object]"，分派立刻退化成透传。
@@ -256,11 +350,33 @@ function App() {
                 startUnix: s.start_unix,
               });
             } catch (err) {
+              // 目标在清扫开始前已自行退出：那正是清扫想要的结果，不进失败列表
+              if (killErrorCode(err) === "process_gone") continue;
               failures.push({ pid: s.pid, label: s.app_label, raw: err });
             }
           }
-          await new Promise((r) => setTimeout(r, 700));
-          await freshScan(); // 等掉撞车的轮询再扫一次，结果必然包含 kill 之后的状态
+          await sleep(250);
+          // 与单杀**同一条口径、同一个上限**：信号送到了 ≠ 进程死了，而优雅退出要
+          // 0.3–2s。此前这里只 sleep(700) 后扫一次 —— 单次快照会把一整批正在收尾的
+          // 目标全部读成「没杀掉」，而清扫一次能打十几个，误报会同时命中多行
+          // （评审发现：这正是我自己写进 CLAUDE.md 的那条不变量，批量路径却违反了它）。
+          const survivors = await confirmGoneAll(targets);
+          // 强杀出口需要身份令牌，故提示只能挂在**带 start_unix**的那一行上。
+          // 取 survivors[0] 会在它恰好没有令牌时把整条提示连同其余幸存者一起丢掉
+          // —— 结果正是本轮要消灭的形态：清扫完还剩几行，用户零反馈（评审发现）。
+          const anchor = survivors.find((s) => s.start_unix != null);
+          if (anchor?.start_unix != null) {
+            setSurvivor({
+              pid: anchor.pid,
+              label:
+                survivors.length === 1
+                  ? anchor.app_label
+                  : `${anchor.app_label} (+${survivors.length - 1})`,
+              startUnix: anchor.start_unix,
+              command: anchor.full_command || anchor.command,
+              ports: anchor.ports,
+            });
+          }
           // 部分失败：抛出结构化失败列表，由 toErrorMsg 在渲染时组装并本地化
           if (failures.length > 0) throw failures;
         },
@@ -425,8 +541,61 @@ function App() {
         )}
       </div>
 
+      {/* 「信号送到了，但进程没死」——独立于错误横幅的一路提示：中性色 + 一个
+          可操作的出口。role="status" 而非 alert：这不是错误，只是结果与预期不符。
+          区域常驻挂载、内容后注入 —— 与上面的 error-region 同一条教训：live region
+          与内容同时出现时读屏不会播报。 */}
+      <div className="notice-region" role="status">
+        {survivor && (
+          <div className="notice">
+            <span>{t("kill.survivor", { pid: survivor.pid, label: survivor.label })}</span>
+            {os === "macos" && (
+              <button
+                className="btn-ghost"
+                onClick={() => {
+                  rememberTrigger();
+                  // 直接用横幅自带的信息重开确认框，不去 entries 里捞 ——
+                  // 捞不到时按钮会静默失效，而那正是最需要它工作的时刻
+                  setConfirm({
+                    pid: survivor.pid,
+                    command: survivor.command,
+                    ports: survivor.ports,
+                    app_label: survivor.label,
+                    force: true,
+                    startUnix: survivor.startUnix,
+                  });
+                  setSurvivor(null);
+                }}
+              >
+                {t("kill.survivor.force")}
+              </button>
+            )}
+            <button className="btn-ghost" onClick={() => setSurvivor(null)}>
+              {t("kill.survivor.dismiss")}
+            </button>
+          </div>
+        )}
+      </div>
+
       <main className="list">
-        {entries.length === 0 ? (
+        {/* 空态分四种，此前全部塌缩成一句「没有发现任何监听端口」：
+            ① 还没扫完 —— 每次启动的第一帧都会经过这里，宣布「没有端口」是假话；
+            ② 首轮扫描失败 —— entries 仍是 []，同一句话会被自信地说出来，
+               而此时真正需要的是一个重试入口（界面上此前根本没有手动刷新）；
+            ③ 收藏页为空 —— 那是「你还没收藏过」，不是「没有匹配项」，
+               也是解释 ★ 语义的最佳时机；④ 才是真的一台干净机器。 */}
+        {!hasScanned ? (
+          <div className="empty">{t("empty.scanning")}</div>
+        ) : entries.length === 0 && !lastScanOk ? (
+          <div className="empty">
+            {t("empty.scanFailed")}
+            <button className="btn-ghost empty-action" onClick={() => void freshScan()}>
+              {t("empty.retry")}
+            </button>
+          </div>
+        ) : filter === "whitelist" && whitelistCount === 0 ? (
+          <div className="empty">{t("empty.noStarred")}</div>
+        ) : entries.length === 0 ? (
           <div className="empty">{t("empty.none")}</div>
         ) : filtered.length === 0 && !(filter === "suspect" && !search) ? (
           // 「可疑」标签页下无搜索词且零嫌疑 ⇒ 不是「没有匹配项」而是「一切正常」，
@@ -488,6 +657,13 @@ function App() {
 
       <footer className="footer">
         {t("footer.status", { procs: entries.length, ports: totalPortCount })}
+        {/* 版本号在此前的 UI 里完全不可达：应用是 Accessory（无 Dock 图标），
+            那份带「关于」的应用菜单根本不显示 —— 用户报 issue 时说不清自己在用
+            哪一版。刻意单独一个 span，不拼进 i18n 的值里。
+            取自 vite define（bump-version.mjs 已同步 package.json，不会漂移）。 */}
+        <span className="footer-version" title="Portreaper">
+          v{__APP_VERSION__}
+        </span>
       </footer>
 
       {batchConfirm && (

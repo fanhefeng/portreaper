@@ -106,6 +106,76 @@ function diffFields(rustFields, mirrorFields) {
   return parts.join("；");
 }
 
+/**
+ * 「同一个进程」的身份容差，三处必须同值。
+ *
+ * 引擎的 `START_TOLERANCE_SECS`（platform.rs）用于 kill 前的 PID 复用防护；
+ * 两个前端的 `START_MATCH_TOLERANCE_SECS` 用于终止后的存活确认。三处注释互相
+ * 声明「取值一致」，但在此之前**没有任何东西拦得住把它从 5 改成 10** —— 而放宽
+ * 这个容差的后果正是这套代码要防的那一类：PID 被复用后仍被认成同一个进程
+ * （评审发现）。抽成常量集中比对，分叉即 CI 变红。
+ *
+ * 顺带解释为什么它必须有容差、不能用严格相等：`start_unix` 由 `now - etime`
+ * 推导，而 `etime` 只有秒级粒度 —— 同一个进程在连续两轮扫描里读到的值会
+ * ±1s 抖动（实测 14 轮采样、13 个进程全部出现 1 秒极差）。
+ */
+/**
+ * 容差的**期望取值**，与三处源码一起钉死。
+ *
+ * 只校验「三处相等」是不够的：三处一起从 5 改成 10 会照常通过，而
+ * `CLAUDE.md` 与 `.coderabbit.yaml` 里白纸黑字写的是「±5s」—— 文档会就此
+ * 静默变成假话，且身份匹配窗口被悄悄放宽（评审发现）。
+ *
+ * 这个数不是物理常量，是留了余量的工程取值（实测抖动 ±1~2s，取 5）。真要改它
+ * 是一次**需要被评审**的决定：改这里、改三处源码、改 CLAUDE.md 与
+ * .coderabbit.yaml 里点名 ±5s 的那两句 —— 守卫的作用正是逼出这一步，
+ * 而不是让它顺手滑过去。
+ */
+const EXPECTED_TOLERANCE_SECS = 5;
+
+const TOLERANCE_SITES = [
+  {
+    label: "crates/portreaper-core/src/platform.rs",
+    key: "platformSrc",
+    re: /const\s+START_TOLERANCE_SECS\s*:\s*u64\s*=\s*(\d+)\s*;/,
+  },
+  {
+    label: "src/model.ts",
+    key: "desktopSrc",
+    re: /export\s+const\s+START_MATCH_TOLERANCE_SECS\s*=\s*(\d+)\s*;/,
+  },
+  {
+    label: "integrations/raycast/src/cli.ts",
+    key: "raycastSrc",
+    re: /export\s+const\s+START_MATCH_TOLERANCE_SECS\s*=\s*(\d+)\s*;/,
+  },
+];
+
+/** 三处身份容差的取值比对；返回错误信息数组（空 = 通过）。 */
+export function checkToleranceParity(sources) {
+  const found = [];
+  for (const site of TOLERANCE_SITES) {
+    const m = (sources[site.key] ?? "").match(site.re);
+    if (!m) {
+      // 常量被改名/挪走时必须响亮失败 —— 「没找到 = 没问题」比没有守卫更糟
+      return [`${site.label} 里找不到身份容差常量 —— 改名或挪走时守卫必须失败而不是放行`];
+    }
+    found.push({ label: site.label, value: Number(m[1]) });
+  }
+  const where = found.map((f) => `${f.label}=${f.value}`).join("，");
+  const values = new Set(found.map((f) => f.value));
+  if (values.size > 1) {
+    return [`身份容差三处不一致：${where} —— 放宽它会让被复用的 PID 被认成同一个进程`];
+  }
+  if (found[0].value !== EXPECTED_TOLERANCE_SECS) {
+    return [
+      `身份容差必须是 ${EXPECTED_TOLERANCE_SECS} 秒，实际 ${where} —— ` +
+        "CLAUDE.md 与 .coderabbit.yaml 都点名了 ±5s；真要改请连同这个守卫与那两处文档一起改",
+    ];
+  }
+  return [];
+}
+
 /** 核心校验（纯函数，可测）：返回错误信息数组（空 = 通过）。 */
 export function checkModelParity({ rustSrc, desktopSrc, raycastSrc }) {
   const errors = [];
@@ -131,15 +201,24 @@ export function checkModelParity({ rustSrc, desktopSrc, raycastSrc }) {
 // realpath 双侧归一：symlink 调用下裸比较不相等 → 守卫静默 exit 0，比没有守卫更糟。
 if (process.argv[1] && pathToFileURL(realpathSync(process.argv[1])).href === import.meta.url) {
   const root = join(dirname(fileURLToPath(import.meta.url)), "..");
-  const errors = checkModelParity({
-    rustSrc: readFileSync(join(root, "crates/portreaper-core/src/scanner/model.rs"), "utf8"),
-    desktopSrc: readFileSync(join(root, "src/model.ts"), "utf8"),
-    raycastSrc: readFileSync(join(root, "integrations/raycast/src/cli.ts"), "utf8"),
-  });
+  const desktopSrc = readFileSync(join(root, "src/model.ts"), "utf8");
+  const raycastSrc = readFileSync(join(root, "integrations/raycast/src/cli.ts"), "utf8");
+  const errors = [
+    ...checkModelParity({
+      rustSrc: readFileSync(join(root, "crates/portreaper-core/src/scanner/model.rs"), "utf8"),
+      desktopSrc,
+      raycastSrc,
+    }),
+    ...checkToleranceParity({
+      platformSrc: readFileSync(join(root, "crates/portreaper-core/src/platform.rs"), "utf8"),
+      desktopSrc,
+      raycastSrc,
+    }),
+  ];
   if (errors.length > 0) {
     for (const e of errors) console.error(`✗ ${e}`);
     console.error(`\nmodel parity check FAILED (${errors.length}).`);
     process.exit(1);
   }
-  console.log("✓ model parity OK — ProcessEntry/ParentRef 的三份契约字段一致");
+  console.log("✓ model parity OK — ProcessEntry/ParentRef 字段集与身份容差三处一致");
 }

@@ -154,7 +154,7 @@ pub(crate) fn dir_menu_texts(lang: &str) -> DirMenuTexts {
 /// 在系统文件管理器里打开 app 自建目录。目录可能尚未创建（config 仅在首次保存
 /// 白名单时落盘），故先 create_dir_all 兜底，避免打开一个不存在的路径而失败。
 /// 失败只记日志、不打断用户（菜单点击没有 UI 反馈通道）。
-fn open_app_dir(app: &AppHandle, dir: tauri::Result<std::path::PathBuf>) {
+pub(crate) fn open_app_dir(app: &AppHandle, dir: tauri::Result<std::path::PathBuf>) {
     use tauri_plugin_opener::OpenerExt;
     let path = match dir {
         Ok(p) => p,
@@ -262,13 +262,100 @@ fn build_log_plugin<R: tauri::Runtime>(
 /// 刻意**没有** `#[cfg_attr(mobile, tauri::mobile_entry_point)]`：那是移动端脚手架
 /// 残留，与 `Cargo.toml` 里已删掉的 staticlib/cdylib 是同一批。桌面构建下 `mobile`
 /// cfg 永不成立，该属性从未展开过 —— 无移动端计划，留着只会让人以为存在移动端支持。
+/// 全局 panic 钩子 —— 在 Builder 之前装好。
+///
+/// 没有它的话，release 下的 panic 是**完全静默**的：`main.rs` 是
+/// `windows_subsystem = "windows"`（无控制台），macOS 的 `.app` 同样吞掉 stderr。
+/// 而 scanner 大量解析 lsof / ps 的文本输出、还有一整片 Windows FFI（那半边没有
+/// 真机 QA），托盘线程与 `RunEvent::Ready` 里 spawn 的抢焦点线程中的 panic 会
+/// 直接终止进程 —— 用户看到的是「托盘图标凭空消失」，日志里一个字都没有。
+///
+/// 三条自我约束，全部照抄 `src/logger.ts` 那次 46 MB 自激的教训：
+/// - **钩子内部不可能再 panic**：只用 `&str`/`String` 与已就位的 IO 兜底路径；
+/// - **两路都写**：`log::error!` 走正常日志（插件未注册时它是空操作，不报错），
+///   同时再写一份 `log_bootstrap_failure`（它的定位就是「日志系统靠不住时的兜底」，
+///   只追加、不轮转、写失败就算了）；
+/// - **链回默认钩子**：debug 下仍要有 Rust 原生的 panic 输出与 backtrace。
+fn install_panic_hook() {
+    let default_hook = std::panic::take_hook();
+    std::panic::set_hook(Box::new(move |info| {
+        let location = info
+            .location()
+            .map(|l| format!("{}:{}:{}", l.file(), l.line(), l.column()))
+            .unwrap_or_else(|| "<unknown location>".to_string());
+        // payload 只可能是 &str 或 String（panic! 宏的两种形态），其它类型放弃取值
+        let payload = info
+            .payload()
+            .downcast_ref::<&str>()
+            .map(|s| (*s).to_string())
+            .or_else(|| info.payload().downcast_ref::<String>().cloned())
+            .unwrap_or_else(|| "<non-string panic payload>".to_string());
+        let thread = std::thread::current();
+        let msg = format!(
+            "PANIC in thread {:?} at {location}: {payload}\n{}",
+            thread.name().unwrap_or("<unnamed>"),
+            std::backtrace::Backtrace::force_capture()
+        );
+        log::error!("{msg}");
+        log_bootstrap_failure(&msg);
+        default_hook(info);
+    }));
+}
+
+/// 把主窗口显示出来并抢到最前。三处调用点共用：托盘「显示窗口」、macOS 的
+/// `RunEvent::Reopen`、Windows 单实例守卫收到的二次启动。
+///
+/// **必须在 spawn 出来的线程里 set_focus**（见 `RunEvent::Ready` 那段实测注释）：
+/// tao 的 `set_focus` 是 `run_on_main`，从事件回调里内联调用会就地执行，随后被
+/// 启动/激活序列覆盖 —— 实测拿不到前台。
+fn focus_main(app: &AppHandle) {
+    if let Some(w) = app.get_webview_window("main") {
+        let _ = w.show();
+        let _ = w.set_focus();
+    }
+}
+
 pub fn run() {
-    let builder = tauri::Builder::default()
+    // 第一件事，早于 Builder：setup 闭包、托盘线程、抢焦点线程里的 panic
+    // 都得被它盖住
+    install_panic_hook();
+
+    let builder = tauri::Builder::default();
+
+    // 单实例插件官方要求**排在插件链最前**（它要在其它插件初始化前决定「本进程
+    // 该不该活下去」）。macOS 不注册：那边根本起不了第二个进程，见 Cargo.toml。
+    #[cfg(windows)]
+    let builder = builder.plugin(tauri_plugin_single_instance::init(|app, _argv, _cwd| {
+        // 第二次启动的进程会立刻退出，这个回调在**已在运行的那个**里执行 ——
+        // 用户的意图就是「把它叫出来」
+        focus_main(app);
+    }));
+
+    let builder = builder
         .plugin(tauri_plugin_opener::init())
+        // 窗口尺寸/位置记忆。
+        //
+        // 只记 SIZE | POSITION，**绝不能加 VISIBLE / 用 ALL**：本应用「关窗即隐藏、
+        // 只从托盘退出」，恢复一个 hidden 状态会与 `RunEvent::Ready` 里那段实测调优
+        // 过的 show + 重试抢焦点直接打架，表现是启动后窗口再也不出现。
+        //
+        // 文件名按环境分叉，与 `portreaper_core::paths` 的 dev/prod 隔离同向：插件把
+        // 状态写进 Tauri 的 `app_config_dir()`，而那个目录**不认识**本项目的 `dev/`
+        // 约定 —— 不分文件名的话，`pnpm tauri dev` 会去改正式版的窗口几何。
+        .plugin(
+            tauri_plugin_window_state::Builder::default()
+                .with_state_flags(
+                    tauri_plugin_window_state::StateFlags::SIZE
+                        | tauri_plugin_window_state::StateFlags::POSITION,
+                )
+                .with_filename(format!(".window-state-{}.json", paths::env_label()))
+                .build(),
+        )
         .invoke_handler(tauri::generate_handler![
             commands::scan_ports,
             commands::kill_process,
             commands::get_platform,
+            commands::open_log_dir,
             commands::add_whitelist,
             commands::remove_whitelist,
             commands::update_tray_title,
@@ -434,12 +521,7 @@ pub fn run() {
 
             let _tray = tray_builder
                 .on_menu_event(|app, event| match event.id.as_ref() {
-                    "show" => {
-                        if let Some(w) = app.get_webview_window("main") {
-                            let _ = w.show();
-                            let _ = w.set_focus();
-                        }
-                    }
+                    "show" => focus_main(app),
                     "open-config-dir" => open_app_dir(app, paths::config_dir(app)),
                     "open-data-dir" => open_app_dir(app, paths::data_dir(app)),
                     "open-cache-dir" => open_app_dir(app, paths::cache_dir(app)),
@@ -524,12 +606,7 @@ pub fn run() {
                 // 应用已在运行时又被启动一次（Spotlight / Launchpad / Finder）。
                 // 无条件前置：窗口「可见但被别的窗口挡住」恰恰是用户再点一次的
                 // 原因，按 has_visible_windows 短路会让这次点击毫无反应。
-                tauri::RunEvent::Reopen { .. } => {
-                    if let Some(w) = app.get_webview_window("main") {
-                        let _ = w.show();
-                        let _ = w.set_focus();
-                    }
-                }
+                tauri::RunEvent::Reopen { .. } => focus_main(app),
                 _ => {}
             }
             #[cfg(not(target_os = "macos"))]

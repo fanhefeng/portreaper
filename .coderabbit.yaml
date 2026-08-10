@@ -203,6 +203,21 @@ reviews:
         graceful kill for detached console processes. Do not accept added
         CTRL_BREAK heuristics — that is a settled product decision.
 
+        A STOPPED target (ps state contains 'T' — Ctrl-Z, SIGTTIN, SIGTTOU)
+        gets SIGCONT right after SIGTERM (`resume_after_term`, macOS only).
+        Without it a *caught* SIGTERM stays pending forever while kill(2)
+        still returns 0 — the reported "terminating a dev server started in
+        Terminal does nothing" bug. Three properties are load-bearing and any
+        PR that changes one is a finding: order must be TERM then CONT; it is
+        sent ONLY when the identity probe observed 'T' (broadcasting SIGCONT
+        would fire the redraw handlers shells/tmux/TUIs install); its return
+        value must stay ignored (a failed wake-up must never turn a delivered
+        TERM into an error). The force branch must NOT send it — SIGKILL
+        cannot be caught. The `--ignored` live test named
+        kill_stopped_process_that_catches_sigterm pins this; it must keep using
+        `try_wait`, because a blocking `wait` hangs the suite instead of
+        failing it on regression.
+
     # ---------------------------------------------------------- desktop shell
     - path: "src-tauri/src/**/*.rs"
       instructions: |
@@ -232,6 +247,31 @@ reviews:
           equivalents, so webview Cmd+C/V/W/Q depend on the Edit/Window
           submenus staying.
         - Logout/shutdown (AppleEvent quit) must still exit for real.
+        - `focus_main` is the single "show + take front" implementation shared
+          by the tray item, RunEvent::Reopen and the Windows single-instance
+          callback. Flag re-derivations of the show/focus dance.
+        - Two plugins are registered Rust-side ONLY (no npm package, no JS
+          call), which is why capabilities are untouched: window-state must
+          keep `SIZE | POSITION` and must NEVER gain VISIBLE/ALL (restoring a
+          hidden window fights the RunEvent::Ready show+focus retry), and its
+          state filename must stay env-scoped (the plugin writes into Tauri's
+          app_config_dir, which knows nothing about this project's dev/
+          isolation). single-instance is cfg(windows) only and must stay first
+          in the plugin chain.
+        - Do NOT accept hand-written off-screen clamping for the restored
+          window rect: the plugin already restores the position only when the
+          saved rect intersects an available_monitors() entry. Also do not
+          accept a claim that CloseRequested persists geometry — verified on
+          real hardware, it only refreshes the in-memory cache; the disk write
+          is RunEvent::Exit only.
+        - The panic hook is installed before the Builder. Release builds have
+          no console on either platform, so without it a panic in the tray
+          thread / setup / the focus-retry thread kills the process silently.
+          It must stay panic-free itself, must write through BOTH log::error!
+          and log_bootstrap_failure, and must chain to the default hook.
+        - kill_process logs an audit line (pid + signal + result only — never
+          app_label or the command line, which can carry the user's project
+          paths).
         - Startup focus (RunEvent::Ready → set_focus): macOS never activates an
           Accessory/LSUIElement app on launch, so the window opens behind other
           apps without it. Two constraints: it must run on a SPAWNED THREAD
@@ -242,15 +282,35 @@ reviews:
           that inlines it, moves it to setup, or gates RunEvent::Reopen on
           has_visible_windows (visible-but-buried is exactly why the user
           clicked the app again).
+        - Do NOT accept a PR that bounces the activation policy to Regular to
+          "win" activation. Tried on macOS 26.5: it does take the front, but it
+          leaves a Dock icon behind after dropping back to Accessory — which is
+          exactly what LSUIElement exists to remove, and it drags the
+          "Dock icon ⇒ ⌘Q should quit" HIG conflict back in. The existing
+          Ready → spawned-thread → set_focus path already works there.
+        - Reports of "the window opens behind other apps" must be verified with
+          a SCREENSHOT (or the window's own is_focused()), never with
+          System Events' `frontmost` / `AXFocused`: a UIElement app never owns
+          the menu bar, so those two always name the other app and manufacture
+          a false reproduction. Also confirm the screen is unlocked first.
 
     - path: "src-tauri/capabilities/**"
       instructions: |
         This is an exact permission whitelist guarded by
         `src/security-config.test.ts`, which also pins a strict CSP (no
-        unsafe-inline anywhere; connect-src must keep both Tauri IPC carriers).
-        Any added permission or CSP edit must come with a deliberate update to
-        those assertions — a PR that widens permissions without touching the
-        test is a finding.
+        unsafe-inline / unsafe-eval anywhere; frame-ancestors 'none', which
+        has no default-src fallback; connect-src must keep both Tauri IPC
+        carriers) and three settings whose ABSENCE is the point:
+        dangerousDisableAssetCspModification (would void Tauri's injected
+        nonce/hash sources while every other CSP assertion still passes),
+        assetProtocol.enable, and devCsp. Any added permission or CSP edit
+        must come with a deliberate update to those assertions — a PR that
+        widens permissions without touching the test is a finding.
+
+        Note commands this crate defines itself do NOT go through the ACL
+        (capabilities gate core and plugin commands), so a new
+        `#[tauri::command]` needs no permission entry — do not report one as
+        missing.
 
     # -------------------------------------------------------------- frontend
     - path: "src/**/*.{ts,tsx}"
@@ -277,6 +337,31 @@ reviews:
           CPU). Never let the logger produce an error it would itself report.
         - Sweep and the tray count cover Confirmed+Likely only. Possible is
           never swept.
+        - A kill is not done when the IPC resolves. `confirmGone` re-scans
+          until the target is gone or a ~2.5s deadline passes; a survivor gets
+          a NON-error notice plus a Force Kill escalation, not a red failure
+          banner (the call really did succeed). Flag shortening the deadline to
+          a single snapshot — graceful vite/next shutdowns take 0.3–2s and
+          would all read as failures — and flag comparing pid alone, which
+          reports a recycled PID as "not terminated".
+        - Identity comparison MUST go through `isSameProcess` (±5s tolerance).
+          `start_unix === start_unix` is a real bug, not a style nit:
+          `now - etime` has second granularity, so the same process reads ±1s
+          differently between scans and every survivor would be reported as
+          gone. Flag any reintroduction of strict equality on `start_unix`.
+        - `process_gone` on the single-kill path is a SUCCESS: the target
+          legitimately exits by itself inside the scan→click window, and
+          "kill failed" for a user who got what they wanted is a credibility
+          hit. Branch on the structured code via `killErrorCode` — never on
+          error text.
+        - `stateKey` maps only the FIRST letter of the ps state column and
+          returns null otherwise. Do not accept an exhaustive flag table: the
+          modifiers are platform trivia and would become another hand-copied
+          list to keep in sync with `ps`; unknown states must fall back to the
+          raw code.
+        - The ErrorBoundary's diagnostics text must never include process
+          command lines or cwd (they can carry tokens and private paths) —
+          version, platform and the error only.
 
     # ---------------------------------------------------------------- guards
     - path: "scripts/*.mjs"
@@ -324,7 +409,30 @@ reviews:
         them as missing i18n keys. The typed-bilingual-dict rule under
         `src/**/*.{ts,tsx}` covers the repo-root desktop webview only.
         Same reason verdict reasons render as raw engine codes (`ppid1_orphan`)
-        instead of prose — rationale in docs/RAYCAST-MAINTAINING.md.
+        instead of prose — rationale in docs/RAYCAST-MAINTAINING.md. A PR that
+        introduces a reason glossary/word table here is a finding, not an
+        improvement.
+
+        Row appearance may branch ONLY on structured fields (`confidence`,
+        `is_zombie_suspect`, `ports`, `duplicate_of`, `state`). Branching on
+        specific `zombie_reasons` code names is a finding:
+        `scripts/check-reason-parity.mjs` does not cover this directory, so a
+        code name copied here is an unguarded drift path.
+
+        Kill flow: "signal delivered" is not "process exited". After a
+        successful `kill`, `confirmTermination` re-scans (with `--cpu=skip`)
+        until the (pid, start_unix) pair is gone or a ~2.5s deadline passes;
+        only then does the toast claim success. Escalation to Force Kill is
+        offered only on macOS and never for `process_gone` / `pid_reused`.
+        `killErrorMessage` must cover every `KillError` variant and its default
+        arm must NOT echo raw stderr (the CLI writes two lines there, the
+        second in Chinese). Branch on the typed `code` via `KillFailedError`,
+        never on message text.
+
+        Any visual change here invalidates `metadata/*.png`, which `ray lint`
+        validates and the Store shows. Regenerate them with
+        `scripts/capture-raycast-metadata.sh` before resubmitting, and keep the
+        existing privacy practice (only throwaway demo processes on screen).
 
   tools:
     # Already enforced locally (pre-push) and in CI. Duplicating them here

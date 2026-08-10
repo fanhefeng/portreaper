@@ -100,11 +100,15 @@ describe("error channels", () => {
 
   it("后续操作成功后清除残留失败横幅：横幅反映最近一次操作的结果", async () => {
     let killFails = true;
+    let alive = true;
     route({
       get_platform: () => "macos",
-      scan_ports: () => [suspectEntry()],
+      scan_ports: () => (alive ? [suspectEntry()] : []),
       kill_process: () => {
-        if (killFails) throw { code: "process_gone" };
+        // access_denied 而非 process_gone：后者现在被当成「用户想要的结果」
+        // （目标在点击前自行退出了），不再渲染成失败横幅 —— 见下方专门的用例
+        if (killFails) throw { code: "access_denied" };
+        alive = false;
         return undefined;
       },
     });
@@ -121,7 +125,8 @@ describe("error channels", () => {
     killFails = false;
     fireEvent.click(screen.getAllByText("Kill")[0]);
     fireEvent.click(screen.getByText("Terminate"));
-    await advance(400); // 成功路径有 250ms 收尾等待 + freshScan
+    // 成功路径 = 250ms 收尾等待 + 存活确认（目标已消失，首轮就收尾）
+    await advance(1000);
     expect(screen.queryByText(/Kill failed/)).toBeNull();
   });
 
@@ -172,7 +177,7 @@ describe("error channels", () => {
         return [suspectEntry()];
       },
       kill_process: () => {
-        throw { code: "process_gone" };
+        throw { code: "access_denied" };
       },
     });
     render(<App />);
@@ -236,7 +241,8 @@ describe("kill & sweep flow", () => {
     // 清扫按钮计数 = 2（Possible 永不入清扫 —— CLAUDE.md 不变量）
     fireEvent.click(screen.getByText(/Clean up \(2\)/));
     fireEvent.click(screen.getByText("Terminate all"));
-    await advance(800); // 批量循环 + 700ms 收尾等待
+    // 批量循环 + 250ms 收尾 + 存活确认轮询（与单杀同一个 2.5s 上限）
+    await advance(4000);
 
     // 清扫范围：只杀了 confirmed + likely，4444 从未被尝试
     expect(killCalls.sort()).toEqual([4242, 4343]);
@@ -269,7 +275,7 @@ describe("kill & sweep flow", () => {
 
     // ACTION_TIMEOUT_MS + 700ms 收尾 + freshScan 落定：sweeping 释放、
     // 聚合横幅出现且含本地化的超时文案 —— 修复前这里会永远停在 Cleaning…
-    await advance(ACTION_TIMEOUT_MS + 1000);
+    await advance(ACTION_TIMEOUT_MS + 4000);
     const banner = screen.getByText(/1\/1 processes failed/);
     expect(banner.textContent).toContain("timed out");
     const sweepBtn = screen.getByText<HTMLButtonElement>(/Clean up \(1\)/);
@@ -350,15 +356,133 @@ describe("kill & sweep flow", () => {
     expect((screen.getAllByText("Kill")[0] as HTMLButtonElement).disabled).toBe(true);
     expect((screen.getAllByText("Kill")[1] as HTMLButtonElement).disabled).toBe(true);
 
-    // 4242 先完成：只摘自己的标记，5151 仍在飞 ⇒ 仍禁用，4242 恢复可点
+    // 4242 先完成：只摘自己的标记，5151 仍在飞 ⇒ 仍禁用，4242 恢复可点。
+    // advance 要跨过终止后的存活确认窗口（250ms 收尾 + 最多 2.5s 轮询）——
+    // 那段时间里这一行确实还在被处置，禁用是对的，摘标记发生在确认收尾之后。
     gates[4242]?.();
-    await advance(400);
+    await advance(4000);
     expect((screen.getAllByText("Kill")[1] as HTMLButtonElement).disabled).toBe(true);
     expect((screen.getAllByText("Kill")[0] as HTMLButtonElement).disabled).toBe(false);
 
     gates[5151]?.();
-    await advance(400);
+    await advance(4000);
     expect((screen.getAllByText("Kill")[1] as HTMLButtonElement).disabled).toBe(false);
+  });
+
+  // 批量清扫的幸存提示挂在**带身份令牌**的那一行上（强杀出口需要它）。
+  // 此前代码取 survivors[0]，它恰好没有令牌时整条提示连同其余幸存者一起被丢掉 ——
+  // 结果正是本轮要消灭的形态：清扫完还剩几行，用户零反馈（评审发现）。
+  it("批量幸存者里第一个没有身份令牌时，提示仍要出现（挂到有令牌的那个上）", async () => {
+    const noToken = suspectEntry({ pid: 5001, start_unix: null, ports: [5180] });
+    const withToken = suspectEntry({ pid: 5002, ports: [5181] });
+    route({
+      get_platform: () => "macos",
+      scan_ports: () => [noToken, withToken], // 两个都扛住了终止
+      kill_process: () => undefined,
+    });
+    render(<App />);
+    await advance(0);
+
+    fireEvent.click(screen.getByText(/Clean up/));
+    fireEvent.click(screen.getByText("Terminate all"));
+    await advance(4000);
+
+    expect(screen.getByText(/has not exited/)).toBeTruthy();
+    // 计数覆盖两个幸存者，锚点是带令牌的那个
+    expect(screen.getByText(/5002/)).toBeTruthy();
+  });
+
+  // 终止后的存活确认（用户报告：「终止了没反应」）。此前三层都把「信号已投递」
+  // 当成「进程已终止」，杀不掉的进程只会安静地留在列表里，零反馈。
+  it("目标在确认窗口内没有消失 ⇒ 出中性提示与强杀出口，而不是静默当成功", async () => {
+    route({
+      get_platform: () => "macos",
+      // 进程扛住了 SIGTERM：每一轮扫描都还在
+      scan_ports: () => [suspectEntry()],
+      kill_process: () => undefined,
+    });
+    render(<App />);
+    await advance(0);
+
+    fireEvent.click(screen.getAllByText("Kill")[0]);
+    fireEvent.click(screen.getByText("Terminate"));
+    await advance(4000);
+
+    expect(screen.getByText(/has not exited/)).toBeTruthy();
+    // 不能混进红色错误横幅：信号确实送到了，这不是「调用失败」
+    expect(screen.queryByText(/Kill failed/)).toBeNull();
+    expect(screen.getByText("Force kill")).toBeTruthy();
+  });
+
+  // 回归：start_unix 由 `now - etime` 推导、etime 只有秒级粒度，同一个进程在
+  // 连续扫描里会 ±1s 抖动（本机实测 14 轮采样、13 个进程全部出现 1 秒极差）。
+  // 用 === 比对身份会把「还活着」随机读成「已消失」——存活确认就此形同虚设。
+  it("start_unix 逐轮抖动 ±1s 时，仍要认出这是同一个进程（回归：曾用严格相等）", async () => {
+    let tick = 0;
+    route({
+      get_platform: () => "macos",
+      // 每轮扫描 start_unix 抖一下，模拟真实引擎的秒级粒度
+      scan_ports: () => [suspectEntry({ start_unix: 1000 + (tick++ % 2) })],
+      kill_process: () => undefined,
+    });
+    render(<App />);
+    await advance(0);
+
+    fireEvent.click(screen.getAllByText("Kill")[0]);
+    fireEvent.click(screen.getByText("Terminate"));
+    await advance(4000);
+
+    expect(screen.getByText(/has not exited/)).toBeTruthy();
+  });
+
+  it("目标确实消失了 ⇒ 不留任何提示", async () => {
+    let alive = true;
+    route({
+      get_platform: () => "macos",
+      scan_ports: () => (alive ? [suspectEntry()] : []),
+      kill_process: () => {
+        alive = false;
+        return undefined;
+      },
+    });
+    render(<App />);
+    await advance(0);
+
+    fireEvent.click(screen.getAllByText("Kill")[0]);
+    fireEvent.click(screen.getByText("Terminate"));
+    await advance(4000);
+
+    expect(screen.queryByText(/has not exited/)).toBeNull();
+    expect(screen.queryByText(/Kill failed/)).toBeNull();
+  });
+
+  // 扫描到点击之间有 0–2s 窗口：dev server 自己退了、清扫刚跑完又点了行内终止、
+  // 双击了终止键 —— 用户明明达成了目的，此前却会收到一条红色「终止失败」。
+  it("process_gone 不是失败：目标在点击前已自行退出，等同成功", async () => {
+    // 目标行来自首轮扫描，之后进程表为空 —— 与真实时序一致
+    let first = true;
+    route({
+      get_platform: () => "macos",
+      scan_ports: () => {
+        if (first) {
+          first = false;
+          return [suspectEntry()];
+        }
+        return [];
+      },
+      kill_process: () => {
+        throw { code: "process_gone" };
+      },
+    });
+    render(<App />);
+    await advance(0);
+
+    fireEvent.click(screen.getAllByText("Kill")[0]);
+    fireEvent.click(screen.getByText("Terminate"));
+    await advance(4000);
+
+    expect(screen.queryByText(/Kill failed/)).toBeNull();
+    expect(screen.queryByText(/has not exited/)).toBeNull();
   });
 });
 

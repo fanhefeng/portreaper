@@ -427,3 +427,78 @@ kill + 清理 profile           → 回到 12 个监听者，0 个 suspect
 >   现按「链有没有真的走过祖先」这个结构事实决定是否列出
 >   （`ChainFlags::walked_real_ancestor`）；本体 ppid 正常、链走过 zsh→npm 才撞到
 >   launchd 的那类行仍会照常列出，那里它是唯一的孤儿证据。
+
+---
+
+## Gap 2 — 挂起（stopped，`ps state` 含 `T`）的进程，温和终止形同无效
+
+**状态：已修（2026-08-10，`crates/portreaper-core/src/platform.rs`）。** 本节保留
+现场与推理过程，因为这类「syscall 返回 0 ≠ 目的达成」的错误极易以别的形态复发。
+
+### 现场
+
+用户报告：**从 Terminal 里启动的进程，在 Raycast 扩展里点终止没有任何反应。**
+
+复现（可原样重跑）：
+
+```bash
+# 一个绑 :8799 且像 vite/node 一样捕获 SIGTERM 的监听者
+perl -e '$SIG{TERM}=sub{exit 0}; use IO::Socket::INET;
+         IO::Socket::INET->new(LocalAddr=>"127.0.0.1",LocalPort=>8799,
+                               Proto=>"tcp",Listen=>5,ReuseAddr=>1) or die $!;
+         sleep 600' &
+kill -STOP $!          # 等价于用户在 Terminal 里按了 Ctrl-Z
+portreaper-cli scan --json      # 取该行的 start_unix
+portreaper-cli kill <pid> --start-unix <n>
+echo $?                # 0 —— 而进程 state 仍是 TN，:8799 也没释放
+```
+
+### 为什么
+
+POSIX 语义：**默认动作是终止**的信号（未安装 handler）由内核直接施加，停止态也
+照杀不误 —— 所以拿 `sleep 300` 当样本永远测不出这个 bug。而**被捕获**的信号必须
+由进程自己执行 handler，停止态的进程根本不运行，信号就一直挂在 pending 集里。
+`kill(2)` 只报告「投递成功」，它对此一无所知。
+
+node / vite / next / nodemon 全都注册 SIGTERM handler，正好落在这一格。进入 `T`
+态的路径也不止 Ctrl-Z：后台作业读终端（SIGTTIN）、`stty tostop` 下写终端
+（SIGTTOU）同样会停住 —— 而终端一旦关掉，就再没有人给它 SIGCONT 了。这恰恰是
+本产品最想抓的那类残留：一个永远醒不过来、又占着端口的孤儿。
+
+三层同时被这一个事实骗过：引擎（返回 `Ok(())`）、CLI（退出码 0）、两个前端
+（绿色「已终止」）。**没有任何一层去看进程是不是真的没了。**
+
+### 修法
+
+1. **引擎**：身份探针从 `ps -o etime=` 改成 `ps -o etime=,state=`（同一次
+   fork/exec，零额外开销），温和终止后若目标是 `T` 态就补一发 SIGCONT。
+   顺序 TERM→CONT、只在确认停止时发、返回值一律忽略 —— 三条约束的理由写在
+   CLAUDE.md 的 Kill path 一节与代码注释里。`force` 分支不发（SIGKILL 不可捕获）。
+2. **两个前端**：终止后短时轮询确认 `(pid, start_unix)` 是否真的消失（~2.5s 上限），
+   仍在则如实报告并给出强杀出口。这一层是通用兜底：SIGCONT 治的是停止态，
+   而「装了 handler 却迟迟不退出」「被 supervisor 立刻重启」同样会让人看到
+   「点了没反应」。
+3. **UI**：`T` 态在两端都显式呈现（桌面版详情面板的原码 + 人话，Raycast 的
+   `stopped` 徽标与详情说明），并在终止确认里说明「会唤醒它以便它自己收尾」——
+   唤醒是一次用户可见的状态改变，不该不打招呼就做。
+
+### 回归守卫
+
+`platform::live_tests::kill_stopped_process_that_catches_sigterm`（`--ignored`，
+`cargo test --workspace kill_stopped -- --ignored`）。它必须用 `try_wait` 而不是
+阻塞 `wait`：回归时目标根本不会退出，阻塞等待会让整个测试挂死而不是响亮失败
+（写这条测试时就先踩了一次，表现为超时而非断言失败）。
+
+### 仍未做
+
+- **被 supervisor 立刻重启**（nodemon / concurrently / turbo / cargo-watch /
+  docker）：杀掉后同端口冒出新 PID，用户视角同样是「没反应」。引擎目前只认识
+  launchd 与 pm2；「谁在托管它」属于判定形态的知识，要做就得住 core
+  （`chain.rs ChainFlags` 旁扩 `supervisor: Option<SupervisorKind>`），并走
+  `check-model-parity.mjs` 的三方字段同步。零契约成本的替代：终止后的确认扫描里，
+  若同一端口被**另一个 PID** 持有就提示「有东西在重启它」。
+- **fork 继承同一监听套接字**：父 bind 后 fork，`lsof` 同时列出两个 PID、同一个
+  socket。杀掉被标记那行，端口纹丝不动，列表立刻又出现一个同名 confirmed 行。
+  按设计这不是 duplicate（`mark_duplicates` 排除父子且要求端口不相交）。可选的
+  低成本改法：`fill_subtree_cpu` 已在做带 `visited` 的子树 DFS，顺手产出
+  `descendant_count`，确认框据此提示「还有 N 个子进程会活下来」。

@@ -1,10 +1,22 @@
+import { createRequire } from "node:module";
 import { defineConfig, lazyPlugins } from "vite-plus";
 import react from "@vitejs/plugin-react";
 
 const host = process.env.TAURI_DEV_HOST;
 
+// 版本号编译期注入（footer 展示用）。取自 package.json 而不是再开一个来源：
+// `scripts/bump-version.mjs` 已经在同步它，与 tauri.conf.json / Cargo.toml 同源，
+// 不会漂移；`node scripts/bump-version.mjs --check` 也覆盖到这一份。
+// 用 createRequire 而非 import assertion：本文件在 vite-plus 下按 ESM 加载，
+// JSON import 的语法在各 Node/TS 版本间还不稳定。
+const appVersion = createRequire(import.meta.url)("./package.json").version as string;
+
 export default defineConfig(async () => ({
   plugins: lazyPlugins(() => [react()]),
+
+  define: {
+    __APP_VERSION__: JSON.stringify(appVersion),
+  },
 
   // pre-commit（.vite-hooks/pre-commit → `vp staged`）对暂存文件跑 fmt+lint+类型检查。
   // 函数形式的 config 让 `vp migrate` 无法自动合并，故手动维护（见 viteplus.dev/guide/migrate）。

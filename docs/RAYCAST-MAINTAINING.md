@@ -200,6 +200,165 @@ Raycast Beta 的支持目录）对一个人造孤儿 dev server 加星，另一�
 > 造孤儿进程的办法（复现用）：`cd /tmp/demo-app && nohup node dev-server.js &` ——
 > 启动它的 shell 一退出，node 即被 launchd 收养成 ppid==1 的孤儿，正是引擎要抓的形态。
 
+## 「终止了没反应」的根因与这一轮 UI 改动（2026-08-10）
+
+用户报告：**从 Terminal 里启动的进程，在扩展里点终止没有任何反应**。排查结论如下，
+按解释力排序 —— 前两条是真因，后面几条是把症状放大的观感问题。
+
+1. **根因：进程处于 stopped（`ps state` 含 `T`）态。** 被 Ctrl-Z 挂起、或后台作业
+   读终端（SIGTTIN）/ `stty tostop` 下写终端（SIGTTOU）的进程，**收不到已被它
+   捕获的 SIGTERM** —— 信号一直挂在 pending 集里。`kill(2)` 照样返回 0，于是
+   CLI 退出码 0、扩展弹绿色 "Terminated"，而进程纹丝不动、端口也不释放。
+   node / vite / next 全都注册 SIGTERM handler，正好命中这个形态；而终端一旦
+   关掉，就再没有人给它 SIGCONT 了 —— 这恰恰是本产品最想抓的那类残留。
+
+   修在引擎（`crates/portreaper-core/src/platform.rs`）：身份探针改成一次
+   `ps -o etime=,state=`（不多起进程），温和终止后若目标是 `T` 态就补一发
+   SIGCONT。顺序、条件、返回值处理三条约束写在 CLAUDE.md 的 Kill path 一节。
+
+   端到端复现（可原样重跑）：起一个绑 :8799 且 `$SIG{TERM}` 捕获信号的 perl
+   监听者 → `kill -STOP` → `portreaper-cli scan --json` 取 `start_unix` →
+   `portreaper-cli kill <pid> --start-unix <n>`。修复前进程 state 一直是 `TN`、
+   端口不释放；修复后进程终止、端口释放。
+
+2. **「成功」说的是信号已投递，不是进程已死。** 扩展此前在 `kill()` 返回后立刻
+   报成功且**永不纠正**。现在改为送出信号后短时轮询确认（`confirmTermination`，
+   `--cpu=skip` 探测，2.5s 上限），仍在则如实报 "Still running" 并在 toast 上挂
+   Force Kill —— 且 `process_gone` / `pid_reused` 不挂（对已消失或已被复用的 PID
+   劝人再用力杀是错误引导）。
+
+3. `killErrorMessage` 缺 `case "os"`，default 还会把 CLI 的两行 stderr（第二行
+   是中文）整段甩进 toast。改为按 `code` 分派、原文只进 `console.error`，并新增
+   `KillFailedError` 让 UI 能按语义码分叉而不碰文案。`whitelist()` 同样兜了一层
+   （此前会泄露完整安装路径 + 中文）。
+
+4. 刷新期 `isLoading` 恒 false，「刷过了但那行还在」与「压根没刷」在屏幕上无法
+   区分；`load()` 还可重入，先发后返会覆盖新结果。现在有 `busy` 与单调 `reqId`。
+
+同一轮按 Raycast 官方规范做的 UI 调整（评审依据见各处代码注释）：
+
+- 安装进度页从 `List.EmptyView` 改成 `List.Item`。官方原文：`isLoading` 为真且
+  搜索框为空时 EmptyView **永远不显示** —— 而首次使用恰好正是这两个条件同时
+  成立的时刻，那段「正在下载并校验引擎」的解释一个字都没渲染出来过。
+- 行图标改为「形状 = 残留种类、tintColor = 置信度」；疑似按 Confirmed / Likely /
+  Possible 拆三段；搜索栏右侧加判定维 `List.Dropdown`（默认 All —— 默认只看疑似
+  会让干净机器打开就是空列表，第一印象像扫描失败）。
+- 详情打开时只留一个置信度徽标（官方建议：显示 detail 时不要再挂 accessory）；
+  收起时才给 stopped / no port / dup of N / CPU / PID。
+- 端口统一 `:5173` 展示（与桌面版和搜索提示对齐，此前注释写着这样、代码不是）；
+  判定理由改 `Metadata.TagList` 渲染，**文字仍是引擎原始码，只着色**。
+- `List.Item` 补 `id`：不给的话高亮按**位置**记忆，刷新后同一个 Enter 面对的可能
+  已是另一个进程 —— 而下一个动作是破坏性的。
+- Enter（首个 action）按行分叉：疑似行仍是 Terminate（那是本命令存在的理由），
+  Healthy / Starred / 无身份令牌的行落在无害动作上。
+- ⌘D 换成 ⌘⇧D（⌘D 是 `Common.Duplicate`，Store 的自动检查会建议改成语义完全
+  不对的 "Duplicate"）；Star 用 `Common.Pin`；复制类动作补 `Common.Copy` /
+  `CopyName` / `CopyPath`。
+- 新增 Open localhost / Show in Finder（仅当 `exe_path` 真的是路径）/ Copy as JSON。
+- Markdown 里的命令行与启动链改围栏代码块（外部文本含反引号 / `[]()` 会破坏整段
+  渲染甚至画出可点链接）；错误页按处境分四个标题（校验和失败是**安全事件**，
+  不能和一次普通扫描故障共用一句 "Scan failed"）。
+- 删掉 `commands[0].subtitle`（单命令扩展不该用 subtitle 复述扩展名）。
+
+**行的外观只能由结构化字段驱动**（`confidence` / `is_zombie_suspect` / `ports` /
+`duplicate_of` / `state`），**不得**按 `zombie_reasons` 里的具体码名分叉 ——
+`scripts/check-reason-parity.mjs` 不覆盖本目录，在这里手抄码名就是一条无守卫的
+漂移路径。同理没有引入任何理由词表：理由继续显示引擎原始码。
+
+> **未做、且刻意不做的两项**（评估结论记在这里，免得反复重开）：
+> ① `@raycast/utils` 的 `useCachedPromise`（首屏缓存 + abortable）收益确实最高，
+> 但它是一次数据层重写、且要往**正在人工评审中的**提交里加一个依赖 —— 本轮先用
+> `reqId` + `busy` 拿掉重入与无反馈这两个实际症状，缓存留到 PR 落地之后再做。
+> ② menu-bar 第二命令：与桌面版托盘图标抢同一块地方，且 `interval` 背景刷新会
+> 定期 spawn 本项目最贵的调用（一次 scan = lsof + 两次 `ps -A` + `launchctl list`）。
+> 廉价替代是 `updateCommandMetadata` 把 subtitle 写成「上次扫描时 N 个疑似」。
+
+**截图已于 2026-08-10 全部重出**（4 张，规格与内容见下节 checklist 的表）。
+`npx ray lint` 三项硬指标 ready、`npx ray build` distribution 构建通过。
+
+### 真机跑一遍才发现的两个 UI 问题（2026-08-10）
+
+两条都是**只有把扩展装进 Raycast 才看得见**的，tsc / ray build 一个都拦不住：
+
+1. **分区副标题过长会把分区标题挤没。** 详情面板默认打开时列表列只有约 40% 宽，
+   `6 · orphaned, nothing is using them` 折成两行、标题被截成 `Confirm...`。
+   全部收短到一两个词（`orphaned` / `likely orphaned` / `weak signal` / `exempt` /
+   `a live launcher owns these`）。
+2. **详情打开时哪怕只留一个 accessory，行标题也会被截断**（实测截成
+   `api-gate...`）。官方原文就是「When shown, it is recommended not to show any
+   accessories on the `List.Item`」—— 现在照做：详情态零 accessory，置信度由行
+   图标的 tintColor 承载，完整判定在右侧 Metadata 的 Verdict 一行。
+
+顺带在真机上把用户报的那个 bug 端到端验完了：造一个绑 :4321、捕获 SIGTERM 的
+dev server → `kill -STOP`（等价于在 Terminal 里按 Ctrl-Z）→ 扩展里对它按
+Terminate（**普通终止，不是强杀**）→ 进程真的消失、端口释放、列表从 6 行变 5 行。
+验证时把扩展支持目录里的那份 CLI 临时换成本地 `target/release` 的新构建
+（**验完已还原**）—— 注意扩展下载的那份当时还是 `0.8.1`：它是按
+`releases/latest` 取的，此后再没刷新过，schema 没变所以也没有任何机制提醒它过期。
+
+### 重出截图的操作顺序
+
+`npm run typecheck` → 造演示进程（见下）→ `npm run dev` 载入新构建后
+`pkill -f "ray develop"`（否则 watcher 自己会以孤儿身份出现在嫌疑列表里）→
+`bash scripts/capture-raycast-metadata.sh <输出路径>` → `npx ray lint` →
+`npx ray build` → `npm outdated --prefix integrations/raycast` → `npm run publish`
+（会**更新同一个 PR**，不会重开）。
+
+**演示进程怎么造**（决定了截图里能出现哪些徽标）：
+
+```bash
+# 脚本本身要捕获 SIGTERM（像 vite/node 那样），否则做不出 stopped 那一档
+R=~/pr-demo-screens
+for p in web-app api-gateway docs-site e2e-suite storefront; do mkdir -p "$R/$p/src"; done
+# …把 dev-server.js 放进每个 src/，内容见本节末
+(cd "$R/web-app/src"     && nohup node "$R/web-app/src/dev-server.js" 5173 &)
+(cd "$R/api-gateway/src" && nohup node "$R/api-gateway/src/dev-server.js" 3000 &)
+(cd "$R/docs-site/src"   && nohup node "$R/docs-site/src/dev-server.js" 4321 &)
+(cd "$R/e2e-suite/src"   && nohup node "$R/e2e-suite/src/dev-server.js" --no-listen &)
+(cd "$R/storefront/src"  && nohup node "$R/storefront/src/dev-server.js" 5180 &)
+(cd "$R/storefront/src"  && nohup node "$R/storefront/src/dev-server.js" 5181 &)
+sleep 12                                  # 跨过 10s 宽限期，否则全是 possible
+kill -STOP $(pgrep -f "dev-server.js 4321")   # 造 stopped 那一档
+```
+
+四个不显然、但缺一不可的点（每个都踩过）：
+
+- **必须用绝对脚本路径启动**。`extract_project_name` 要求路径形如
+  `/Users/<user>/…/<项目>/src/…`（认 `src`/`dist`/`node_modules` 这类停用词，
+  取它前一段）。用 `cd` 进去再跑 `node dev-server.js`，argv 里是相对路径，
+  标签就退化成 `dev-server.js · node`，项目名整个消失。
+- **每个进程从自己的项目目录启动**。全从同一个 cwd 启动的话，引擎按
+  「同 cwd + 同脚本身份」把六行**互相**判成重复实例，画面上一片 `dup of`。
+- **放在 `/tmp` 不行**：`extract_project_name` 只认 `/Users/` 下的路径。
+- 脚本名 `dev-server.js` 同时充当截图里的搜索过滤词 —— 它出现在 `app_label` 与
+  `full_command` 里，一个词就把开发机上的真实进程全挡在画面外（务必先确认它
+  在你机器上零命中：`portreaper-cli scan --json | grep -c dev-server`）。
+
+```js
+// dev-server.js
+const port = process.argv[2];
+process.on("SIGTERM", () => process.exit(0));   // 捕获信号，才做得出 stopped 那一档
+if (port && port !== "--no-listen") {
+  require("node:net").createServer(() => {}).listen(Number(port), "127.0.0.1");
+}
+setInterval(() => {}, 1 << 30);
+```
+
+用完清干净：`pkill -CONT -f dev-server.js; pkill -f dev-server.js; rm -rf ~/pr-demo-screens`。
+
+**deeplink 打开命令时有个会误杀进程的坑**：
+`open "raycast://extensions/fhf1121/portreaper/search-ports"` 会先弹一次
+「Request to run」确认框（因为是从 Raycast 外部触发的）。用 Return 去确认它，
+按键会在确认框已消失的那一帧**穿透到列表**，而列表首项的主动作是 **Terminate**
+—— 实测就这么弹出了一个终止确认框。改成点按钮：
+`osascript -e 'tell application "System Events" to click at {x, y}'`，
+选「Always Run Command」，之后就再不弹了。
+
+**`Likely` / `Possible` 两档在这批截图里没有出现**，是刻意的：造它们需要
+「孤儿但无 dev 证据」或「仅会话信号」这类很难稳定复现的形态，而 `duplicate`
+信号只会把**非嫌疑**行提升到 Possible（`postprocess.rs:178`），本身已是
+Confirmed 的孤儿不会被降档。判定分层由分区标题与 Dropdown 呈现，不靠凑样本。
+
 ## Store 提交 checklist
 
 已就位（可复核）：
@@ -262,17 +421,19 @@ Raycast Beta 的支持目录）对一个人造孤儿 dev server 加星，另一�
 - [x] **`metadata/` 截图** —— 4 张，2000×1250 sRGB PNG，浅色主题，`ray lint` 的
       "validate extension metadata" 已通过：
 
-      | 文件 | 内容 |
+      | 文件 | 内容（2026-08-10 重出） |
       |---|---|
-      | `portreaper-1.png` | 满宽列表：Healthy / Suspects 分区，置信度徽标完整 |
-      | `portreaper-2.png` | 列表 + 详情面板：判定理由、PID、类别、端口、运行时长 |
-      | `portreaper-3.png` | ⌘K 动作面板：Terminate / Force Kill 红色破坏性样式 |
-      | `portreaper-4.png` | 终止确认弹窗：进程名 + PID + 端口 + Cancel/Terminate |
+      | `portreaper-1.png` | 满宽列表（⌘⇧D 收起详情）：五种徽标同框 —— `no port` / `stopped` / `dup of <pid>` / `confirmed` / `pid` |
+      | `portreaper-2.png` | 列表 + 详情面板，选中的是**被挂起**那行：命令、stopped 的完整说明、Verdict、判定理由 TagList（原始码）、`State: TN · stopped` |
+      | `portreaper-3.png` | ⌘K 动作面板：Danger Zone（Terminate ↵ / Force Kill ⇧⌘⌫，红色破坏性样式）+ Inspect（Toggle Details / Open localhost:4321） |
+      | `portreaper-4.png` | 终止确认弹窗：`PID 76738 · port :4321 · It is suspended; terminating resumes it so it can shut down.` |
 
-      **画面里只出现临时造的 demo 进程**（`web-app` / `api-gateway` / `docs-site`
-      三个孤儿 node server）与一个通用的 `node` 行 —— 搜索框预置 `node` 过滤，
-      把开发机上的真实应用列表（含可识别身份的企业软件）全部挡在外面。
+      **画面里只出现临时造的 demo 进程**（`web-app` / `api-gateway` / `docs-site` /
+      `e2e-suite` / `storefront` ×2，造法见上一节）—— 搜索框预置 `dev-server`
+      过滤，把开发机上的真实应用列表（含可识别身份的企业软件）全部挡在外面。
       重截时务必保持这一点：端口/进程类工具的截图天然会暴露「这台机器装了什么」。
+      顺带注意：deeplink 的「Request to run」确认框背后就是 Raycast 的应用列表，
+      别在它还在的时候截图。
 
       生成用 **`scripts/capture-raycast-metadata.sh`**（维护者工具，在主仓库
       `scripts/` 下，不随扩展提交）。三个会静默毁掉成果的坑已固化进脚本，

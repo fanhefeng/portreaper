@@ -107,6 +107,16 @@ const zh = {
   "detail.parent": "父进程",
   "detail.parent.launchdNote": "PID 1 = launchd：原启动者已退出，本进程已被系统收养",
   "detail.state": "进程状态（ps state 标志）",
+  // ps 主状态字母的人话。原码照旧并列显示 —— 它是给会看 ps 的用户的证据
+  "state.R": "运行中",
+  "state.S": "休眠",
+  "state.I": "闲置",
+  "state.T": "已暂停",
+  "state.U": "不可中断等待",
+  "state.Z": "已成僵尸",
+  // 挂起态的后果必须说清：这正是「终止了没反应」的经典成因
+  "detail.state.stopped.tip":
+    "进程被挂起（Ctrl-Z，或后台作业读写终端）。已捕获的 SIGTERM 在它恢复运行前不会被处理 —— 终止时 Portreaper 会随后唤醒它，让它自己收尾。",
   "detail.chain": "启动链",
   "detail.chain.empty": "无法回溯",
   "detail.category": "类别",
@@ -177,6 +187,26 @@ const zh = {
   // ---- empty states ----
   "empty.none": "没有发现任何监听端口",
   "empty.noMatch": "没有匹配项",
+  "empty.scanning": "正在扫描…",
+  "empty.scanFailed": "这一轮扫描没成功。",
+  "empty.retry": "重试",
+  "empty.noStarred": "还没有收藏。收藏（★）过的进程永远不会被判为僵尸，也不会进入一键清理。",
+
+  // ---- 终止后的存活确认 ----
+  // 「信号送到了」不等于「进程死了」：捕获了 SIGTERM 却不退出的进程会让这条出现
+  "kill.survivor": "PID {pid} {label} 收到了终止信号，但还没有退出。",
+  "kill.survivor.force": "强制终止",
+  "kill.survivor.dismiss": "知道了",
+
+  // ---- 渲染崩溃兜底页（ErrorBoundary 是 class 组件，经 tStatic 读取）----
+  "crash.title": "界面渲染出错了",
+  "crash.body":
+    "界面渲染时抛出了异常，本次会话的窗口无法继续。托盘图标仍在运行 —— 重新打开窗口通常就能恢复。",
+  "crash.copy": "复制诊断信息",
+  "crash.copied": "已复制",
+  "crash.copyFailed": "复制失败，请手动选中上方文本",
+  "crash.openLogs": "打开日志目录",
+  "crash.retry": "重试",
 
   // ---- batch modal ----
   "batch.title": "清扫 {n} 个疑似僵尸进程",
@@ -185,6 +215,7 @@ const zh = {
   "batch.signal.windows": "TerminateProcess（强制终止）",
   "batch.procs": "进程",
   "batch.more": "… 还有 {n} 个",
+  "batch.scrollHint": "共 {n} 个，可滚动查看全部",
   "batch.scope.note": "仅清扫「确认僵尸」与「疑似僵尸」级别；「存疑」需逐个手动处理",
   "batch.cancel": "取消",
   "batch.confirm": "全部终止",
@@ -245,6 +276,21 @@ export function verdictKey(confidence: string): I18nKey {
 export function categoryKey(category: string): I18nKey {
   const k = `cat.${category}`;
   return k in zh ? (k as I18nKey) : "cat.unknown";
+}
+
+/**
+ * ps state 的**首字母** → 一句人话（state.* 键），认不出返回 null。
+ *
+ * 只映射首字母、且刻意**不做穷举表**：state 列是「主状态字母 + 若干附加标志」
+ * （`Ss+` / `TN` / `Z`），附加标志是平台细节，抄全一份就是又一处要跟着 ps 同步
+ * 的手抄清单。认不出时调用方原样显示原码 —— 那本来就是给会看 ps 的用户的证据。
+ *
+ * `T` 是这里最要紧的一个：被挂起的进程收不到已捕获的 SIGTERM，而在此之前
+ * 用户能看到的只有一个孤零零的字母 T 和一句解释不了任何事的 tooltip。
+ */
+export function stateKey(state: string): I18nKey | null {
+  const k = `state.${state.charAt(0)}`;
+  return k in zh ? (k as I18nKey) : null;
 }
 
 const en: Record<I18nKey, string> = {
@@ -335,6 +381,14 @@ const en: Record<I18nKey, string> = {
   "detail.parent.launchdNote":
     "PID 1 = launchd: the original launcher exited and this process was adopted",
   "detail.state": "Process state (ps state flags)",
+  "state.R": "running",
+  "state.S": "sleeping",
+  "state.I": "idle",
+  "state.T": "stopped",
+  "state.U": "uninterruptible wait",
+  "state.Z": "defunct",
+  "detail.state.stopped.tip":
+    "The process is suspended (Ctrl-Z, or a background job touching the terminal). A caught SIGTERM stays pending until it resumes — Portreaper wakes it up right after terminating so it can shut itself down.",
   "detail.chain": "Launch chain",
   "detail.chain.empty": "untraceable",
   "detail.category": "Category",
@@ -404,6 +458,24 @@ const en: Record<I18nKey, string> = {
 
   "empty.none": "No listening ports found",
   "empty.noMatch": "No matches",
+  "empty.scanning": "Scanning…",
+  "empty.scanFailed": "That scan did not go through.",
+  "empty.retry": "Retry",
+  "empty.noStarred":
+    "Nothing starred yet. A starred (★) process is never flagged as a zombie and never swept.",
+
+  "crash.title": "Portreaper hit a rendering error",
+  "crash.body":
+    "The window crashed while rendering. The tray is still running; reopening the window usually recovers.",
+  "crash.copy": "Copy diagnostics",
+  "crash.copied": "Copied",
+  "crash.copyFailed": "Copy failed — select the text above",
+  "crash.openLogs": "Open log folder",
+  "crash.retry": "Retry",
+
+  "kill.survivor": "PID {pid} {label} took the signal but has not exited.",
+  "kill.survivor.force": "Force kill",
+  "kill.survivor.dismiss": "Dismiss",
 
   "batch.title": "Sweep {n} suspected zombie processes",
   "batch.signal": "Signal",
@@ -411,6 +483,7 @@ const en: Record<I18nKey, string> = {
   "batch.signal.windows": "TerminateProcess (forced)",
   "batch.procs": "Processes",
   "batch.more": "… and {n} more",
+  "batch.scrollHint": "{n} in total — scroll to see them all",
   "batch.scope.note":
     "Only 'Zombie' and 'Likely zombie' rows are swept; handle 'Possible' entries individually",
   "batch.cancel": "Cancel",
@@ -494,6 +567,19 @@ function translate(lang: Lang, key: I18nKey, params?: Record<string, string | nu
     }
   }
   return s;
+}
+
+/**
+ * 一次性翻译，**不订阅**语言变化。
+ *
+ * 存在的唯一理由是 `ErrorBoundary`：React 19 仍然只有 class 组件能做错误边界，
+ * 而 class 里用不了 `useI18n` 这个 hook。它渲染的是崩溃兜底页，本来也不需要
+ * 跟着语言实时重渲染 —— 用户下一步是重试或去看日志。
+ *
+ * 其它任何地方都该用 `useI18n`：不订阅就不会跟着切换语言。
+ */
+export function tStatic(key: I18nKey, params?: Record<string, string | number>): string {
+  return translate(getLang(), key, params);
 }
 
 /** 组件内使用：const { t, lang, setLang } = useI18n() */

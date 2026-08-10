@@ -73,10 +73,10 @@ pub fn kill(pid: u32, force: bool, expected_start: Option<u64>) -> Result<(), Ki
     let expected = expected_start.ok_or(KillError::IdentityUnknown)?;
     // 探针工具本身失败（ps 起不来）≠ 进程消失：前者以 OS 原文上抛，
     // 不映射成 ProcessGone 误导用户「进程已不在」（评审发现）。
-    let current = current_start_unix(pid)
+    let probe = probe_identity(pid)
         .map_err(|e| KillError::os(format!("verify process identity: {e}")))?
         .ok_or(KillError::ProcessGone)?;
-    if current.abs_diff(expected) > START_TOLERANCE_SECS {
+    if probe.start_unix.abs_diff(expected) > START_TOLERANCE_SECS {
         return Err(KillError::PidReused);
     }
     // 已知残余竞态：ps 校验与 kill(2) 之间存在亚毫秒级窗口（macOS 无法像
@@ -98,35 +98,81 @@ pub fn kill(pid: u32, force: bool, expected_start: Option<u64>) -> Result<(), Ki
             _ => KillError::os(err.to_string()),
         });
     }
+    if !force && probe.stopped {
+        resume_after_term(pid);
+    }
     Ok(())
 }
 
-/// 单 PID 的当前创建时间（epoch 秒）：now - etime。
+/// 被挂起（ps state 含 `T`）的进程收不到**已捕获**的 SIGTERM —— 信号一直挂在
+/// pending 集里，`kill(2)` 照样返回 0，前端报「已终止」，进程却纹丝不动。
+/// 这是「从 Terminal 里按过 Ctrl-Z / 被 SIGTTIN·SIGTTOU 停住的开发服务器杀不掉」
+/// 的根因，实测复现：装了 SIGTERM handler 的进程 `kill -STOP` 后再 `kill -TERM`
+/// 永远停在 `T`，补一发 SIGCONT 才在同一毫秒里执行 handler 退出。
+/// （对照组：未捕获 SIGTERM 的进程默认动作是终止，内核直接杀，无需唤醒；
+/// SIGKILL 同理不可捕获，故 force 分支不走这里。）
+///
+/// 三条自我约束：
+/// - **顺序必须 TERM → CONT**：先唤醒会给目标一个「醒着且没收到终止请求」的窗口；
+/// - **只在确认 stopped 时发**：SIGCONT 对正常进程虽属无害，但 shell / tmux / TUI
+///   常自己装 SIGCONT handler 去重绘，无差别广播等于给每次温和终止附赠一次副作用；
+/// - **返回值一律忽略**：TERM 已经成功送达，唤醒失败（进程恰好已退出 → ESRCH）
+///   绝不能把一次成功的终止翻成失败。
+#[cfg(target_os = "macos")]
+fn resume_after_term(pid: u32) {
+    unsafe {
+        libc::kill(pid as libc::pid_t, libc::SIGCONT);
+    }
+}
+
+/// kill 前的一次性身份探针结果。
+#[cfg(target_os = "macos")]
+struct Probe {
+    /// 进程创建时间（epoch 秒）：now - etime
+    start_unix: u64,
+    /// ps state 含 `T` —— 进程被挂起，见 [`resume_after_term`]
+    stopped: bool,
+}
+
+/// 单 PID 的创建时间 + 运行状态，一次 `ps` 拿全（**不额外多起一个进程**：
+/// 状态列是顺带的，`-o etime=,state=` 与原来的 `-o etime=` 同一次 fork/exec）。
 /// `Ok(None)` = 进程不存在（或 etime 不可解析，fail-closed 同样按消失处理）；
 /// `Err` = 探针工具自身失败（ps 无法启动），语义与「进程消失」严格区分。
 #[cfg(target_os = "macos")]
-fn current_start_unix(pid: u32) -> Result<Option<u64>, String> {
+fn probe_identity(pid: u32) -> Result<Option<Probe>, String> {
     use std::process::Command;
     use std::time::{SystemTime, UNIX_EPOCH};
 
     let output = Command::new(crate::scanner::system_bin("ps"))
-        .args(["-o", "etime=", "-p", &pid.to_string()])
+        .args(["-o", "etime=,state=", "-p", &pid.to_string()])
         .env("LANG", "en_US.UTF-8")
         .env("LC_ALL", "en_US.UTF-8")
         .output()
         .map_err(|e| format!("spawn ps: {e}"))?;
     let text = String::from_utf8_lossy(&output.stdout);
-    let etime = text.trim();
-    if etime.is_empty() {
-        return Ok(None);
-    }
     let now = SystemTime::now()
         .duration_since(UNIX_EPOCH)
         .map(|d| d.as_secs())
         .unwrap_or(0);
-    // 解析失败返回 Ok(None) → 上层 kill 走 process_gone 让用户重扫,绝不静默把
-    // 进程当成「刚启动」(current ≈ now 会绕过 ±5s PID 复用容差)。
-    Ok(crate::scanner::parse_etime_checked(etime).map(|elapsed| now.saturating_sub(elapsed)))
+    Ok(parse_probe_line(&text, now))
+}
+
+/// `ps -o etime=,state= -p <pid>` 的一行（形如 `"  00:12 TN  "`）→ [`Probe`]。
+/// 抽成纯函数是为了能单测 —— 真正跑 ps 的那半截在 CI 上无法造出 stopped 进程。
+///
+/// 解析失败返回 None → 上层 kill 走 process_gone 让用户重扫，绝不静默把进程
+/// 当成「刚启动」（current ≈ now 会绕过 ±5s PID 复用容差）。
+/// state 列缺失/异常时 `stopped` 保守取 false：宁可不唤醒，也不凭猜测发信号。
+#[cfg(target_os = "macos")]
+fn parse_probe_line(line: &str, now: u64) -> Option<Probe> {
+    let mut cols = line.split_whitespace();
+    let etime = cols.next()?;
+    let state = cols.next().unwrap_or("");
+    let elapsed = crate::scanner::parse_etime_checked(etime)?;
+    Some(Probe {
+        start_unix: now.saturating_sub(elapsed),
+        stopped: state.contains('T'),
+    })
 }
 
 #[cfg(windows)]
@@ -250,6 +296,64 @@ mod wire_contract_tests {
 }
 
 #[cfg(all(test, target_os = "macos"))]
+mod probe_tests {
+    use super::parse_probe_line;
+
+    /// `ps -o etime=,state=` 的真实排版：前导空格 + 列间空格 + 行尾空格。
+    /// 逐个 etime 形态钉死 —— 这条解析一旦错，kill 会把「进程还在」读成
+    /// 「进程已消失」，用户看到的是一句莫名其妙的 process_gone。
+    #[test]
+    fn parses_real_ps_layout() {
+        let now = 1_000_000;
+        for (line, want_elapsed) in [
+            ("  00:12 SN  \n", 12),
+            (" 01:02:03 Ss+ \n", 3723),
+            ("2-03:04:05 R  \n", 183_845),
+            ("      05 S\n", 5),
+        ] {
+            let p = parse_probe_line(line, now).expect("应当解析成功");
+            assert_eq!(p.start_unix, now - want_elapsed, "{line:?}");
+        }
+    }
+
+    /// stopped 的判定只看 state 列里有没有 `T`，且**绝不能**误命中 etime 列
+    /// 或其它状态字母（`R`/`S`/`I`/`U`/`Z` 与附加标志 `s`/`+`/`N`/`L`/`W`）。
+    #[test]
+    fn stopped_is_detected_only_from_the_state_column() {
+        let now = 1_000_000;
+        for (line, want_stopped) in [
+            ("  00:12 TN  \n", true),  // Ctrl-Z 挂起
+            ("  00:12 T   \n", true),  // 纯 stopped
+            ("  00:12 SN  \n", false), // 正常睡眠
+            ("  00:12 Ss+ \n", false), // 会话首进程 + 前台
+            ("  00:12 R   \n", false),
+            ("  00:12 Z   \n", false), // defunct 不是 stopped
+        ] {
+            let p = parse_probe_line(line, now).expect("应当解析成功");
+            assert_eq!(p.stopped, want_stopped, "{line:?}");
+        }
+    }
+
+    /// 进程不存在时 ps 输出空 → None（上层映射为 process_gone）；
+    /// etime 不可解析同样 None（fail-closed，绝不当成「刚启动」绕过复用容差）。
+    #[test]
+    fn unparseable_input_is_none() {
+        assert!(parse_probe_line("", 1).is_none());
+        assert!(parse_probe_line("   \n", 1).is_none());
+        assert!(parse_probe_line("garbage TN\n", 1).is_none());
+    }
+
+    /// state 列缺失（罕见排版 / 未来的 ps 变体）时必须保守取 false ——
+    /// 宁可不唤醒，也不凭猜测给一个正常进程发 SIGCONT。
+    #[test]
+    fn missing_state_column_is_not_stopped() {
+        let p = parse_probe_line("  00:12\n", 100).expect("etime 仍应解析");
+        assert!(!p.stopped);
+        assert_eq!(p.start_unix, 88);
+    }
+}
+
+#[cfg(all(test, target_os = "macos"))]
 mod live_tests {
     use std::time::{SystemTime, UNIX_EPOCH};
 
@@ -288,6 +392,70 @@ mod live_tests {
         assert!(
             String::from_utf8_lossy(&alive.stdout).trim().is_empty(),
             "process should be gone after reaping"
+        );
+    }
+
+    /// 真机验证「挂起的进程也能被温和终止」（cargo test kill_stopped -- --ignored）。
+    ///
+    /// 这是本项目最容易复发的一类 bug：`libc::kill` 返回 0 就当成功，而**被挂起
+    /// 且捕获了 SIGTERM** 的进程只是把信号挂进 pending 集，永远不死。用户从
+    /// Terminal 里按过 Ctrl-Z 的 dev server 正是这个形态 —— 界面报「已终止」，
+    /// 进程纹丝不动。回归靠这条测试守住：删掉 `resume_after_term` 它必然翻红。
+    ///
+    /// 目标必须**捕获** SIGTERM —— 默认处置是终止的进程（如 `sleep`）内核会直接
+    /// 杀掉，即便处于 stopped 态也不需要唤醒，用它当样本测不出任何东西。
+    #[test]
+    #[ignore]
+    fn kill_stopped_process_that_catches_sigterm() {
+        use std::process::Command;
+
+        // perl 是 macOS 自带的；`$SIG{TERM}` 让它成为「捕获 SIGTERM」的样本
+        let mut child = Command::new("/usr/bin/perl")
+            .args(["-e", "$SIG{TERM} = sub { exit 0 }; sleep 300"])
+            .spawn()
+            .unwrap();
+        let pid = child.id();
+        std::thread::sleep(std::time::Duration::from_millis(500));
+        let now = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap()
+            .as_secs();
+
+        // 制造「Terminal 里按了 Ctrl-Z」的现场
+        assert_eq!(unsafe { libc::kill(pid as libc::pid_t, libc::SIGSTOP) }, 0);
+        std::thread::sleep(std::time::Duration::from_millis(300));
+        let state = Command::new("/bin/ps")
+            .args(["-o", "state=", "-p", &pid.to_string()])
+            .output()
+            .unwrap();
+        assert!(
+            String::from_utf8_lossy(&state.stdout).contains('T'),
+            "样本没进 stopped 态，这条测试就没有在测它该测的东西"
+        );
+
+        // 温和终止（非 force）：必须真的死掉，而不只是「信号送到了」
+        super::kill(pid, false, Some(now)).expect("stopped 进程的温和终止不应报错");
+
+        // 轮询用 try_wait 而非 ps + wait：目标是本进程的直接子进程，死后在被
+        // reap 前是 defunct（ps 仍列出它），而阻塞式 wait 在**测试失败时会永远
+        // 挂住** —— 挂起的进程根本不会退出。try_wait 顺带完成回收，两个问题一起
+        // 解决。（写这条测试时确实先踩了那个死等，回归验证跑成了一次超时。）
+        let mut exited = false;
+        for _ in 0..40 {
+            if child.try_wait().unwrap().is_some() {
+                exited = true;
+                break;
+            }
+            std::thread::sleep(std::time::Duration::from_millis(50));
+        }
+        if !exited {
+            // 断言之前先收尸：测试失败也不该在机器上留下一个挂起的孤儿
+            unsafe { libc::kill(pid as libc::pid_t, libc::SIGKILL) };
+            let _ = child.wait();
+        }
+        assert!(
+            exited,
+            "SIGTERM 送达了但进程还在 —— 挂起态的唤醒（SIGCONT）没生效"
         );
     }
 }

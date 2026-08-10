@@ -21,7 +21,7 @@
       }
     ],
     "security": {
-      "csp": "default-src 'self'; connect-src ipc: http://ipc.localhost"
+      "csp": "default-src 'self'; connect-src ipc: http://ipc.localhost; frame-ancestors 'none'"
     }
   },
   "bundle": {
@@ -34,6 +34,13 @@
       "icons/icon.icns",
       "icons/icon.ico"
     ],
+    "category": "DeveloperTool",
+    "copyright": "Copyright © 2026 fhf. MIT License.",
+    "publisher": "fhf",
+    "homepage": "https://fanhefeng.github.io/portreaper/",
+    "shortDescription": "Find and kill orphaned dev-server processes",
+    "longDescription": "Portreaper is a menubar/tray utility that finds processes listening on TCP ports, classifies which of them are orphaned dev-server leftovers, and helps you reap them. It also surfaces orphaned dev processes that hold no port at all.",
+    "licenseFile": "../LICENSE",
     "macOS": {
       "minimumSystemVersion": "10.15"
     }

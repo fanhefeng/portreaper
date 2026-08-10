@@ -21,3 +21,24 @@ edition = "2021"
 license = "MIT"
 authors = ["fhf"]
 repository = "https://github.com/fanhefeng/portreaper"
+
+# 发布构建的优化取舍。**必须写在 workspace 根**：cargo 只认根 manifest 的 profile，
+# 写进 src-tauri/Cargo.toml 会被静默忽略（连一句警告都没有）。
+#
+# 两处对官方「体积最小化」建议的**刻意偏离**，理由留在这里，别顺手改回去：
+#
+#   - `panic = "unwind"` 是默认值，这里显式写下来是为了挡住「为体积改成 abort」
+#     那一手：abort 会一次性废掉 lib.rs 的 panic hook、commands.rs 的
+#     `PoisonError::into_inner` 毒化恢复、以及 spawn_blocking 的 JoinError 兜底 ——
+#     一次扫描 panic 会从「本轮失败、下轮重试」退化成「常驻托盘进程凭空消失」。
+#   - `opt-level` 保持 3（不用官方推荐的 "s"/"z"）：本应用每 2 秒有一条真实热
+#     路径（解析 lsof + 两次 ps 的全量文本输出），拿运行时换安装包体积不划算。
+#
+#   - `strip = "debuginfo"` 而不是 "symbols"：DWARF 是体积大头，剥掉它；但保留
+#     符号名，panic hook 抓到的 backtrace 才有函数名可读，否则那个 hook 只剩
+#     一串地址。
+[profile.release]
+codegen-units = 1
+lto = "thin"
+strip = "debuginfo"
+panic = "unwind"

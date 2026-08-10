@@ -22,6 +22,10 @@ tauri-build = { version = "2", features = [] }
 portreaper-core = { path = "../crates/portreaper-core" }
 tauri = { version = "2", features = ["tray-icon", "image-png"] }
 tauri-plugin-opener = "2"
+# 窗口尺寸/位置记忆。纯 Rust 侧注册，**不装对应的 npm 包**、前端一行 JS 都不调 ——
+# capabilities 只约束 webview 发起的 IPC，故 src/security-config.test.ts 的精确
+# 白名单一个字都不用改。
+tauri-plugin-window-state = "2"
 sys-locale = "0.3" # 托盘菜单初始语言（托盘先于 webview 构建，需 Rust 侧探测系统语言）
 log = "0.4" # 日志门面：全代码 log::info!/warn!/error!，落盘由 tauri-plugin-log 接管
 tauri-plugin-log = "2" # 统一日志系统（分环境目录 + 大小轮转，见 paths.rs / lib.rs setup）
@@ -37,3 +41,15 @@ tauri-plugin-log = "2" # 统一日志系统（分环境目录 + 大小轮转，�
 #   - once_cell：进程级单例用标准库 OnceLock（whitelist.rs / lib.rs），
 #     std 有了以后这个 crate 就是纯粹的历史残留。
 # 三者都由 `cargo machete` 报出并实测删除后编译通过 —— 想加回来前先确认真有 use。
+
+# 单实例守卫 —— 只在 Windows 需要。macOS 天然免疫：LaunchServices 对同一个 .app
+# 的二次启动走 `RunEvent::Reopen`（lib.rs 已处理），不会真的起第二个进程；
+# 而 Windows 从 NSIS 快捷方式 / 开始菜单 / 命令行重复启动就是两个进程 ——
+# 两个托盘图标、两条 2 秒轮询、两份 sysinfo CPU 采样互相搅乱。
+#
+# **这个 target 段必须留在文件末尾**：TOML 的表在遇到下一个表头之前一直生效，
+# 把它塞进 [dependencies] 中间会把后面所有依赖静默变成 Windows 专属
+# （本次改动第一版就是这么炸的：tauri-plugin-log 掉出非 Windows 构建，
+# 表现是 `Permission log:default not found`，与依赖本身毫无关系）。
+[target.'cfg(windows)'.dependencies]
+tauri-plugin-single-instance = "2"
