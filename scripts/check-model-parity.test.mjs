@@ -6,7 +6,12 @@ import { readFileSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 
-import { checkModelParity, extractRustFields, extractTsFields } from "./check-model-parity.mjs";
+import {
+  checkModelParity,
+  checkToleranceParity,
+  extractRustFields,
+  extractTsFields,
+} from "./check-model-parity.mjs";
 
 const root = join(dirname(fileURLToPath(import.meta.url)), "..");
 const real = {
@@ -119,4 +124,31 @@ test("三份真实源码解析出的 ProcessEntry 字段数一致且非空", () 
   assert.deepEqual([...desktop].sort(), [...rust].sort());
   assert.deepEqual([...raycast].sort(), [...rust].sort());
   assert.ok(rust.includes("pid"));
+});
+
+// 身份容差三处必须同值 —— 放宽它会让被复用的 PID 被认成同一个进程。
+// 此前三处只有互相声明「取值一致」的注释，改一处不会让任何检查变红（评审发现）。
+const TOL = {
+  platformSrc: "const START_TOLERANCE_SECS: u64 = 5;",
+  desktopSrc: "export const START_MATCH_TOLERANCE_SECS = 5;",
+  raycastSrc: "export const START_MATCH_TOLERANCE_SECS = 5;",
+};
+
+test("三处容差同值时通过", () => {
+  assert.deepEqual(checkToleranceParity(TOL), []);
+});
+
+test("任一处被改宽即失败", () => {
+  const errs = checkToleranceParity({
+    ...TOL,
+    raycastSrc: "export const START_MATCH_TOLERANCE_SECS = 10;",
+  });
+  assert.equal(errs.length, 1);
+  assert.match(errs[0], /不一致/);
+});
+
+test("常量被改名/挪走时响亮失败，而不是「没找到 = 没问题」", () => {
+  const errs = checkToleranceParity({ ...TOL, desktopSrc: "export const RENAMED = 5;" });
+  assert.equal(errs.length, 1);
+  assert.match(errs[0], /找不到身份容差常量/);
 });

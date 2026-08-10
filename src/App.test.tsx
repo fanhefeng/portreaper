@@ -241,7 +241,8 @@ describe("kill & sweep flow", () => {
     // 清扫按钮计数 = 2（Possible 永不入清扫 —— CLAUDE.md 不变量）
     fireEvent.click(screen.getByText(/Clean up \(2\)/));
     fireEvent.click(screen.getByText("Terminate all"));
-    await advance(800); // 批量循环 + 700ms 收尾等待
+    // 批量循环 + 250ms 收尾 + 存活确认轮询（与单杀同一个 2.5s 上限）
+    await advance(4000);
 
     // 清扫范围：只杀了 confirmed + likely，4444 从未被尝试
     expect(killCalls.sort()).toEqual([4242, 4343]);
@@ -274,7 +275,7 @@ describe("kill & sweep flow", () => {
 
     // ACTION_TIMEOUT_MS + 700ms 收尾 + freshScan 落定：sweeping 释放、
     // 聚合横幅出现且含本地化的超时文案 —— 修复前这里会永远停在 Cleaning…
-    await advance(ACTION_TIMEOUT_MS + 1000);
+    await advance(ACTION_TIMEOUT_MS + 4000);
     const banner = screen.getByText(/1\/1 processes failed/);
     expect(banner.textContent).toContain("timed out");
     const sweepBtn = screen.getByText<HTMLButtonElement>(/Clean up \(1\)/);
@@ -366,6 +367,29 @@ describe("kill & sweep flow", () => {
     gates[5151]?.();
     await advance(4000);
     expect((screen.getAllByText("Kill")[1] as HTMLButtonElement).disabled).toBe(false);
+  });
+
+  // 批量清扫的幸存提示挂在**带身份令牌**的那一行上（强杀出口需要它）。
+  // 此前代码取 survivors[0]，它恰好没有令牌时整条提示连同其余幸存者一起被丢掉 ——
+  // 结果正是本轮要消灭的形态：清扫完还剩几行，用户零反馈（评审发现）。
+  it("批量幸存者里第一个没有身份令牌时，提示仍要出现（挂到有令牌的那个上）", async () => {
+    const noToken = suspectEntry({ pid: 5001, start_unix: null, ports: [5180] });
+    const withToken = suspectEntry({ pid: 5002, ports: [5181] });
+    route({
+      get_platform: () => "macos",
+      scan_ports: () => [noToken, withToken], // 两个都扛住了终止
+      kill_process: () => undefined,
+    });
+    render(<App />);
+    await advance(0);
+
+    fireEvent.click(screen.getByText(/Clean up/));
+    fireEvent.click(screen.getByText("Terminate all"));
+    await advance(4000);
+
+    expect(screen.getByText(/has not exited/)).toBeTruthy();
+    // 计数覆盖两个幸存者，锚点是带令牌的那个
+    expect(screen.getByText(/5002/)).toBeTruthy();
   });
 
   // 终止后的存活确认（用户报告：「终止了没反应」）。此前三层都把「信号已投递」

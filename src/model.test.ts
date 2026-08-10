@@ -121,7 +121,13 @@ describe("isSameProcess", () => {
     expect(isSameProcess(e, 4242, 1000)).toBe(true);
     expect(isSameProcess(e, 4242, 999)).toBe(true);
     expect(isSameProcess(e, 4242, 1001)).toBe(true);
-    expect(isSameProcess(e, 4242, 1005)).toBe(true); // 容差边界
+    expect(isSameProcess(e, 4242, 1005)).toBe(true); // 容差边界（内侧）
+  });
+
+  it("超出容差即不算同一个进程 —— 上界也要钉住，否则放宽容差不会翻红", () => {
+    const e = makeEntry({ pid: 4242, start_unix: 1000 });
+    expect(isSameProcess(e, 4242, 1006)).toBe(false);
+    expect(isSameProcess(e, 4242, 994)).toBe(false);
   });
 
   it("PID 被复用（创建时间晚得多）不算同一个进程", () => {

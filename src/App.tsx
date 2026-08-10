@@ -229,6 +229,26 @@ function App() {
     [freshScan],
   );
 
+  /** 批量版的存活确认：整批共用一个 deadline，轮询到全部消失或到期为止。
+   *  与 `confirmGone` 同一套语义（同样的容差比较、同样的 2.5s 上限、扫描失败时
+   *  不下结论），只是一次判一批 —— 逐个串行调 confirmGone 会把上限乘以目标数。 */
+  const confirmGoneAll = useCallback(
+    async (targets: ProcessEntry[]): Promise<ProcessEntry[]> => {
+      const deadline = Date.now() + CONFIRM_KILL_DEADLINE_MS;
+      for (;;) {
+        const rows = await freshScan();
+        // 扫描失败：这一轮没有证据，不把它当成「都还活着」
+        if (rows === null) return [];
+        const alive = targets.filter((s) =>
+          rows.some((r) => isSameProcess(r, s.pid, s.start_unix)),
+        );
+        if (alive.length === 0 || Date.now() >= deadline) return alive;
+        await sleep(CONFIRM_KILL_POLL_MS);
+      }
+    },
+    [freshScan],
+  );
+
   const doKill = async () => {
     if (!confirm) return;
     const { pid, force, startUnix, app_label, command, ports } = confirm;
@@ -335,33 +355,27 @@ function App() {
               failures.push({ pid: s.pid, label: s.app_label, raw: err });
             }
           }
-          await sleep(700);
-          const rows = await freshScan(); // 等掉撞车的轮询再扫一次，结果必然含 kill 之后的状态
-          // 与单杀同一条口径：信号送到了 ≠ 进程死了。清扫一次能打十几个目标，
-          // 少数扛住 SIGTERM 的如果不点名，用户只会看到「清扫完了还剩几行」
-          // 而不知道那是没杀掉还是新起的（评审发现：此前批量路径完全没有确认）。
-          const survivors =
-            rows === null
-              ? []
-              : targets.filter((s) =>
-                  rows.some((r) => isSameProcess(r, s.pid, s.start_unix ?? null)),
-                );
-          if (survivors.length > 0) {
-            const first = survivors[0];
-            setSurvivor(
-              first.start_unix != null
-                ? {
-                    pid: first.pid,
-                    label:
-                      survivors.length === 1
-                        ? first.app_label
-                        : `${first.app_label} (+${survivors.length - 1})`,
-                    startUnix: first.start_unix,
-                    command: first.full_command || first.command,
-                    ports: first.ports,
-                  }
-                : null,
-            );
+          await sleep(250);
+          // 与单杀**同一条口径、同一个上限**：信号送到了 ≠ 进程死了，而优雅退出要
+          // 0.3–2s。此前这里只 sleep(700) 后扫一次 —— 单次快照会把一整批正在收尾的
+          // 目标全部读成「没杀掉」，而清扫一次能打十几个，误报会同时命中多行
+          // （评审发现：这正是我自己写进 CLAUDE.md 的那条不变量，批量路径却违反了它）。
+          const survivors = await confirmGoneAll(targets);
+          // 强杀出口需要身份令牌，故提示只能挂在**带 start_unix**的那一行上。
+          // 取 survivors[0] 会在它恰好没有令牌时把整条提示连同其余幸存者一起丢掉
+          // —— 结果正是本轮要消灭的形态：清扫完还剩几行，用户零反馈（评审发现）。
+          const anchor = survivors.find((s) => s.start_unix != null);
+          if (anchor?.start_unix != null) {
+            setSurvivor({
+              pid: anchor.pid,
+              label:
+                survivors.length === 1
+                  ? anchor.app_label
+                  : `${anchor.app_label} (+${survivors.length - 1})`,
+              startUnix: anchor.start_unix,
+              command: anchor.full_command || anchor.command,
+              ports: anchor.ports,
+            });
           }
           // 部分失败：抛出结构化失败列表，由 toErrorMsg 在渲染时组装并本地化
           if (failures.length > 0) throw failures;

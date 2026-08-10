@@ -1,5 +1,6 @@
 import React from "react";
 import { invoke } from "@tauri-apps/api/core";
+import { tStatic } from "../i18n";
 import { logRenderCrash } from "../logger";
 
 type Props = { children: React.ReactNode };
@@ -14,7 +15,9 @@ type State = { error: Error | null; copied: "ok" | "failed" | null };
  * 的扫描 / 操作失败。
  *
  * React 19 仍然只有 class 组件能做错误边界（没有 hook 版），故这里刻意保留 class，
- * 而不是为此引入一个第三方依赖。
+ * 而不是为此引入一个第三方依赖。文案照旧走 `src/i18n.ts` 的类型化字典 —— class
+ * 里用不了 `useI18n` 这个 hook，改用 `tStatic`（一次性翻译、不订阅语言变化；
+ * 崩溃兜底页本来也不需要跟着切语言实时重渲染）。
  *
  * **诊断文本里不放任何进程信息**（命令行、cwd、项目路径都可能含 token 或私有路径）——
  * 只有版本、平台与错误本身。这与 README 承诺的「不上报任何进程信息」同向：日志虽然
@@ -59,24 +62,18 @@ export class ErrorBoundary extends React.Component<Props, State> {
 
     return (
       <div className="crash" role="alert">
-        <h1>Portreaper hit a rendering error</h1>
-        <p>
-          界面渲染时抛出了异常，本次会话的窗口无法继续。托盘图标仍在运行 ——
-          重新打开窗口通常就能恢复。
-          <br />
-          The window crashed while rendering. The tray is still running; reopening the window
-          usually recovers.
-        </p>
+        <h1>{tStatic("crash.title")}</h1>
+        <p>{tStatic("crash.body")}</p>
         <pre className="crash-detail">
           {copied === "failed" ? diagnostics : `${error.name}: ${error.message}`}
         </pre>
         <div className="crash-actions">
           <button className="btn-ghost" onClick={() => this.copyDiagnostics(diagnostics)}>
             {copied === "ok"
-              ? "已复制 / Copied"
+              ? tStatic("crash.copied")
               : copied === "failed"
-                ? "复制失败，请手动选中上方文本 / Copy failed — select the text above"
-                : "复制诊断信息 / Copy diagnostics"}
+                ? tStatic("crash.copyFailed")
+                : tStatic("crash.copy")}
           </button>
           <button
             className="btn-ghost"
@@ -85,13 +82,13 @@ export class ErrorBoundary extends React.Component<Props, State> {
               void invoke("open_log_dir").catch(() => {});
             }}
           >
-            打开日志目录 / Open log folder
+            {tStatic("crash.openLogs")}
           </button>
           <button
             className="btn-ghost"
             onClick={() => this.setState({ error: null, copied: null })}
           >
-            重试 / Retry
+            {tStatic("crash.retry")}
           </button>
         </div>
       </div>

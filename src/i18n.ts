@@ -198,6 +198,16 @@ const zh = {
   "kill.survivor.force": "强制终止",
   "kill.survivor.dismiss": "知道了",
 
+  // ---- 渲染崩溃兜底页（ErrorBoundary 是 class 组件，经 tStatic 读取）----
+  "crash.title": "界面渲染出错了",
+  "crash.body":
+    "界面渲染时抛出了异常，本次会话的窗口无法继续。托盘图标仍在运行 —— 重新打开窗口通常就能恢复。",
+  "crash.copy": "复制诊断信息",
+  "crash.copied": "已复制",
+  "crash.copyFailed": "复制失败，请手动选中上方文本",
+  "crash.openLogs": "打开日志目录",
+  "crash.retry": "重试",
+
   // ---- batch modal ----
   "batch.title": "清扫 {n} 个疑似僵尸进程",
   "batch.signal": "信号",
@@ -454,6 +464,15 @@ const en: Record<I18nKey, string> = {
   "empty.noStarred":
     "Nothing starred yet. A starred (★) process is never flagged as a zombie and never swept.",
 
+  "crash.title": "Portreaper hit a rendering error",
+  "crash.body":
+    "The window crashed while rendering. The tray is still running; reopening the window usually recovers.",
+  "crash.copy": "Copy diagnostics",
+  "crash.copied": "Copied",
+  "crash.copyFailed": "Copy failed — select the text above",
+  "crash.openLogs": "Open log folder",
+  "crash.retry": "Retry",
+
   "kill.survivor": "PID {pid} {label} took the signal but has not exited.",
   "kill.survivor.force": "Force kill",
   "kill.survivor.dismiss": "Dismiss",
@@ -548,6 +567,19 @@ function translate(lang: Lang, key: I18nKey, params?: Record<string, string | nu
     }
   }
   return s;
+}
+
+/**
+ * 一次性翻译，**不订阅**语言变化。
+ *
+ * 存在的唯一理由是 `ErrorBoundary`：React 19 仍然只有 class 组件能做错误边界，
+ * 而 class 里用不了 `useI18n` 这个 hook。它渲染的是崩溃兜底页，本来也不需要
+ * 跟着语言实时重渲染 —— 用户下一步是重试或去看日志。
+ *
+ * 其它任何地方都该用 `useI18n`：不订阅就不会跟着切换语言。
+ */
+export function tStatic(key: I18nKey, params?: Record<string, string | number>): string {
+  return translate(getLang(), key, params);
 }
 
 /** 组件内使用：const { t, lang, setLang } = useI18n() */

@@ -64,9 +64,14 @@ pub async fn kill_process(pid: u32, force: bool, start_unix: Option<u64>) -> Res
         // **只记 pid / 信号 / 结果，不记 app_label 或命令行**：那两样可能含用户的
         // 项目目录名，与 README 承诺的「不上报任何进程信息」同向 —— 日志虽然只在
         // 本机，但它是用户会主动贴进 issue 的东西。
+        // 两条路径的字段集必须一致：pid + 信号 + 结果。`force` 就是这一层能表达的
+        // 「信号」（macOS 是 SIGKILL / SIGTERM，Windows 只有一种终止方式，具体由
+        // 引擎决定，这里不冒充知道信号名）。`start_unix` 刻意不记 —— 它是防误杀的
+        // 输入，不是审计事实，事后也无从据它行动。
+        let signal = if force { "force" } else { "graceful" };
         match &result {
-            Ok(()) => log::info!("kill pid={pid} force={force} start_unix={start_unix:?} -> ok"),
-            Err(e) => log::warn!("kill pid={pid} force={force} -> {e}"),
+            Ok(()) => log::info!("kill pid={pid} signal={signal} -> ok"),
+            Err(e) => log::warn!("kill pid={pid} signal={signal} -> {e}"),
         }
         result
     })

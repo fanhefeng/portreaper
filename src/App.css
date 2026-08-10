@@ -397,9 +397,7 @@ button {
   margin: 10px auto 0;
 }
 
-/* ───── 渲染崩溃兜底页（ErrorBoundary） ─────
-   刻意双语并列：这一层在 i18n Provider 之外（Provider 自己也可能是崩溃源），
-   不能依赖字典。 */
+/* ───── 渲染崩溃兜底页（ErrorBoundary） ───── */
 .crash {
   padding: 40px 32px;
   max-width: 720px;
@@ -423,7 +421,7 @@ button {
   font-family: var(--mono);
   font-size: 12px;
   white-space: pre-wrap;
-  word-break: break-word;
+  overflow-wrap: anywhere;
   user-select: text;
 }
 
