@@ -29,7 +29,7 @@ cargo clippy --workspace --all-targets -- -D warnings
 cargo test --workspace live_scan -- --ignored --nocapture   # real-machine smoke: scan this Mac
 
 pnpm test                                  # frontend regression tests (vp test run: bundled vitest + happy-dom)
-pnpm run typecheck                         # tsc over BOTH projects: tsconfig.json (webview code — deliberately no node types) + tsconfig.test.json (tests + fixtures, with node types); CI/pre-push use this, not bare tsc
+pnpm run typecheck                         # tsc over ALL THREE projects: tsconfig.json (webview code — deliberately no node types) + tsconfig.test.json (tests + fixtures, with node types) + tsconfig.node.json (vite.config.ts / vitest.config.ts, with node types); CI/pre-push/`pnpm build` all go through this, never bare tsc — a bare `tsc` checks only the first project, and the config files used to be reachable *only* through a `references` entry that `tsc --noEmit` does not follow (they went unchecked entirely, including the `__APP_VERSION__` define whose absence is a render-killing ReferenceError)
 
 # Windows cross-compile check from macOS (needs `brew install llvm` for llvm-rc):
 PATH="/opt/homebrew/opt/llvm/bin:$PATH" cargo check --workspace --target x86_64-pc-windows-msvc

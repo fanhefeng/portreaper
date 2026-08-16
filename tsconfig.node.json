@@ -1,11 +1,18 @@
 {
+  // 构建配置文件专用 project（vite.config.ts / vitest.config.ts）。它们跑在 Node
+  // 里（createRequire、process.env），故与 tsconfig.test.json 一样注入 node 类型。
+  //
+  // 曾经这份 project 只挂在主 tsconfig 的 "references" 上，而 `tsc --noEmit` **不跟随
+  // references**（只有 `tsc -b` 才跟随）—— 于是这两个文件一直无人类型检查，包括
+  // vitest.config.ts 里那份漏掉就会让整个 App 渲染 ReferenceError 的 `__APP_VERSION__`
+  // define。改为由 `pnpm run typecheck` 显式跑第三个 project，references 一并删除：
+  // 留着它只会让人以为这里已经被查过。
+  "extends": "./tsconfig.json",
   "compilerOptions": {
-    "composite": true,
-    "skipLibCheck": true,
-    "types": ["node"],
-    "module": "ESNext",
-    "moduleResolution": "bundler",
-    "allowSyntheticDefaultImports": true
+    "types": ["node"]
   },
-  "include": ["vite.config.ts", "vitest.config.ts"]
+  "include": ["vite.config.ts", "vitest.config.ts"],
+  // 必须显式清空：extends 会继承主配置的 exclude（那是 src/ 下的测试文件，与本
+  // project 的 include 无交集，但留着会让「排除项与包含项不匹配」难以排查）
+  "exclude": []
 }
