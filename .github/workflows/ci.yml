@@ -99,8 +99,11 @@ jobs:
       # `tauri build` in CI — we don't bundle/sign here, so Windows needs no
       # extra Tauri system deps). All frontend tooling goes through Vite+ (vp);
       # tsc stays explicit because `vp check` does not yet cover type-checking.
-      # `typecheck` 覆盖两个 project：应用侧 tsconfig.json（webview 代码，无 Node
-      # 全局）+ tsconfig.test.json（测试，含 @types/node）—— 裸 tsc 只查前者。
+      # `typecheck` 覆盖三个 project：应用侧 tsconfig.json（webview 代码，无 Node
+      # 全局）+ tsconfig.test.json（测试，含 @types/node）+ tsconfig.node.json
+      #（vite.config.ts / vitest.config.ts，含 @types/node）—— 裸 tsc 只查第一个。
+      # 第三个曾只挂在主 tsconfig 的 references 上，而 `tsc --noEmit` 不跟随
+      # references（只有 tsc -b 才跟随），两个构建配置文件因此一直无人检查。
       - name: Format + lint (vp check)
         run: pnpm exec vp check
 

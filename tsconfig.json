@@ -27,7 +27,8 @@
     "noFallthroughCasesInSwitch": true
   },
   "include": ["src"],
-  // 测试与其夹具库归 tsconfig.test.json 管（那边才有 node 类型）
-  "exclude": ["src/**/*.test.ts", "src/**/*.test.tsx", "src/test-fixtures.ts"],
-  "references": [{ "path": "./tsconfig.node.json" }]
+  // 测试与其夹具库归 tsconfig.test.json 管，构建配置文件归 tsconfig.node.json 管
+  //（两边才有 node 类型）。三个 project 都由 `pnpm run typecheck` 显式跑 ——
+  // 刻意不用 "references"：`tsc --noEmit` 不跟随它，挂上去等于查了个寂寞。
+  "exclude": ["src/**/*.test.ts", "src/**/*.test.tsx", "src/test-fixtures.ts"]
 }
