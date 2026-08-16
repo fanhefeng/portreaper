@@ -19,7 +19,7 @@ mod windows;
 #[cfg(windows)]
 use windows as platform_impl;
 
-use std::collections::{HashMap, HashSet};
+use std::collections::HashSet;
 
 pub use model::ProcessEntry;
 
@@ -185,15 +185,16 @@ fn scan_from(collected: Collected, whitelist: &[String]) -> Vec<ProcessEntry> {
             meta.user.clone()
         };
         let (entry, _) = build_entry(
-            l.pid,
-            meta,
-            procs,
+            EntryInput {
+                pid: l.pid,
+                meta,
+                ports: l.ports.clone(),
+                command: l.command.clone(),
+                user,
+                identity: None,
+            },
             &collected,
             whitelist,
-            l.ports.clone(),
-            l.command.clone(),
-            user,
-            None,
         );
         entries.push(entry);
     }
@@ -221,15 +222,16 @@ fn scan_from(collected: Collected, whitelist: &[String]) -> Vec<ProcessEntry> {
         }
         let reusable_identity = (!meta.full_command.is_empty()).then_some(identity);
         let (entry, raw_suspect) = build_entry(
-            pid,
-            meta,
-            procs,
+            EntryInput {
+                pid,
+                meta,
+                ports: Vec::new(),
+                command,
+                user: meta.user.clone(),
+                identity: reusable_identity,
+            },
             &collected,
             whitelist,
-            Vec::new(),
-            command,
-            meta.user.clone(),
-            reusable_identity,
         );
         // 只纳入「判为嫌疑」的孤儿。白名单命中的孤儿（raw_suspect 为真但
         // is_zombie_suspect 已被扣为假）仍纳入，以便用户在列表里取消收藏；
@@ -265,27 +267,47 @@ fn scan_from(collected: Collected, whitelist: &[String]) -> Vec<ProcessEntry> {
     entries
 }
 
-/// 从进程元数据构造一行 entry 及其判定 —— 监听者与孤儿进程共用，确保两条路径
-/// 的孤儿判定零分叉。监听者传 lsof 的 ports / command（短名）/ user；孤儿进程
-/// 传空 ports、exe basename 作命令、ProcMeta 的 user。
+/// [`build_entry`] 的**逐行**输入（跨行共享的 `collected` / `whitelist` 单独传）。
 ///
-/// `identity`：调用方已算好的 identify_app 结果（孤儿预闸顺手产出，传入复用）；
-/// None 时在此处计算（监听者路径）。
+/// 收成具名结构体而非位置参数：原先是 9 个位置参数，其中 `command` 与 `user`
+/// 同为 `String` 且相邻 —— 调用点传反了编译器一声不吭，而 command 会一路流进
+/// dev 关键字判定与白名单键。字段名即调用点的自证。
+struct EntryInput<'a> {
+    pid: u32,
+    meta: &'a ProcMeta,
+    /// 监听者传 lsof/端口表的端口；孤儿进程传空
+    ports: Vec<u16>,
+    /// 展示用短名：监听者取 lsof 的 command，孤儿取 exe basename
+    command: String,
+    user: String,
+    /// 调用方已算好的 identify_app 结果（孤儿预闸顺手产出，传入复用）；
+    /// None 时在此处计算（监听者路径）。
+    identity: Option<AppIdentity>,
+}
+
+/// 从进程元数据构造一行 entry 及其判定 —— 监听者与孤儿进程共用，确保两条路径
+/// 的孤儿判定零分叉。
+///
+/// 进程表取自 `collected.procs`，**不再单独收一个 `procs` 参数**：那是同一份数据
+/// 的第二个引用，两者理论上可以不是同一张表，而这里的父链回溯与 direct_orphan
+/// 必须与 `collected` 的其余通道（launchd_pids / established_local_ports）同源。
 ///
 /// 返回 `(entry, raw_suspect)`：raw_suspect 是**未扣白名单**的 verdict.is_suspect
 /// —— 孤儿循环据此决定是否纳入，使白名单命中的孤儿仍能显示以便取消收藏。
-#[allow(clippy::too_many_arguments)]
 fn build_entry(
-    pid: u32,
-    meta: &ProcMeta,
-    procs: &HashMap<u32, ProcMeta>,
+    input: EntryInput<'_>,
     collected: &Collected,
     whitelist: &[String],
-    mut ports: Vec<u16>,
-    command: String,
-    user: String,
-    identity: Option<AppIdentity>,
 ) -> (ProcessEntry, bool) {
+    let EntryInput {
+        pid,
+        meta,
+        mut ports,
+        command,
+        user,
+        identity,
+    } = input;
+    let procs = &collected.procs;
     let ppid = meta.ppid;
     let exe_path = meta.exe_path.clone();
     let full_command = if meta.full_command.is_empty() {
@@ -543,6 +565,8 @@ mod orphan_tests {
     // 判定枚举只有测试用到（生产代码经 classify() 间接产出），故在此按需引入
     // 而非放顶层 use —— 顶层引入会在另一平台编译时变成未用 import 警告。
     use super::classify::{Confidence, ReasonCode};
+    // 进程表只有夹具在直接建（生产侧一律经 collected.procs 拿），同理按需引入
+    use std::collections::HashMap;
 
     // 夹具本体在 model.rs（ProcMeta::fixture / Collected::of_procs）——
     // 本模块只留同名薄别名，避免 ~20 个调用点的无谓 churn。
@@ -636,15 +660,16 @@ mod orphan_tests {
         let col = col_of(procs);
         let m = col.procs.get(&900).unwrap();
         let (entry, raw_suspect) = build_entry(
-            900,
-            m,
-            &col.procs,
+            EntryInput {
+                pid: 900,
+                meta: m,
+                ports: Vec::new(),
+                command: "Electron".to_string(),
+                user: String::new(),
+                identity: None,
+            },
             &col,
             &[],
-            Vec::new(),
-            "Electron".to_string(),
-            String::new(),
-            None,
         );
         assert!(raw_suspect, "孤儿 Electron 必须判为嫌疑");
         assert!(entry.is_zombie_suspect);
@@ -665,15 +690,16 @@ mod orphan_tests {
         let col = col_of(procs);
         let m = col.procs.get(&901).unwrap();
         let (entry, raw_suspect) = build_entry(
-            901,
-            m,
-            &col.procs,
+            EntryInput {
+                pid: 901,
+                meta: m,
+                ports: Vec::new(),
+                command: "Electron".to_string(),
+                user: String::new(),
+                identity: None,
+            },
             &col,
             &[],
-            Vec::new(),
-            "Electron".to_string(),
-            String::new(),
-            None,
         );
         assert!(!raw_suspect, "已安装应用即便 ppid=1 也不是孤儿嫌疑");
         assert!(!entry.is_zombie_suspect);
@@ -696,15 +722,16 @@ mod orphan_tests {
         col.established_local_ports = established.iter().cloned().collect();
         let m = col.procs.get(&pid).unwrap();
         build_entry(
-            pid,
-            m,
-            &col.procs,
+            EntryInput {
+                pid,
+                meta: m,
+                ports,
+                command: "Google Chrome".to_string(),
+                user: String::new(),
+                identity: None,
+            },
             &col,
             &[],
-            ports,
-            "Google Chrome".to_string(),
-            String::new(),
-            None,
         )
     }
 
@@ -846,15 +873,16 @@ mod orphan_tests {
         let col = col_of(procs);
         let m = col.procs.get(&64841).unwrap();
         let (entry, raw_suspect) = build_entry(
-            64841,
-            m,
-            &col.procs,
+            EntryInput {
+                pid: 64841,
+                meta: m,
+                ports: Vec::new(),
+                command,
+                user: String::new(),
+                identity: Some(identity),
+            },
             &col,
             &[],
-            Vec::new(),
-            command,
-            String::new(),
-            Some(identity),
         );
         assert!(raw_suspect, "无人认领的 headless helper 必须判为嫌疑");
         assert!(entry.is_zombie_suspect);
@@ -896,15 +924,16 @@ mod orphan_tests {
         let col = col_of(procs);
         let m = col.procs.get(&64841).unwrap();
         let (entry, raw_suspect) = build_entry(
-            64841,
-            m,
-            &col.procs,
+            EntryInput {
+                pid: 64841,
+                meta: m,
+                ports: Vec::new(),
+                command: basename(HELPER).to_string(),
+                user: String::new(),
+                identity: None,
+            },
             &col,
             &[],
-            Vec::new(),
-            basename(HELPER).to_string(),
-            String::new(),
-            None,
         );
         assert!(
             !raw_suspect,
@@ -924,15 +953,16 @@ mod orphan_tests {
         let col = col_of(procs);
         let m = col.procs.get(&910).unwrap();
         let (entry, raw_suspect) = build_entry(
-            910,
-            m,
-            &col.procs,
+            EntryInput {
+                pid: 910,
+                meta: m,
+                ports: Vec::new(),
+                command: "Chromium".to_string(),
+                user: String::new(),
+                identity: None,
+            },
             &col,
             &[],
-            Vec::new(),
-            "Chromium".to_string(),
-            String::new(),
-            None,
         );
         assert!(raw_suspect, "工具下载的浏览器 runtime 孤儿必须检出");
         assert_eq!(entry.app_category, "dev-script");
@@ -950,15 +980,16 @@ mod orphan_tests {
         let m = col.procs.get(&902).unwrap();
         let wl = vec![exe.to_string()]; // 绝对路径 exe → whitelist_key 即 exe_path
         let (entry, raw_suspect) = build_entry(
-            902,
-            m,
-            &col.procs,
+            EntryInput {
+                pid: 902,
+                meta: m,
+                ports: Vec::new(),
+                command: "Electron".to_string(),
+                user: String::new(),
+                identity: None,
+            },
             &col,
             &wl,
-            Vec::new(),
-            "Electron".to_string(),
-            String::new(),
-            None,
         );
         assert!(raw_suspect, "白名单孤儿仍需纳入列表");
         assert!(entry.is_whitelisted);
@@ -1026,6 +1057,8 @@ mod windows_e2e_tests {
     // 判定枚举只有测试用到（生产代码经 classify() 间接产出），故在此按需引入
     // 而非放顶层 use —— 顶层引入会在 macOS 编译时变成未用 import 警告。
     use super::classify::{Confidence, ReasonCode};
+    // 进程表只有夹具在直接建（生产侧一律经 collected.procs 拿），同理按需引入
+    use std::collections::HashMap;
 
     // 夹具本体在 model.rs；Windows 侧的 fixture 需要显式 start（槽位复用比较）。
     fn meta(ppid: u32, exe: &str, cmd: &str, start: u64) -> ProcMeta {
@@ -1133,15 +1166,16 @@ mod windows_e2e_tests {
         let col = col_of(procs);
         let m = col.procs.get(&900).unwrap();
         let (entry, raw_suspect) = build_entry(
-            900,
-            m,
-            &col.procs,
+            EntryInput {
+                pid: 900,
+                meta: m,
+                ports: vec![8080],
+                command: "myserver.exe".to_string(),
+                user: String::new(),
+                identity: None,
+            },
             &col,
             &[],
-            vec![8080],
-            "myserver.exe".to_string(),
-            String::new(),
-            None,
         );
 
         assert!(raw_suspect, "槽位复用是直接孤儿信号");
@@ -1176,15 +1210,16 @@ mod windows_e2e_tests {
         let col = col_of(procs);
         let m = col.procs.get(&900).unwrap();
         let (entry, raw_suspect) = build_entry(
-            900,
-            m,
-            &col.procs,
+            EntryInput {
+                pid: 900,
+                meta: m,
+                ports: vec![5173],
+                command: "node.exe".to_string(),
+                user: String::new(),
+                identity: None,
+            },
             &col,
             &[],
-            vec![5173],
-            "node.exe".to_string(),
-            String::new(),
-            None,
         );
 
         assert!(raw_suspect);
