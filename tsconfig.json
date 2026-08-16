@@ -8,8 +8,9 @@
     // 本 project 只覆盖 webview 应用代码，**刻意不含 node 类型**（评审发现：
     // 此前 "types": ["node"] 为测试文件把 Node 全局带进了整个 src/ ——
     // webview 代码误用 process.env/Buffer 能通过 tsc，只在运行时暴露）。
-    // 需要 node:fs/process 的测试走 tsconfig.test.json（含 node 类型）；
-    // `pnpm run typecheck` 两个 project 都查，CI/pre-push 用的就是它。
+    // 需要 node:fs/process 的测试走 tsconfig.test.json，跑在 Node 里的两个构建
+    // 配置文件走 tsconfig.node.json（两者都含 node 类型）；
+    // `pnpm run typecheck` 三个 project 都查，CI/pre-push/`pnpm build` 用的就是它。
     "types": [],
 
     /* Bundler mode */
