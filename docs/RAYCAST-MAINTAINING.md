@@ -468,3 +468,51 @@ Confirmed 的孤儿不会被降档。判定分层由分区标题与 Dropdown 呈
         注意那个 tag 是本地工具产物：`git push --tags` 会把它推上公开仓库，
         污染 tag 列表（本次已误推并删除；发版请用 `git push origin vX.Y.Z`
         而不是 `--tags`）。
+
+## 人工评审前的自动查重（2026-08-14）
+
+Raycast 团队成员在 PR 上贴了一条带 `<!-- store-duplicate-check -->` 标记的机器初筛：
+Store 已有 **Port Manager**（`ports`，1.3k 安装）与本扩展相似度 **0.56**。
+
+**这不是驳回。** 原文写明 *"Overlap is not a blocker on its own, but the README
+should make the difference clear"* —— 是合并前的**必办项**，PR 全程保持 OPEN。
+别把它读成拒绝，更别因此去改产品定位。
+
+应对（2026-08-16，已推同一个 PR 并回评论）：README 加 `How this differs from a
+port viewer` 一节。写法是**先承认对方再划边界** —— 开头直说「只想放掉 3000 端口的话，
+普通端口查看器就是更合适的工具，你该用它」，再讲本扩展回答的是另一个问题（这些进程里
+哪些没人认领）。硬碰硬宣称「我更好」反而坐实重复。
+
+三条经手才知道的事实：
+
+- **Store 链接用 `package.json` 的 `author` 字段，不是 GitHub 用户名。**
+  Port Manager 的页面是 `raycast.com/dleteliers_/ports`；查重评论里署的
+  `@diegoleteliers10` 是 GitHub 账号，拿它拼 URL 是 404。
+- **README 里刻意不写平台差异。** 事实是对方声明 `"platforms": ["Windows"]`
+  （四个源文件里 `darwin` / `lsof` / `macOS` 零命中，它 README 那句 "Full support
+  for both Windows and macOS" 与代码不符），与本扩展的 `["macOS"]` 在 Store 里
+  根本不碰面。但对方哪天补上 macOS，那句话就成了过时的错误陈述 —— 而 README 是
+  长期文档。平台不重叠是**一次性事实**，写进 PR 评论给人工评审员看即可。
+- 评论里同时点明「这不是接受本扩展的理由，只是界定重叠范围」—— 拿平台当挡箭牌
+  会显得在回避产品重复这个真问题。
+
+### 读完对方源码后确认的可借鉴点
+
+省得以后再读一遍（`extensions/ports`，696 行）。
+
+- **最值得补的是 `mode: "no-view"` + `arguments` 的第二命令。** 它的
+  `kill port 3000` ↵ 一步到位，本扩展目前最短路径是六步（开命令 → 等扫描 →
+  搜 `:3000` → ↵ → 确认 → ↵）。它的护栏是硬编码系统端口黑名单（端口号 ≠ 进程身份，
+  判据本身是错的），而本项目有真判据：那个端口上的进程是不是 suspect。设计应为
+  suspect 直接终止 + 走完整复扫确认 + `showHUD`，healthy / starred 则拒绝静默终止、
+  引导回列表。**但要等 PR 合并之后再做** —— 往人工评审中的提交里加命令会让评审重排队。
+- README 顶部内嵌截图（本扩展的卖点是视觉性的）。注意引用的图必须放顶层 `media/`，
+  见上文。
+- 首屏速度：它用两层 TTL 缓存兜「打开那一瞬屏幕上有没有东西」。本扩展冷启动是一段
+  纯 loading，官方答案是 `@raycast/utils` 的 `useCachedPromise`（已记在上面的
+  「未做、且刻意不做的两项」里，合并后可升级为待办）。
+
+**明确不学的**：靠 `error.message.includes(...)` 分派错误（v0.9.0 刚把这套删干净）；
+`taskkill` 返回 0 就报「已终止」而从不复核；乐观更新后立刻全量重扫导致列表闪两次；
+温和失败自动升级强杀（本项目的产品决定是让用户显式选）；30s 自动刷新（Raycast 命令
+停留时间就几秒，而本项目一次 scan 是最贵的调用）。
