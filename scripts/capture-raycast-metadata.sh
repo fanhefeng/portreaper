@@ -70,8 +70,9 @@ magick -size "${PW}x${PH}" xc:black -fill white \
 magick "$WORK/win.png" "$WORK/mask.png" \
   -alpha off -compose CopyOpacity -composite PNG32:"$WORK/rounded.png"
 
-# 品牌渐变背景（取自应用图标：深青 → 深藏蓝）+ 投影 + 居中合成
-magick -size 2000x1250 gradient:'#0d7d93-#16202e' PNG32:"$WORK/bg.png"
+# 品牌渐变背景（派生自应用图标：镰刃绿 #089c72 压暗 → 图标底色 #141a17 同明度的
+# 墨绿黑；两端明度对齐旧深青 #0d7d93 → 深藏蓝 #16202e，白字对比度不变）+ 投影 + 居中合成
+magick -size 2000x1250 gradient:'#07855f-#18211d' PNG32:"$WORK/bg.png"
 # 坑 4（评审发现）：窗口截图可能比画布还大 —— Retina 上一个铺开的 Raycast 窗口
 # 轻松超过 2000px。`-composite` 居中合成时只会把超出画布的部分裁掉，产出尺寸
 # 仍是规规矩矩的 2000x1250，ray lint 也照过，只是内容被切了边看不出来。
