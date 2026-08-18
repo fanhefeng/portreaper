@@ -249,14 +249,24 @@ reviews:
         - `focus_main` is the single "show + take front" implementation shared
           by the tray item, RunEvent::Reopen and the Windows single-instance
           callback. Flag re-derivations of the show/focus dance.
-        - Two plugins are registered Rust-side ONLY (no npm package, no JS
+        - Three plugins are registered Rust-side ONLY (no npm package, no JS
           call), which is why capabilities are untouched: window-state must
           keep `SIZE | POSITION` and must NEVER gain VISIBLE/ALL (restoring a
           hidden window fights the RunEvent::Ready show+focus retry), and its
           state filename must stay env-scoped (the plugin writes into Tauri's
           app_config_dir, which knows nothing about this project's dev/
           isolation). single-instance is cfg(windows) only and must stay first
-          in the plugin chain.
+          in the plugin chain. updater is reached only through this crate's
+          own commands (updater.rs); do not accept adding the
+          @tauri-apps/plugin-updater npm package or updater:* permissions —
+          progress goes through an IPC Channel command argument, which needs
+          no event permission either.
+        - updater.rs invariants: install_update must stay refused under
+          cfg!(debug_assertions) (a dev binary has no bundle to replace);
+          open_release_page must keep its version-string character whitelist
+          and build the URL from CARGO_PKG_REPOSITORY (the webview must never
+          be able to open an arbitrary URL — capabilities scope opener to
+          http://localhost:*); DO NOT relax the opener scope instead.
         - Do NOT accept hand-written off-screen clamping for the restored
           window rect: the plugin already restores the position only when the
           saved rect intersects an available_monitors() entry. Also do not

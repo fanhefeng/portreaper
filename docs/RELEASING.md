@@ -84,13 +84,19 @@ Pushing the tag triggers `release.yml`, which runs four stages:
 2. **`create-release`** — creates the **draft** GitHub Release exactly once, before any build leg. (The build legs upload by release id; letting three parallel legs get-or-create the same release is a documented tauri-action race that can leave duplicate/stuck drafts.)
 3. **Build matrix** — builds in parallel. Each leg produces its installer bundle **plus the
    `portreaper-cli` binary** (uploaded directly under its stable name — the Raycast extension
-   downloads it by that exact name):
-   - macOS **arm64** `.dmg` + `portreaper-cli-macos-arm64`
-   - macOS **x64** `.dmg` + `portreaper-cli-macos-x64`
-   - Windows **x64** NSIS installer `.exe` + `portreaper-cli-windows-x64.exe`
-4. **`publish`** — verifies all **six** assets exist on the draft, re-uploads the installers
-   under their **stable asset names**, generates `portreaper-cli-SHA256SUMS` (aggregated from
-   the three CLI binaries — the Raycast extension verifies its download against it), and only
+   downloads it by that exact name) **plus the in-app-updater artifacts** (signed with
+   `TAURI_SIGNING_PRIVATE_KEY`; macOS gets a `.app.tar.gz` + `.sig`, Windows re-uses the NSIS
+   installer and only adds a `.sig`):
+   - macOS **arm64** `.dmg` + `.app.tar.gz` + `.sig` + `portreaper-cli-macos-arm64`
+   - macOS **x64** `.dmg` + `.app.tar.gz` + `.sig` + `portreaper-cli-macos-x64`
+   - Windows **x64** NSIS installer `.exe` + `.exe.sig` + `portreaper-cli-windows-x64.exe`
+4. **`publish`** — verifies all **eleven** assets exist on the draft (3 installers + 3 CLI
+   binaries + 5 updater artifacts), re-uploads the installers under their **stable asset
+   names**, generates `portreaper-cli-SHA256SUMS` (aggregated from the three CLI binaries —
+   the Raycast extension verifies its download against it), generates **`latest.json`** (the
+   in-app updater feed, via `scripts/generate-latest-json.mjs` — deliberately *not*
+   tauri-action's own `uploadUpdaterJson`, whose three parallel legs merge the file with an
+   unlocked read-modify-write and can drop each other's platform entries), and only
    then flips the GitHub Release from **draft → published**:
    - `Portreaper-macos-arm64.dmg`
    - `Portreaper-macos-x64.dmg`
@@ -99,11 +105,20 @@ Pushing the tag triggers `release.yml`, which runs four stages:
    - `portreaper-cli-macos-x64`
    - `portreaper-cli-windows-x64.exe`
    - `portreaper-cli-SHA256SUMS`
+   - `latest.json`
 
    These names back the "latest" direct-download links in the README and on the website, e.g.
    `https://github.com/fanhefeng/portreaper/releases/latest/download/Portreaper-macos-arm64.dmg`,
    and the Raycast extension's engine download (`integrations/raycast/src/install.ts`).
    `scripts/check-release-assets.mjs` guards both sides against drift.
+
+   `latest.json` additionally backs the **in-app updater**: installed apps poll
+   `releases/latest/download/latest.json` (endpoint + pubkey in `tauri.conf.json`
+   `plugins.updater`). Its `platforms.*.url` entries point at the **versioned** asset names
+   of *this* tag, never the stable names — the stable names are overwritten on every release,
+   and a cached `latest.json` pointing at a stable name would pair an old signature with a
+   new binary (guaranteed signature-verification failure). Apps ≥ 0.11.0 update in place;
+   older installs predate the updater and must download manually one last time.
 
 ### 5. If the publish job fails
 
@@ -145,11 +160,32 @@ To enable signing: (1) add the secrets below in **repo Settings → Secrets and 
 | `APPLE_ID` | Apple ID used for notarization |
 | `APPLE_PASSWORD` | app-specific password for notarization |
 | `APPLE_TEAM_ID` | Apple Developer Team ID |
-| `TAURI_SIGNING_PRIVATE_KEY` | Tauri updater key (for the future auto-updater) |
-| `TAURI_SIGNING_PRIVATE_KEY_PASSWORD` | password for the updater key |
 | `WINDOWS_CERTIFICATE` *(placeholder)* | Windows Authenticode cert — slot reserved; not yet configured |
 
-The macOS group (`APPLE_*`) enables Developer ID signing + notarization for the `.dmg`s. The `TAURI_SIGNING_*` pair is reserved for the planned updater, not current release builds. The Windows Authenticode entry is a placeholder until a code-signing certificate is obtained.
+The macOS group (`APPLE_*`) enables Developer ID signing + notarization for the `.dmg`s. The Windows Authenticode entry is a placeholder until a code-signing certificate is obtained.
+
+## In-app updater signing (ACTIVE since v0.11.0)
+
+The updater key pair is **live**, unlike the Apple/Windows certs above:
+
+| Secret | Value |
+| --- | --- |
+| `TAURI_SIGNING_PRIVATE_KEY` | content of the minisign private key (already set) |
+
+- The private key lives at `~/.tauri/portreaper-updater.key` on the maintainer machine and
+  was generated **without a password** — the workflow therefore hardcodes
+  `TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ""` as a literal (an *unset* password env makes the
+  signer fall back to an interactive prompt and hang CI).
+- The matching **public key is baked into `src-tauri/tauri.conf.json`** (`plugins.updater.pubkey`).
+  Installed apps verify every downloaded update against it: **losing the private key means no
+  existing install can ever auto-update again** (they only trust this key) — back it up.
+  Rotating the key requires shipping a release signed with the *old* key whose config carries
+  the *new* public key.
+- `bundle.createUpdaterArtifacts: true` means **any** `pnpm tauri build` — including local
+  ones — needs the key, or the bundling step fails with "A public key has been found, but
+  no private key". Locally:
+  `TAURI_SIGNING_PRIVATE_KEY="$HOME/.tauri/portreaper-updater.key" TAURI_SIGNING_PRIVATE_KEY_PASSWORD="" pnpm tauri build`
+  (the env var accepts a key path or the key content).
 
 ## Checklist
 
@@ -163,10 +199,13 @@ The macOS group (`APPLE_*`) enables Developer ID signing + notarization for the 
       `portreaper-core`, `portreaper-cli`, and the desktop shell alike.)
 - [ ] Commit `chore(release): vX.Y.Z` + tag `vX.Y.Z` pushed.
 - [ ] `verify-version` passed.
-- [ ] All **six** artifacts built and uploaded with stable names (3 installers +
-      3 `portreaper-cli-*` binaries), plus `portreaper-cli-SHA256SUMS` generated by
-      the publish job — a missing CLI asset means the Raycast extension installs
-      but can never fetch its engine.
+- [ ] All **eleven** artifacts built and uploaded (3 installers + 3 `portreaper-cli-*`
+      binaries + 5 updater artifacts), plus `portreaper-cli-SHA256SUMS` and `latest.json`
+      generated by the publish job — a missing CLI asset means the Raycast extension
+      installs but can never fetch its engine; a missing updater asset means installed
+      apps lose in-app updates for that platform.
+- [ ] After publish: the in-app "检查更新 / Check for updates" on an installed ≥0.11.0
+      build sees the new version (endpoint: `releases/latest/download/latest.json`).
 - [ ] The macOS unlock instructions (README ×2 + `website/i18n.js` ×2 +
       `website/index.html`) still match current macOS: Apple removed the
       right-click → Open bypass in **macOS 15**, so `xattr -dr` is the only

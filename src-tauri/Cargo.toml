@@ -29,18 +29,24 @@ tauri-plugin-window-state = "2"
 sys-locale = "0.3" # 托盘菜单初始语言（托盘先于 webview 构建，需 Rust 侧探测系统语言）
 log = "0.4" # 日志门面：全代码 log::info!/warn!/error!，落盘由 tauri-plugin-log 接管
 tauri-plugin-log = "2" # 统一日志系统（分环境目录 + 大小轮转，见 paths.rs / lib.rs setup）
+# 应用内更新（updater.rs）。与 window-state 同一模式：纯 Rust 侧注册、不装 npm 包，
+# 前端只经本 crate 自己的 #[tauri::command] 触达 —— capabilities 白名单零改动。
+# 也因此**不进** check-tauri-parity.mjs 的配对表（那张表只管「Rust crate + npm 包」
+# 成对存在的插件；本插件没有 npm 侧，加错表反而会响亮失败）。
+tauri-plugin-updater = "2"
+# updater.rs 的 UpdateInfo / InstallProgress 需要 derive(Serialize) —— 这是本 crate
+# 第一个真实的 serde 消费者（此前「零 derive、刻意不依赖 serde」的历史见 git blame）。
+serde = { version = "1", features = ["derive"] }
+# tauri.conf.json 出现 `plugins` 段后，generate_context! 的展开会直接引用
+# `::serde_json` 来内嵌插件配置 —— 没有它编译错在宏里（E0433），不是未用依赖。
+serde_json = "1"
 
 # 注：sysinfo / windows 已随 scanner + platform 一并移入 portreaper-core ——
 # GUI 壳本身不做任何进程枚举或终止，不该直接依赖平台 API。
 #
-# 同理刻意**没有** serde / serde_json / once_cell（评审发现的未用依赖，已移除）：
-#   - serde：本 crate 零 derive。命令签名里流动的 ProcessEntry / KillError 都在
-#     portreaper-core 里派生好，#[tauri::command] 的序列化经由 tauri 自己的
-#     serde 重导出完成，不需要这里再直接依赖一份；
-#   - serde_json：白名单的 JSON 读写在 core::whitelist；
-#   - once_cell：进程级单例用标准库 OnceLock（whitelist.rs / lib.rs），
-#     std 有了以后这个 crate 就是纯粹的历史残留。
-# 三者都由 `cargo machete` 报出并实测删除后编译通过 —— 想加回来前先确认真有 use。
+# 同理刻意**没有** once_cell（评审发现的未用依赖，已移除）：进程级单例用标准库
+# OnceLock（whitelist.rs / lib.rs），std 有了以后这个 crate 就是纯粹的历史残留。
+# `cargo machete` 报出并实测删除后编译通过 —— 想加回来前先确认真有 use。
 
 # 单实例守卫 —— 只在 Windows 需要。macOS 天然免疫：LaunchServices 对同一个 .app
 # 的二次启动走 `RunEvent::Reopen`（lib.rs 已处理），不会真的起第二个进程；

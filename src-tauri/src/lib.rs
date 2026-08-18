@@ -2,6 +2,7 @@
 // 本 crate 只是它的桌面前端：托盘、窗口生命周期、命令入口、白名单落盘。
 mod commands;
 mod paths;
+mod updater;
 mod whitelist;
 
 use std::sync::Mutex;
@@ -333,6 +334,9 @@ pub fn run() {
 
     let builder = builder
         .plugin(tauri_plugin_opener::init())
+        // 应用内更新。纯 Rust 侧注册（不装 npm 包）：检查/安装都走本 crate 的
+        // updater.rs 命令，进度经 IPC Channel 回传 —— capabilities 白名单零改动。
+        .plugin(tauri_plugin_updater::Builder::new().build())
         // 窗口尺寸/位置记忆。
         //
         // 只记 SIZE | POSITION，**绝不能加 VISIBLE / 用 ALL**：本应用「关窗即隐藏、
@@ -360,6 +364,10 @@ pub fn run() {
             commands::remove_whitelist,
             commands::update_tray_title,
             commands::set_tray_language,
+            updater::check_update,
+            updater::install_update,
+            updater::restart_app,
+            updater::open_release_page,
         ]);
 
     // 「仅托盘退出」不变量的真正实现（评审 + 实测推翻了旧的 ExitRequested 拦截）：
@@ -497,6 +505,8 @@ pub fn run() {
             app.manage(commands::ScannerState(Mutex::new(
                 portreaper_core::Scanner::new(),
             )));
+            // check_update 找到的待装更新，install_update 消费（详见 updater.rs）
+            app.manage(updater::PendingUpdate(Mutex::new(None)));
 
             // 托盘图标：macOS 用专用单色 template 图（纯黑+透明，系统按菜单栏明暗自动反色）。
             // 复用彩色应用图标会被 icon_as_template 压成糊在一起的剪影，故单独嵌入 tray.png；

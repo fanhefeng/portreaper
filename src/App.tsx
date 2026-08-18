@@ -18,9 +18,11 @@ import {
   type Translator,
 } from "./model";
 import { useScan } from "./useScan";
+import { useUpdater } from "./updater";
 import { Section } from "./components/Section";
 import { BatchConfirmModal } from "./components/BatchConfirmModal";
 import { KillConfirmModal, type KillConfirm } from "./components/KillConfirmModal";
+import { UpdateModal } from "./components/UpdateModal";
 import "./App.css";
 
 /** 操作错误存「渲染函数」而非成品文案：横幅挂着时切换语言要跟着重译 ——
@@ -101,6 +103,8 @@ function App() {
   const [batchConfirm, setBatchConfirm] = useState<ProcessEntry[] | null>(null);
   const [sweeping, setSweeping] = useState(false);
   const [expandedPid, setExpandedPid] = useState<number | null>(null);
+  // 应用内更新：状态机 + 弹窗开合都在 hook 里，footer 只渲染入口
+  const updater = useUpdater();
   // 弹窗关闭后焦点还给触发按钮（a11y：键盘用户不丢上下文）
   const modalTrigger = useRef<HTMLElement | null>(null);
 
@@ -118,17 +122,26 @@ function App() {
     }
   }, [entries, survivor]);
 
-  // Esc 关闭弹窗 / 收起详情
+  // Esc 关闭弹窗 / 收起详情。更新弹窗只在可关闭阶段响应 ——
+  // 下载/安装中取消不了正在落盘的更新，Esc 也不该假装可以。
+  const updateModalOpen = updater.modalOpen;
+  const updateModalClosable =
+    updateModalOpen &&
+    updater.state.phase !== "downloading" &&
+    updater.state.phase !== "installing";
+  const closeUpdateModal = updater.closeModal;
   useEffect(() => {
     const onKey = (ev: KeyboardEvent) => {
       if (ev.key !== "Escape") return;
       if (confirm) setConfirm(null);
       else if (batchConfirm) setBatchConfirm(null);
-      else setExpandedPid(null);
+      else if (updateModalOpen) {
+        if (updateModalClosable) closeUpdateModal();
+      } else setExpandedPid(null);
     };
     window.addEventListener("keydown", onKey);
     return () => window.removeEventListener("keydown", onKey);
-  }, [confirm, batchConfirm]);
+  }, [confirm, batchConfirm, updateModalOpen, updateModalClosable, closeUpdateModal]);
 
   // 弹窗（确认 / 批量）全部关闭后，焦点还给打开它的按钮
   const anyModalOpen = confirm !== null || batchConfirm !== null;
@@ -675,13 +688,53 @@ function App() {
       </main>
 
       <footer className="footer">
-        {t("footer.status", { procs: entries.length, ports: totalPortCount })}
-        {/* 版本号在此前的 UI 里完全不可达：应用是 Accessory（无 Dock 图标），
-            那份带「关于」的应用菜单根本不显示 —— 用户报 issue 时说不清自己在用
-            哪一版。刻意单独一个 span，不拼进 i18n 的值里。
-            取自 vite define（bump-version.mjs 已同步 package.json，不会漂移）。 */}
-        <span className="footer-version" title="Portreaper">
-          v{__APP_VERSION__}
+        <span>{t("footer.status", { procs: entries.length, ports: totalPortCount })}</span>
+        <span className="footer-right">
+          {/* 检查更新入口挨着版本号：这里是应用里唯一能「看见自己版本」的地方，
+              「我是什么版本」与「有没有新版本」是同一个问题的两半。 */}
+          {(() => {
+            const s = updater.state;
+            switch (s.phase) {
+              case "idle":
+                return (
+                  <button className="footer-update-btn" onClick={() => void updater.check(true)}>
+                    {t("update.check")}
+                  </button>
+                );
+              case "checking":
+                return <span className="footer-update-note">{t("update.checking")}</span>;
+              case "upToDate":
+                return <span className="footer-update-note">{t("update.upToDate")}</span>;
+              case "checkFailed":
+                // 完整错误进 title：footer 一行放不下，但用户报 issue 需要它
+                return (
+                  <span className="footer-update-note" title={s.message}>
+                    {t("update.checkFailed")}
+                  </span>
+                );
+              case "installed":
+                return (
+                  <button className="footer-update-badge" onClick={updater.openModal}>
+                    {t("update.restartBadge")}
+                  </button>
+                );
+              default:
+                // available / downloading / installing / installFailed：
+                // 徽标常驻（弹窗被「稍后」收起后，这是唯一的重入口）
+                return (
+                  <button className="footer-update-badge" onClick={updater.openModal}>
+                    {t("update.badge", { version: s.info.version })}
+                  </button>
+                );
+            }
+          })()}
+          {/* 版本号在此前的 UI 里完全不可达：应用是 Accessory（无 Dock 图标），
+              那份带「关于」的应用菜单根本不显示 —— 用户报 issue 时说不清自己在用
+              哪一版。刻意单独一个 span，不拼进 i18n 的值里。
+              取自 vite define（bump-version.mjs 已同步 package.json，不会漂移）。 */}
+          <span className="footer-version" title="Portreaper">
+            v{__APP_VERSION__}
+          </span>
         </span>
       </footer>
 
@@ -700,6 +753,16 @@ function App() {
           os={os}
           onCancel={() => setConfirm(null)}
           onConfirm={doKill}
+        />
+      )}
+
+      {updater.modalOpen && (
+        <UpdateModal
+          state={updater.state}
+          onClose={updater.closeModal}
+          onInstall={() => void updater.install()}
+          onRestart={updater.restart}
+          onOpenReleasePage={updater.openReleasePage}
         />
       )}
     </div>

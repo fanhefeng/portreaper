@@ -146,14 +146,18 @@ jobs:
         # cli_asset: the STABLE name portreaper-cli ships under. The Raycast
         # extension downloads it by this exact name, so treat it as a public
         # contract — check-release-assets.mjs guards it against drift.
+        # macOS 的 bundles 必须是 `app,dmg` 而不是裸 `dmg`：updater 资产
+        # （.app.tar.gz + .sig）只随 **app** target 产出 —— 只打 dmg 时 bundler
+        # 警告 "no updater-enabled targets were built" 并把中间产物 .app 清掉，
+        # 应用内更新的资产就一个都没有（本机 tauri build --bundles dmg 实测）。
         include:
           - os: macos-latest
             target: aarch64-apple-darwin
-            bundles: dmg
+            bundles: app,dmg
             cli_asset: portreaper-cli-macos-arm64
           - os: macos-latest
             target: x86_64-apple-darwin
-            bundles: dmg
+            bundles: app,dmg
             cli_asset: portreaper-cli-macos-x64
           - os: windows-latest
             target: ""
@@ -222,9 +226,12 @@ jobs:
           # APPLE_ID: ${{ secrets.APPLE_ID }}
           # APPLE_PASSWORD: ${{ secrets.APPLE_PASSWORD }}
           # APPLE_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
-          # Tauri updater signing (only once an updater is shipped):
-          # TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
-          # TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
+          # Tauri updater signing（应用内更新，v0.11.0 起）：createUpdaterArtifacts
+          # 开着时缺私钥会让所有构建腿直接失败 —— 该 secret 必须存在。
+          # 私钥无口令，PASSWORD 给显式空串（写字面量而不是引用不存在的 secret，
+          # 语义一目了然；缺省不设会让签名步骤落回交互式询问并挂死 CI）。
+          TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
+          TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ""
           # FUTURE (Windows code signing): tauri-action does not sign Windows
           # bundles itself. To sign the NSIS installer, configure a signing
           # command via tauri.conf.json `bundle.windows.signCommand` (Tauri 2)
@@ -232,6 +239,11 @@ jobs:
         with:
           # Upload into the pre-created draft — never create from a matrix leg.
           releaseId: ${{ needs.create-release.outputs.release_id }}
+          # latest.json 由 publish job 用 scripts/generate-latest-json.mjs 统一生成：
+          # tauri-action 的三条并行腿各自「下载已有 latest.json → 合并 → 重传」是
+          # 无锁的读改写，可能互相覆盖平台条目（已知竞态）。.sig 资产仍由本 action
+          # 上传（uploadUpdaterSignatures 默认 true）。
+          uploadUpdaterJson: false
           # `args` is empty for Windows (no --target), so omit --target there.
           args: ${{ matrix.target && format('--target {0} --bundles {1}', matrix.target, matrix.bundles) || format('--bundles {0}', matrix.bundles) }}
 
@@ -286,10 +298,12 @@ jobs:
         run: gh release upload "$TAG" "${{ matrix.cli_asset }}" --clobber
 
   # --------------------------------------------------------------------------
-  # 4. Verify the 3 expected assets exist on the draft release, re-upload them
-  #    under STABLE names, then (and only then) flip the release out of draft.
-  #    If any expected asset is missing the job fails and the release stays a
-  #    draft so nothing broken is ever published.
+  # 4. Verify the expected assets exist on the draft release (3 installers +
+  #    3 CLI binaries + 5 updater artifacts), re-upload the installers under
+  #    STABLE names, generate the CLI SHA256SUMS and the updater's latest.json,
+  #    then (and only then) flip the release out of draft. If any expected
+  #    asset is missing the job fails and the release stays a draft so nothing
+  #    broken is ever published.
   # --------------------------------------------------------------------------
   publish:
     name: Verify, rename assets, and publish
@@ -301,6 +315,15 @@ jobs:
       GH_REPO: ${{ github.repository }}
       TAG: ${{ github.ref_name }}
     steps:
+      # latest.json 生成脚本在仓库里（此前本 job 纯靠 gh，不需要代码）
+      - name: Checkout
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v6
+
+      - name: Setup Node
+        uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v6
+        with:
+          node-version-file: .node-version
+
       - name: Verify expected assets exist
         run: |
           set -euo pipefail
@@ -330,6 +353,14 @@ jobs:
           check "macOS arm64 dmg"  '^Portreaper_.*_aarch64\.dmg$'
           check "macOS x64 dmg"    '^Portreaper_.*_x64\.dmg$'
           check "Windows x64 nsis" '^Portreaper_.*_x64-setup\.exe$'
+          # 应用内更新的资产（createUpdaterArtifacts + tauri-action 上传）：
+          # macOS 是 .app.tar.gz + .sig，Windows 复用 NSIS 安装器、只多一个 .sig。
+          # 缺任何一个都意味着已装用户的更新链路残废 —— 与安装包同级的硬校验。
+          check "macOS arm64 updater"      '^Portreaper_.*_aarch64\.app\.tar\.gz$'
+          check "macOS arm64 updater sig"  '^Portreaper_.*_aarch64\.app\.tar\.gz\.sig$'
+          check "macOS x64 updater"        '^Portreaper_.*_x64\.app\.tar\.gz$'
+          check "macOS x64 updater sig"    '^Portreaper_.*_x64\.app\.tar\.gz\.sig$'
+          check "Windows nsis updater sig" '^Portreaper_.*_x64-setup\.exe\.sig$'
           # portreaper-cli 已由 build job 以稳定名上传（无需改名）。仍要逐个核对：
           # Raycast 扩展按这些名字下载，缺一个就是「扩展装了但用不了」。
           check "cli macOS arm64"  '^portreaper-cli-macos-arm64$'
@@ -385,6 +416,22 @@ jobs:
           echo "Checksums:"
           cat cli/portreaper-cli-SHA256SUMS
           gh release upload "$TAG" "cli/portreaper-cli-SHA256SUMS" --clobber
+
+      # 应用内更新的静态源：从三份 .sig 汇总生成（缺平台会响亮失败，见脚本头注）。
+      # 必须在 un-draft 之前上传 —— 应用打的端点是 releases/latest/download/latest.json，
+      # 发布瞬间它就该在了。URL 指向本 tag 的**版本化**资产名（签名与二进制成对），
+      # 不用稳定名 —— 稳定名每次发版被覆盖，旧 latest.json 缓存 + 新二进制 = 验签必败。
+      - name: Generate and upload latest.json (in-app updater feed)
+        run: |
+          set -euo pipefail
+          mkdir -p sigs
+          gh release download "$TAG" --dir sigs --pattern "*.sig"
+          node scripts/generate-latest-json.mjs "$TAG" sigs \
+            "Portreaper $TAG — release notes: https://github.com/$GH_REPO/releases/tag/$TAG" \
+            > latest.json
+          echo "Generated latest.json:"
+          cat latest.json
+          gh release upload "$TAG" latest.json --clobber
 
       - name: Publish release (un-draft)
         run: |

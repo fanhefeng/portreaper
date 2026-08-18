@@ -40,8 +40,10 @@ export function ConfirmModal(props: {
   );
 }
 
-/** 极简焦点圈定：Tab 在弹窗内的按钮间循环（毁灭性确认弹窗的键盘安全网） */
-function trapTab(ev: ReactKeyboardEvent<HTMLDivElement>) {
+/** 极简焦点圈定：Tab 在弹窗内的按钮间循环（毁灭性确认弹窗的键盘安全网）。
+ *  UpdateModal 也复用它 —— 弹窗骨架不同（非毁灭性、无固定双按钮），但
+ *  焦点不该逃出弹窗这条 a11y 不变量是同一条。 */
+export function trapTab(ev: ReactKeyboardEvent<HTMLDivElement>) {
   if (ev.key !== "Tab") return;
   const btns = ev.currentTarget.querySelectorAll<HTMLButtonElement>("button");
   if (btns.length === 0) return;
