@@ -53,9 +53,15 @@ window.I18N = {
     "feat.sweep.title": "一键清扫",
     "feat.sweep.body":
       "批量终止所有 Confirmed + Likely 的僵尸进程，一次释放占用的端口。白名单收藏的进程永远豁免，绝不被误杀。",
+    "feat.verify.title": "终止后确认",
+    "feat.verify.body":
+      "<code>kill</code> 返回成功只代表信号发出去了。Portreaper 会持续复查目标是否真的消失（约 2.5 秒上限），没死就如实告诉你并就地给出强制终止入口 —— 而不是打个绿勾了事。macOS 上还多一层：被 Ctrl-Z 挂起的进程不会去<em>处理</em>温和终止信号，信号只是挂在待决队列里、而 <code>kill</code> 照样返回成功，所以这类进程会被标出「已暂停」，并在信号发出后立刻唤醒收尾。",
     "feat.cross.title": "跨平台",
     "feat.cross.body":
       "常驻 macOS 菜单栏与 Windows 系统托盘，关窗即隐藏、不打断工作流。界面中英双语，可疑进程数实时显示在托盘（macOS 菜单栏标题 / Windows 悬停提示）。",
+    "feat.cli.title": "也有命令行版",
+    "feat.cli.body":
+      '每次发布都会附带 <code>portreaper-cli</code>（macOS arm64 / x64、Windows x64）—— 与桌面端共用同一个判定引擎和同一份收藏白名单：在终端里点的 ★，桌面端下一次扫描就认。默认打印可读表格，<code>--json</code> 供脚本消费。在 <a href="https://github.com/fanhefeng/portreaper/releases/latest" rel="noopener">Releases</a> 里下载。',
 
     "install.title": "安装与首次启动",
     "install.lead": "应用未经签名公证。下面是绕过系统拦截的标准步骤。",
@@ -68,7 +74,7 @@ window.I18N = {
     "install.mac.s3":
       "或者在「应用程序」里 <strong>右键 → 打开</strong>，在弹窗里再次确认「打开」（仅 macOS 14 及以前；macOS 15 起 Apple 已移除右键旁路，请用上一步的「仍要打开」）。",
     "install.mac.s4":
-      "若提示的是「<strong>已损坏，无法打开</strong>」（未签名 App 的常见报错，此时「仍要打开」常常不出现、右键打开也无效）：<strong>打开 dmg 里随附的「解除隔离 Remove Quarantine.command」</strong>，自动移除隔离并启动（v0.7.1 起附带；脚本自身也带隔离标记 —— macOS 14 及以前右键 → 打开，macOS 15 起双击被拦后到「隐私与安全性」点「仍要打开」）。或在终端手动执行：",
+      "若提示的是「<strong>已损坏，无法打开</strong>」（未签名 App 的常见报错，此时「仍要打开」常常不出现、右键打开也无效）：<strong>打开 dmg 里随附的「Remove-Quarantine.command」</strong>，自动移除隔离并启动（v0.7.1 起附带；脚本自身也带隔离标记 —— macOS 14 及以前右键 → 打开，macOS 15 起 Apple 移除了该旁路，双击被拦后到「隐私与安全性」点「仍要打开」）。或在终端手动执行 —— 最可靠，也不受 macOS 版本影响：",
     "install.copy": "复制",
     "install.copyAria": "复制命令",
     "showcase.screenshotAlt": "Portreaper 主界面截图",
@@ -139,9 +145,15 @@ window.I18N = {
     "feat.sweep.title": "One-tap sweep",
     "feat.sweep.body":
       "Batch-terminate every Confirmed + Likely zombie and free their ports in one go. Starred whitelist entries are always exempt and never killed by mistake.",
+    "feat.verify.title": "Verified termination",
+    "feat.verify.body":
+      "A successful <code>kill</code> only means the signal was delivered. Portreaper keeps re-checking whether the target actually disappeared (up to ~2.5s) and tells you honestly when it didn't, with force-kill right there — instead of painting a green checkmark. macOS adds one more layer: a process suspended with Ctrl-Z never <em>processes</em> a graceful signal — it just sits in the pending set while <code>kill</code> reports success — so it is flagged “stopped” and woken up right after the signal is sent.",
     "feat.cross.title": "Cross-platform",
     "feat.cross.body":
       "Lives in the macOS menu bar and the Windows system tray; closing the window just hides it, never interrupting your flow. Bilingual UI, with the suspect count live in the tray (menu-bar title on macOS, tooltip on Windows).",
+    "feat.cli.title": "There's a CLI too",
+    "feat.cli.body":
+      'Every release also ships <code>portreaper-cli</code> (macOS arm64 / x64, Windows x64) — same detection engine and same starred whitelist as the desktop app: a ★ you add in the terminal is honored by the app\'s very next scan. Prints a readable table by default; <code>--json</code> for scripts. Grab it from the <a href="https://github.com/fanhefeng/portreaper/releases/latest" rel="noopener">Releases</a> page.',
 
     "install.title": "Install & first launch",
     "install.lead":
@@ -155,7 +167,7 @@ window.I18N = {
     "install.mac.s3":
       "Or in Applications, <strong>right-click → Open</strong> and confirm “Open” in the dialog (macOS 14 and earlier only — macOS 15 removed this bypass; use “Open Anyway” from the previous step instead).",
     "install.mac.s4":
-      "If it instead says the app is <strong>“damaged and can't be opened”</strong> (a common error for unsigned apps — “Open Anyway” and right-click → Open usually won't help here): <strong>open the bundled “解除隔离 Remove Quarantine.command” inside the dmg</strong> — it strips quarantine and launches the app (shipped since v0.7.1; the script is quarantined too — right-click → Open on macOS 14 and earlier, on macOS 15+ double-click, get blocked, then click “Open Anyway” in Privacy & Security). Or run this in Terminal manually:",
+      "If it instead says the app is <strong>“damaged and can't be opened”</strong> (a common error for unsigned apps — “Open Anyway” and right-click → Open usually won't help here): <strong>open the bundled “Remove-Quarantine.command” inside the dmg</strong> — it strips quarantine and launches the app (shipped since v0.7.1; the script is quarantined too — right-click → Open on macOS 14 and earlier, on macOS 15+ double-click, get blocked, then click “Open Anyway” in Privacy & Security). Or run this in Terminal manually — the most reliable route, and the only one unaffected by macOS version:",
     "install.copy": "Copy",
     "install.copyAria": "Copy command",
     "showcase.screenshotAlt": "Screenshot of the Portreaper main window",

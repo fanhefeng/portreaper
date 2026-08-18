@@ -48,12 +48,12 @@ Releases are **not code-signed yet**, so the OS will warn you. This is expected.
 
 Alternatives if that does not appear:
 
-- Right-click the app → **Open** → confirm in the dialog, or
-- Right-click the bundled **`解除隔离 Remove Quarantine.command`** in the dmg window → **Open** (shipped since v0.7.1) — strips quarantine and launches the app automatically (the script is quarantined too, hence right-click rather than double-click), or
-- Strip the quarantine flag from a terminal:
+- Strip the quarantine flag from a terminal — the most reliable route, and the only one unaffected by macOS version:
   ```bash
   xattr -dr com.apple.quarantine /Applications/Portreaper.app
   ```
+- Open the bundled **`Remove-Quarantine.command`** in the dmg window (shipped since v0.7.1) — it runs the command above for you and launches the app. The script carries the same quarantine flag, so it is blocked once: on **macOS 14 and earlier** right-click → **Open**; on **macOS 15+** double-click, then approve it under **System Settings → Privacy & Security**.
+- Right-click the app → **Open** → confirm in the dialog — **macOS 14 and earlier only**, Apple removed this bypass in macOS 15.
 
 > **If macOS says Portreaper "is damaged and can't be opened"** (instead of the developer-verification notice), "Open Anyway" and right-click → Open usually won't help — this is the unsigned-app variant, and the bundled `.command` helper or the `xattr` command above are the reliable fixes.
 
@@ -204,14 +204,14 @@ Portreaper **不是**通用的端口查看器。它常驻托盘，每隔两秒�
 
 如果上面那个按钮没出现，可改用：
 
-- 右键点击 App →「**打开**」→ 在弹窗里确认；或
-- 右键 dmg 窗口里随附的「**解除隔离 Remove Quarantine.command**」→「**打开**」（v0.7.1 起附带）—— 自动移除隔离并启动应用（脚本自身也带隔离标记，所以要右键而不是双击）；或
-- 在终端里去掉隔离属性：
+- 在终端里去掉隔离属性 —— 最可靠，也是唯一不受 macOS 版本影响的一条：
   ```bash
   xattr -dr com.apple.quarantine /Applications/Portreaper.app
   ```
+- 打开 dmg 窗口里随附的「**Remove-Quarantine.command**」（v0.7.1 起附带）—— 它替你执行上面那条命令并启动应用。脚本自身也带隔离标记，所以会被拦一次：**macOS 14 及以前**右键 →「**打开**」；**macOS 15 起** Apple 移除了这个旁路，双击被拦后到「**系统设置 → 隐私与安全性**」放行；或
+- 右键点击 App →「**打开**」→ 在弹窗里确认 —— **仅 macOS 14 及以前有效**，macOS 15 起 Apple 已移除该旁路。
 
-> **如果系统提示的是「已损坏，无法打开」**（而不是「无法验证开发者」），「仍要打开」和右键打开通常都没用 —— 这是未签名 App 的另一种报错，dmg 里随附的解除隔离脚本或上面的 `xattr` 命令才是可靠解法。
+> **如果系统提示的是「已损坏，无法打开」**（而不是「无法验证开发者」），「仍要打开」和右键打开通常都没用 —— 这是未签名 App 的另一种报错，dmg 里随附的 `Remove-Quarantine.command` 或上面的 `xattr` 命令才是可靠解法。
 
 **Windows（SmartScreen）。** 运行安装程序，在蓝色的「Windows 已保护你的电脑」界面点击「**更多信息 → 仍要运行**」。由于 Portreaper 会终止其他进程，部分杀毒 / EDR 软件可能将其标记为可疑 —— 若你信任来源，请放行。
 

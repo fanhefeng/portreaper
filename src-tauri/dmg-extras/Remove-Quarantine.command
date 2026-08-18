@@ -10,6 +10,14 @@
 # macOS 15 起：Apple 移除了右键旁路 —— 双击被拦后到 系统设置 → 隐私与安全性
 # 底部点「仍要打开」。这与 ad-hoc 签名 App 的「已损坏」不同，后者上述两条
 # 路都无效 —— 这正是需要本脚本的原因。
+#
+# 文件名必须保持纯 ASCII，不要「优化」成中文。.command 的打开方式常被第三方
+# 终端接管，而它们不一定处理得了非 ASCII 路径：v0.10.1 的文件名是
+# 「解除隔离 Remove Quarantine.command」，Ghostty 1.3.1 接手后传给 shell 的
+# 路径字节是坏的，用户只看到一句 `zsh: no such file or directory` 加一串乱码，
+# 完全无从判断发生了什么（Terminal.app 同一个文件正常）。对照实测：同目录下
+# ASCII 名、ASCII 名带空格均可执行，含中文即失败 —— 坏的是非 ASCII，不是空格。
+# 中文说明留在脚本输出和 README 里，不要放进文件名。
 set -u
 
 # 找不到 /Applications 时再探 ~/Applications（无管理员权限的用户装在这里）

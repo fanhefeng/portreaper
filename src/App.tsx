@@ -429,19 +429,38 @@ function App() {
     <div className="app">
       <header className="header">
         <div className="brand">
-          <svg
-            viewBox="0 0 24 24"
-            width="20"
-            height="20"
-            fill="none"
-            stroke="currentColor"
-            strokeWidth="1.6"
-            strokeLinecap="round"
-            strokeLinejoin="round"
-          >
-            <path d="M3 7l9 5 9-5" />
-            <path d="M3 7v10l9 5 9-5V7" />
-            <path d="M12 12v10" />
+          {/* 品牌标：与应用图标 / 官网同一套几何（src-tauri/icons/icon.svg、
+              website/assets/mark.svg）。这里是 20px 的简化版 —— 去掉了发光滤镜和
+              刃口高光，两者在这个尺寸上只会糊成一团。三处形状变了要一起改。 */}
+          {/* viewBox 收在图形边界上（0 0 1024 1024 里内容只占中间 ~64%）——
+              留白照搬过来，20px 上的环就只剩 7px，比它替换掉的线性图标还小 */}
+          <svg viewBox="184 184 656 656" width="20" height="20" aria-hidden="true">
+            <defs>
+              <linearGradient id="brand-blade" x1="0.1" y1="0" x2="0.9" y2="1">
+                <stop offset="0" stopColor="#43e6b8" />
+                <stop offset="1" stopColor="#089c72" />
+              </linearGradient>
+              <radialGradient id="brand-amber" cx="0.4" cy="0.35" r="0.9">
+                <stop offset="0" stopColor="#fcd34d" />
+                <stop offset="1" stopColor="#f59e0b" />
+              </radialGradient>
+            </defs>
+            <circle cx="512" cy="512" r="268" fill="none" stroke="#22322c" strokeWidth="56" />
+            <g transform="rotate(38 512 512)">
+              <rect x="486" y="420" width="52" height="470" rx="26" fill="#2c3a34" />
+            </g>
+            <path
+              d="M 780 512 A 268 268 0 1 1 512 244"
+              fill="none"
+              stroke="url(#brand-blade)"
+              strokeWidth="56"
+              strokeLinecap="round"
+            />
+            <path
+              d="M 512 244 A 268 268 0 0 1 742 372 C 700 310 630 262 548 250 Q 528 216 512 244 Z"
+              fill="url(#brand-blade)"
+            />
+            <circle cx="512" cy="512" r="62" fill="url(#brand-amber)" />
           </svg>
           <h1>Portreaper</h1>
         </div>

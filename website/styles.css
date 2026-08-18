@@ -152,6 +152,7 @@ a:hover {
   text-decoration: none;
 }
 .brand-mark {
+  display: block;
   filter: drop-shadow(0 0 8px var(--accent-glow));
 }
 .brand-name {
@@ -375,9 +376,9 @@ a:hover {
 }
 .hero__mark {
   position: relative;
-  width: 200px;
-  height: 200px;
-  color: var(--accent);
+  display: block;
+  width: 220px;
+  height: 220px;
   filter: drop-shadow(0 0 22px var(--accent-glow));
   animation: floaty 6s ease-in-out infinite;
 }
@@ -467,6 +468,9 @@ a:hover {
   gap: 8px;
   color: var(--accent);
   font-weight: 700;
+}
+.mock-brand img {
+  display: block;
 }
 .mock-brand span {
   color: var(--text);
