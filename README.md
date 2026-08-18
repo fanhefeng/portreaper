@@ -52,10 +52,9 @@ Alternatives if that does not appear:
   ```bash
   xattr -dr com.apple.quarantine /Applications/Portreaper.app
   ```
-- Open the bundled **`Remove-Quarantine.command`** in the dmg window (shipped since v0.7.1) — it runs the command above for you and launches the app. The script carries the same quarantine flag, so it is blocked once: on **macOS 14 and earlier** right-click → **Open**; on **macOS 15+** double-click, then approve it under **System Settings → Privacy & Security**.
 - Right-click the app → **Open** → confirm in the dialog — **macOS 14 and earlier only**, Apple removed this bypass in macOS 15.
 
-> **If macOS says Portreaper "is damaged and can't be opened"** (instead of the developer-verification notice), "Open Anyway" and right-click → Open usually won't help — this is the unsigned-app variant, and the bundled `.command` helper or the `xattr` command above are the reliable fixes.
+> **If macOS says Portreaper "is damaged and can't be opened"** (instead of the developer-verification notice), that is the *unsigned-app* variant of the Gatekeeper block — the app is not actually corrupt. "Open Anyway" and right-click → Open do **not** help here; the `xattr` command above is the fix.
 
 **Windows (SmartScreen).** Run the installer; on the blue "Windows protected your PC" screen click **More info → Run anyway**. Because Portreaper terminates other processes, some antivirus / EDR products may flag it — allow it if you trust the source.
 
@@ -208,10 +207,9 @@ Portreaper **不是**通用的端口查看器。它常驻托盘，每隔两秒�
   ```bash
   xattr -dr com.apple.quarantine /Applications/Portreaper.app
   ```
-- 打开 dmg 窗口里随附的「**Remove-Quarantine.command**」（v0.7.1 起附带）—— 它替你执行上面那条命令并启动应用。脚本自身也带隔离标记，所以会被拦一次：**macOS 14 及以前**右键 →「**打开**」；**macOS 15 起** Apple 移除了这个旁路，双击被拦后到「**系统设置 → 隐私与安全性**」放行；或
 - 右键点击 App →「**打开**」→ 在弹窗里确认 —— **仅 macOS 14 及以前有效**，macOS 15 起 Apple 已移除该旁路。
 
-> **如果系统提示的是「已损坏，无法打开」**（而不是「无法验证开发者」），「仍要打开」和右键打开通常都没用 —— 这是未签名 App 的另一种报错，dmg 里随附的 `Remove-Quarantine.command` 或上面的 `xattr` 命令才是可靠解法。
+> **如果系统提示的是「已损坏，无法打开」**（而不是「无法验证开发者」），这是 Gatekeeper 针对**未签名 App** 的另一种报错，**App 本身并没有损坏**。此时「仍要打开」和右键打开都**没用**，只有上面那条 `xattr` 命令能解决。
 
 **Windows（SmartScreen）。** 运行安装程序，在蓝色的「Windows 已保护你的电脑」界面点击「**更多信息 → 仍要运行**」。由于 Portreaper 会终止其他进程，部分杀毒 / EDR 软件可能将其标记为可疑 —— 若你信任来源，请放行。
 

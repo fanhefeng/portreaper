@@ -74,7 +74,7 @@ window.I18N = {
     "install.mac.s3":
       "或者在「应用程序」里 <strong>右键 → 打开</strong>，在弹窗里再次确认「打开」（仅 macOS 14 及以前；macOS 15 起 Apple 已移除右键旁路，请用上一步的「仍要打开」）。",
     "install.mac.s4":
-      "若提示的是「<strong>已损坏，无法打开</strong>」（未签名 App 的常见报错，此时「仍要打开」常常不出现、右键打开也无效）：<strong>打开 dmg 里随附的「Remove-Quarantine.command」</strong>，自动移除隔离并启动（v0.7.1 起附带；脚本自身也带隔离标记 —— macOS 14 及以前右键 → 打开，macOS 15 起 Apple 移除了该旁路，双击被拦后到「隐私与安全性」点「仍要打开」）。或在终端手动执行 —— 最可靠，也不受 macOS 版本影响：",
+      "若提示的是「<strong>已损坏，无法打开</strong>」，这是 Gatekeeper 针对未签名 App 的另一种报错 —— <strong>App 本身并没有损坏</strong>。此时「仍要打开」常常不出现、右键打开也无效，唯一可靠的解法是在终端里去掉隔离属性（不受 macOS 版本影响）：",
     "install.copy": "复制",
     "install.copyAria": "复制命令",
     "showcase.screenshotAlt": "Portreaper 主界面截图",
@@ -167,7 +167,7 @@ window.I18N = {
     "install.mac.s3":
       "Or in Applications, <strong>right-click → Open</strong> and confirm “Open” in the dialog (macOS 14 and earlier only — macOS 15 removed this bypass; use “Open Anyway” from the previous step instead).",
     "install.mac.s4":
-      "If it instead says the app is <strong>“damaged and can't be opened”</strong> (a common error for unsigned apps — “Open Anyway” and right-click → Open usually won't help here): <strong>open the bundled “Remove-Quarantine.command” inside the dmg</strong> — it strips quarantine and launches the app (shipped since v0.7.1; the script is quarantined too — right-click → Open on macOS 14 and earlier, on macOS 15+ double-click, get blocked, then click “Open Anyway” in Privacy & Security). Or run this in Terminal manually — the most reliable route, and the only one unaffected by macOS version:",
+      "If it instead says the app is <strong>“damaged and can't be opened”</strong>, <strong>the app is not actually corrupt</strong> — that is the unsigned-app variant of the Gatekeeper block. “Open Anyway” often doesn't appear and right-click → Open won't help either; the only reliable fix is to strip the quarantine flag in Terminal (unaffected by macOS version):",
     "install.copy": "Copy",
     "install.copyAria": "Copy command",
     "showcase.screenshotAlt": "Screenshot of the Portreaper main window",

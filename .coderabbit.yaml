@@ -38,7 +38,6 @@ reviews:
     - "!pnpm-lock.yaml"
     - "!Cargo.lock"
     - "!src-tauri/icons/**"
-    - "!src-tauri/dmg-extras/**"
     - "!public/**"
 
   path_instructions:

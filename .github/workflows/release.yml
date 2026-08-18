@@ -235,41 +235,17 @@ jobs:
           # `args` is empty for Windows (no --target), so omit --target there.
           args: ${{ matrix.target && format('--target {0} --bundles {1}', matrix.target, matrix.bundles) || format('--bundles {0}', matrix.bundles) }}
 
-      # Inject the quarantine-removal helper into the dmg (macOS legs only).
-      # tauri-bundler has no "extra dmg content" option, so we post-process:
-      # convert to writable, drop in src-tauri/dmg-extras/*.command, convert
-      # back, and REPLACE the asset tauri-action already uploaded (--clobber).
-      # The publish job later re-uploads stable-named copies from the draft,
-      # so it automatically picks up the post-processed dmg. Rehearsed locally
-      # against the v0.7.0 dmg (identical hdiutil sequence) before landing.
-      - name: Inject quarantine helper into dmg
-        if: runner.os == 'macOS'
-        env:
-          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-          TAG: ${{ github.ref_name }}
-        run: |
-          set -euo pipefail
-          # Bundle path moved with the Cargo workspace root (repo root since the
-          # portreaper-core split), but tauri-action resolves the target dir via
-          # `cargo metadata` — which we cannot rehearse locally. Try the workspace
-          # location first and fall back to the pre-split one; if NEITHER exists
-          # the second `ls` fails and `set -e` aborts the leg loudly (we must never
-          # publish a release whose dmg was silently not post-processed).
-          dmg="$(ls target/${{ matrix.target }}/release/bundle/dmg/*.dmg 2>/dev/null \
-                 || ls src-tauri/target/${{ matrix.target }}/release/bundle/dmg/*.dmg)"
-          echo "Post-processing $dmg"
-          work="$(mktemp -d)"
-          hdiutil convert "$dmg" -format UDRW -o "$work/rw.dmg" -quiet
-          mkdir -p "$work/mnt"
-          hdiutil attach "$work/rw.dmg" -mountpoint "$work/mnt" -nobrowse -quiet
-          cp src-tauri/dmg-extras/*.command "$work/mnt/"
-          chmod +x "$work/mnt/"*.command
-          hdiutil detach "$work/mnt" -quiet
-          hdiutil convert "$work/rw.dmg" -format UDZO -imagekey zlib-level=9 -o "$work/final.dmg" -quiet
-          mv "$work/final.dmg" "$dmg"
-          # Replace the already-uploaded asset on the draft release
-          gh release upload "$TAG" "$dmg" --clobber
-          echo "Replaced $(basename "$dmg") on draft release $TAG"
+      # NOTE (removed in v0.10.3): the dmg used to be post-processed here to inject
+      # a `Remove-Quarantine.command` helper. Dropped because it could no longer
+      # work for the users it existed for. The helper carries the same quarantine
+      # flag as the app, so double-clicking it is SIGKILLed by Gatekeeper; Apple
+      # removed the right-click → Open bypass in macOS 15, leaving "approve it in
+      # System Settings → Privacy & Security" as the only way to run it — which is
+      # the exact same procedure as approving the app itself. It saved nobody a
+      # step and cost a confusing detour (observed on macOS 26.5: helper killed,
+      # user assumed it had run, app then reported "damaged"). Until the app is
+      # Developer ID signed + notarized, `xattr -dr com.apple.quarantine` is the
+      # documented route — see README / the website install section.
 
       # portreaper-cli — the engine's process boundary, consumed by the Raycast
       # extension (and any script). It ships as its OWN release asset rather than
