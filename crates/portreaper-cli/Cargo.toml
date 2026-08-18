@@ -4,7 +4,7 @@ name = "portreaper-cli"
 # ——用户会从 release 下载它、在 `--version` 里读到它、拿这个号来报 issue。若让它
 # 自成一套（最初是 0.1.0），用户报的版本对应不到任何一个 release。
 # 对照：crates/portreaper-core 不发布、用户看不见，故刻意不同步。
-version = "0.10.3"
+version = "0.11.0"
 description = "Portreaper 的命令行前端 —— 供 Raycast / 脚本 / CI 消费的 JSON 契约"
 authors = ["fhf"]
 license = "MIT"
