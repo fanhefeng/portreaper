@@ -79,6 +79,19 @@ test("带引号的 toolchain 值也能解析", () => {
   assert.deepEqual(values, ["1.96.0"]);
 });
 
+test("不带 toolchain 输入的安装步骤必须被拦下 —— 只扫 toolchain: 行看不见它", () => {
+  // 评审实测的反例：`uses: dtolnay/rust-toolchain@stable` 不带任何输入，旧口径
+  // （「每一条 toolchain 都要等于 toml 的 channel」）对它完全失明，守卫返回 0 错误。
+  // 危害当下被 rust-toolchain.toml 兜住（rustup 在仓库内覆盖 default），但那是运气。
+  const src = [
+    "      - uses: dtolnay/rust-toolchain@master",
+    "        with:",
+    "          toolchain: 1.96.0",
+    "      - uses: dtolnay/rust-toolchain@stable",
+  ].join("\n");
+  assert.throws(() => extractWorkflowToolchains(src, "样例"), /却只有 1 条/);
+});
+
 test("三处能从真实源码解析出同一个版本号", () => {
   const channel = extractToolchainChannel(real.tomlSrc);
   assert.match(channel, /^\d+\.\d+/);

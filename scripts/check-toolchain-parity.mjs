@@ -45,11 +45,19 @@ export function extractToolchainChannel(tomlSrc) {
  * 提取一个 workflow 文件里全部 `toolchain:` 输入的值（支持裸值与引号值，
  * 忽略整行注释与行尾注释）。空结果直接抛：dtolnay/rust-toolchain 步骤被
  * 移除或换写法时，守卫要喊出来而不是「没找到 = 没问题」。
+ *
+ * **按「安装步骤」计数，而不只是扫 `toolchain:` 行**（评审发现）：本守卫的口径是
+ * 「workflow 里每一条 toolchain 都等于 toml 的 channel」，而
+ * `uses: dtolnay/rust-toolchain@stable` 这种**不带 `toolchain:` 输入**的写法压根
+ * 不会出现在扫描结果里 —— 加一个这样的 job，守卫返回 0 个错误。实际危害目前被
+ * `rust-toolchain.toml` 兜住（rustup 在仓库内覆盖 default），但那是运气，不是守卫。
  */
 export function extractWorkflowToolchains(yamlSrc, label) {
   const values = [];
+  let installSteps = 0;
   for (const line of yamlSrc.split("\n")) {
     if (line.trim().startsWith("#")) continue;
+    if (/^\s*(-\s*)?uses:\s*["']?dtolnay\/rust-toolchain/.test(line)) installSteps += 1;
     const m = line.match(/^\s*toolchain:\s*["']?([^\s"'#]+)/);
     if (m) values.push(m[1]);
   }
@@ -57,6 +65,15 @@ export function extractWorkflowToolchains(yamlSrc, label) {
     throw new Error(
       `在 ${label} 里找不到任何 \`toolchain:\` 输入 —— ` +
         "安装步骤被改名/移除时，本守卫必须响亮失败而不是放行",
+    );
+  }
+  // 用 `>` 而非 `!==`：要抓的是「有安装步骤没写 toolchain」这一个方向。
+  // 反向（toolchain 行多于 uses 行）在片段输入下是常态，且本身无害。
+  if (installSteps > values.length) {
+    throw new Error(
+      `${label} 有 ${installSteps} 个 dtolnay/rust-toolchain 步骤，却只有 ` +
+        `${values.length} 条 \`toolchain:\` 输入 —— 不带该输入的步骤会静默用上 action ` +
+        "默认的工具链，而本守卫看不见它；请给每个安装步骤显式写上版本",
     );
   }
   return values;

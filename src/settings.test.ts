@@ -104,4 +104,85 @@ describe("外观", () => {
     vi.stubGlobal("matchMedia", fakeMatchMedia);
     expect(mod.resolveTheme("system")).toBe("light");
   });
+
+  it("system 档端到端：data-theme 落解析后的值，而原生侧仍收到 'system'", async () => {
+    // 两侧刻意不同值：CSS 需要一个具体主题，原生侧要的是「跟随 OS」（None）。
+    // 只测 resolveTheme 覆盖不到这条 —— 它是 applyAppearance 里的分工。
+    vi.stubGlobal(
+      "matchMedia",
+      (query: string) =>
+        ({
+          matches: query.includes("light"),
+          addEventListener: () => {},
+        }) as unknown as MediaQueryList,
+    );
+    localStorage.clear();
+    const { mod, invoke } = await freshSettings();
+    invoke.mockClear();
+    act(() => mod.updateSettings({ appearance: "system" }));
+    expect(document.documentElement.dataset.theme).toBe("light");
+    expect(invoke).toHaveBeenCalledWith("set_window_theme", { theme: "system" });
+  });
+
+  it("OS 主题变化时 system 档跟着走，dark/light 档不受影响", async () => {
+    // 模块级的 matchMedia change 监听（settings.ts 尾部）。注释说它兼任
+    // 「dark/light → system 切换的收尾校正」，是这套外观逻辑里唯一依赖异步事件
+    // 才能得到正确结果的地方 —— 此前完全没有覆盖（评审发现）。
+    const listeners: Array<() => void> = [];
+    let prefersLight = false;
+    vi.stubGlobal(
+      "matchMedia",
+      (query: string) =>
+        ({
+          get matches() {
+            return query.includes("light") ? prefersLight : !prefersLight;
+          },
+          addEventListener: (_: string, fn: () => void) => listeners.push(fn),
+        }) as unknown as MediaQueryList,
+    );
+    localStorage.clear();
+    const { mod } = await freshSettings();
+    expect(listeners.length).toBe(1);
+
+    act(() => mod.updateSettings({ appearance: "system" }));
+    expect(document.documentElement.dataset.theme).toBe("dark");
+
+    // OS 切到浅色 → 监听器把 data-theme 校正过来
+    prefersLight = true;
+    act(() => listeners.forEach((fn) => fn()));
+    expect(document.documentElement.dataset.theme).toBe("light");
+
+    // 固定档不该被 OS 变化带走
+    act(() => mod.updateSettings({ appearance: "dark" }));
+    prefersLight = false;
+    act(() => listeners.forEach((fn) => fn()));
+    expect(document.documentElement.dataset.theme).toBe("dark");
+  });
+});
+
+describe("降级路径", () => {
+  it("localStorage 写入抛异常时本次会话仍生效，不冒泡给调用方", async () => {
+    // 隐私模式 / 配额耗尽：setItem 会抛。设置是纯偏好，存不下来也不该中断操作。
+    localStorage.clear();
+    const { mod } = await freshSettings();
+    const setItem = vi.spyOn(Storage.prototype, "setItem").mockImplementation(() => {
+      throw new DOMException("QuotaExceededError");
+    });
+    try {
+      const { result } = renderHook(() => mod.useSettings());
+      expect(() => act(() => mod.updateSettings({ scanIntervalSecs: 10 }))).not.toThrow();
+      expect(result.current.scanIntervalSecs).toBe(10); // 内存里生效
+    } finally {
+      setItem.mockRestore();
+    }
+  });
+
+  it("matchMedia 不可用（老 webview）时 import 不抛，system 档退化为 dark", async () => {
+    vi.stubGlobal("matchMedia", () => {
+      throw new Error("not supported");
+    });
+    localStorage.setItem("portreaper.settings", JSON.stringify({ appearance: "system" }));
+    const { mod } = await freshSettings();
+    expect(mod.resolveTheme("system")).toBe("dark");
+  });
 });

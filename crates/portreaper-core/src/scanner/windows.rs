@@ -378,11 +378,19 @@ fn identify_app_with(
 
 /// `...\WindowsApps\Microsoft.WindowsTerminal_1.18.2_x64__8wekyb3d8bbwe\wt.exe`
 /// → "Microsoft.WindowsTerminal" 的尾段 → "WindowsTerminal"（尽力而为）。
+///
+/// 两条判据都是防「路径前缀里的用户名把包名段劫走」（评审发现）：
+/// - **从末尾找**：包目录恒是 exe 的近祖，而 MSIX 的另一半入口
+///   `%LOCALAPPDATA%\Microsoft\WindowsApps\` 的前缀里就含用户名段；
+/// - **必须含 `__`**：MSIX 包全名恒为 `Name_Version_Arch__PublisherHash`，
+///   这个双下划线是发布者哈希的分隔符。原判据放行「≥2 个下划线」，于是用户名
+///   `john_q_public` 先一步命中，标签显示成 `john`。
+///   认不出就返回 None，调用方退回 basename（`wt`）—— 那是诚实的降级。
 fn msix_friendly_name(exe_path: &str) -> Option<String> {
-    let segments: Vec<&str> = exe_path.split(['\\', '/']).collect();
-    let pkg = segments
-        .iter()
-        .find(|s| s.contains("__") || s.matches('_').count() >= 2)?;
+    let pkg = exe_path
+        .split(['\\', '/'])
+        .rev()
+        .find(|s| s.contains("__"))?;
     let name_part = pkg.split('_').next()?;
     let friendly = name_part.rsplit('.').next().unwrap_or(name_part);
     if friendly.is_empty() {
@@ -1058,6 +1066,22 @@ mod tests {
                 "C:\\Program Files\\WindowsApps\\Microsoft.WindowsTerminal_1.18.2_x64__8wekyb3d8bbwe\\wt.exe"
             ),
             Some("WindowsTerminal".to_string())
+        );
+
+        // 带下划线的用户名不得劫持包名段（评审发现）。MSIX 的另一半入口是
+        // %LOCALAPPDATA%\Microsoft\WindowsApps\，其前缀里就含用户名 ——
+        // 旧判据「≥2 个下划线」会让 `john_q_public` 先一步命中，标签变成 `john`。
+        assert_eq!(
+            msix_friendly_name(
+                "C:\\Users\\john_q_public\\AppData\\Local\\Microsoft\\WindowsApps\\Microsoft.WindowsTerminal_1.18_x64__8wekyb3d8bbwe\\wt.exe"
+            ),
+            Some("WindowsTerminal".to_string())
+        );
+
+        // 认不出就返回 None，由调用方退回 basename —— 诚实的降级，不猜
+        assert_eq!(
+            msix_friendly_name("C:\\Users\\john_q_public\\tools\\thing.exe"),
+            None
         );
     }
 

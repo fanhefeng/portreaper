@@ -172,6 +172,13 @@ jobs:
         if: runner.os == 'macOS'
         run: node scripts/check-model-parity.mjs
 
+      # pnpm-workspace.yaml 自己写着「catalog 两条 + exclude 十条必须一起改，
+      # 漏改的 exclude 条目会静默失效」。失效只在**别的架构**上炸（平台包各不相同），
+      # 本机全绿 —— 既然自认静默，就得有东西查它。
+      - name: Workspace pinned-version consistency check
+        if: runner.os == 'macOS'
+        run: node scripts/check-workspace-versions.mjs
+
       # tauri 的每个部件都是 Rust crate + npm 包一对，major.minor 不一致会让
       # `tauri build` 直接拒绝构建。本 job 与 pre-push 都不跑 tauri build（太慢），
       # 所以这类不一致能一路全绿合进 main，直到 push tag 后三条 release 构建腿

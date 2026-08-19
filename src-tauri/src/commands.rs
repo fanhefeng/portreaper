@@ -124,12 +124,19 @@ pub fn set_window_theme(app: tauri::AppHandle, theme: String) {
 }
 
 /// 前端平台感知（驱动平台分叉的文案与按钮布局），不引入额外 JS 插件。
+///
+/// 推导本身在引擎里（`portreaper_core::platform_name`，三个前端共用一份）；
+/// 这里只做**本前端的展示收窄**：把 `unknown` 折成 `windows`。理由是前端的
+/// `Os` 联合只有两个成员，而 Windows 那套语义在任何平台都安全 —— 单一
+/// Terminate 按钮，`force` 参数被引擎忽略，不会凭空给出一个不存在的
+/// 「温和/强制」区分。本项目只构建 macOS 与 Windows，这一支实际不可达，
+/// 写出来是为了让收窄成为一个显式决定，而不是第二份 cfg 判断（评审发现：
+/// 此处曾与 CLI 各写一份，且第三分支的取值还不一致）。
 #[tauri::command]
 pub fn get_platform() -> &'static str {
-    if cfg!(target_os = "macos") {
-        "macos"
-    } else {
-        "windows"
+    match portreaper_core::platform_name() {
+        "macos" => "macos",
+        _ => "windows",
     }
 }
 
@@ -209,28 +216,55 @@ pub fn set_tray_language(app: tauri::AppHandle, lang: String) -> Result<(), Stri
         // 毒化恢复同上：语言切换失败一次就永久切不动，比脏读糟得多
         *state.0.lock().unwrap_or_else(PoisonError::into_inner) = lang;
     }
+    // **尽力全部执行完再报错，不中途 `?` 短路**（评审发现）：`TrayLang` 上面已经
+    // 改成新语言了，此处任何一项 set_text 失败若直接返回，后面的菜单项就停在旧
+    // 语言 —— 用户看到一份中英混排的托盘菜单，而内部状态已是新语言，再切一次也
+    // 修不好（那时相等判断会认为「已经是这个语言了」）。收集错误、跑完全部项，
+    // 让下一次切换仍有机会把它们全部对齐。
+    let mut failures: Vec<String> = Vec::new();
+    let mut note = |r: Result<(), String>| {
+        if let Err(e) = r {
+            failures.push(e);
+        }
+    };
+
     if let Some(items) = app.try_state::<crate::TrayMenuItems>() {
         let (show, quit) = crate::tray_texts(lang);
-        items.show.set_text(show).map_err(|e| e.to_string())?;
-        items
-            .settings
-            .set_text(crate::settings_text(lang))
-            .map_err(|e| e.to_string())?;
-        items.dir.set_lang(lang)?;
-        items.quit.set_text(quit).map_err(|e| e.to_string())?;
+        note(items.show.set_text(show).map_err(|e| e.to_string()));
+        note(
+            items
+                .settings
+                .set_text(crate::settings_text(lang))
+                .map_err(|e| e.to_string()),
+        );
+        note(items.dir.set_lang(lang));
+        note(items.quit.set_text(quit).map_err(|e| e.to_string()));
     }
     // macOS 应用菜单的 ⌘Q 替代项 + 设置项 + 「打开目录」菜单（顶部应用菜单栏那份）同步语言
     #[cfg(target_os = "macos")]
     if let Some(items) = app.try_state::<crate::AppMenuItems>() {
-        items
-            .quit_to_tray
-            .set_text(crate::quit_to_tray_text(lang))
-            .map_err(|e| e.to_string())?;
-        items
-            .settings
-            .set_text(crate::settings_text(lang))
-            .map_err(|e| e.to_string())?;
-        items.dir.set_lang(lang)?;
+        note(
+            items
+                .quit_to_tray
+                .set_text(crate::quit_to_tray_text(lang))
+                .map_err(|e| e.to_string()),
+        );
+        note(
+            items
+                .settings
+                .set_text(crate::settings_text(lang))
+                .map_err(|e| e.to_string()),
+        );
+        note(items.dir.set_lang(lang));
     }
-    Ok(())
+
+    if failures.is_empty() {
+        Ok(())
+    } else {
+        Err(format!(
+            "{} menu item(s) failed to re-text: {}",
+            failures.len(),
+            failures.join("; ")
+        ))
+    }
 }

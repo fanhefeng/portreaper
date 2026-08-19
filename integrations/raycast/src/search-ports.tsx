@@ -301,7 +301,7 @@ export default function SearchPorts() {
                 "app. It downloads that engine from the project's GitHub release and verifies its",
                 "SHA-256 checksum before running it. This happens once.",
                 "",
-                "If the checksum does not match, the file is deleted and nothing is executed.",
+                "The checksum is verified in memory before anything is written to disk.",
               ].join("\n")}
             />
           }

@@ -8,17 +8,44 @@ import { fileURLToPath } from "node:url";
 
 import {
   checkTauriParity,
+  derivePairs,
   extractCrateVersion,
   extractNpmVersion,
   majorMinor,
-  TAURI_PAIRS,
 } from "./check-tauri-parity.mjs";
 
 const root = join(dirname(fileURLToPath(import.meta.url)), "..");
+const pkgJson = readFileSync(join(root, "package.json"), "utf8");
 const real = {
   cargoLock: readFileSync(join(root, "Cargo.lock"), "utf8"),
   pnpmLock: readFileSync(join(root, "pnpm-lock.yaml"), "utf8"),
+  pairs: derivePairs(pkgJson),
 };
+
+test("新增 npm 插件自动纳管 —— 手工表时代漏加一对不会被任何东西发现", () => {
+  // 评审指出的漏洞：加一对 @tauri-apps/plugin-dialog + tauri-plugin-dialog、
+  // 版本随便错开，旧的手工表照样返回 0 个错误。推导表让新插件自动进入比对面。
+  const pkg = JSON.parse(pkgJson);
+  pkg.dependencies["@tauri-apps/plugin-dialog"] = "^2.0.0";
+  const pairs = derivePairs(JSON.stringify(pkg));
+  assert.ok(
+    pairs.some((p) => p.crate === "tauri-plugin-dialog" && p.npm === "@tauri-apps/plugin-dialog"),
+    `新插件未被推导进配对表：${JSON.stringify(pairs)}`,
+  );
+});
+
+test("认不出的 @tauri-apps 包响亮失败 —— 不静默跳过一个可能有 Rust 侧的包", () => {
+  const pkg = JSON.parse(pkgJson);
+  pkg.dependencies["@tauri-apps/something-new"] = "^1.0.0";
+  assert.throws(() => derivePairs(JSON.stringify(pkg)), /认不出的 @tauri-apps 包/);
+});
+
+test("纯 Rust 侧的插件不进表 —— 它们没有可漂移的两侧", () => {
+  const pairs = derivePairs(pkgJson);
+  for (const crate of ["tauri-plugin-updater", "tauri-plugin-window-state"]) {
+    assert.ok(!pairs.some((p) => p.crate === crate), `${crate} 不该进配对表`);
+  }
+});
 
 test("真实源码当前必须通过校验", () => {
   assert.deepEqual(checkTauriParity(real), []);
@@ -90,5 +117,5 @@ test("majorMinor 解析不出版本时抛错，不返回 undefined", () => {
 });
 
 test("配对表不含 @tauri-apps/cli —— 它是构建工具，没有对应 crate", () => {
-  assert.ok(!TAURI_PAIRS.some((p) => p.npm === "@tauri-apps/cli"));
+  assert.ok(!derivePairs(pkgJson).some((p) => p.npm === "@tauri-apps/cli"));
 });

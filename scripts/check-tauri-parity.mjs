@@ -19,8 +19,9 @@
 // 事，必须由守卫兜住。
 //
 // 口径：只比 major.minor（patch 允许漂移，tauri 自己的检查也只看到 minor）。
-// 配对表写死在下面 —— 新增 tauri 插件时**必须**在这里加一行；漏加不会被
-// 自动发现，但加错（写了一个不存在的包）会响亮失败。
+// 配对表**从 package.json 推导**，不再手工维护（评审发现：手工表的头注自己承认
+// 「漏加不会被自动发现」，而这个守卫存在的唯一理由就是没有别的东西能发现它 ——
+// 一张会漏的表守着一个只有它能守的不变量，等于没守）。
 //
 // 用法：node scripts/check-tauri-parity.mjs   （exit 1 = 不一致）
 // 自测：node --test scripts/*.test.mjs
@@ -30,16 +31,53 @@ import { dirname, join } from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
 
 /**
- * Rust crate ↔ npm 包的配对表。
- *
- * `@tauri-apps/cli` 刻意**不在**表内：它是构建工具，没有对应的 Rust crate，
- * tauri 自己的检查也不管它。`tauri-build` 同理（纯 Rust 侧）。
+ * 不参与配对的 npm 包 —— 构建工具，没有对应的 Rust crate，tauri 自己的检查也不管。
+ * （`tauri-build` 同理，但它只在 Rust 侧，本来就进不了这份从 npm 推导的表。）
  */
-export const TAURI_PAIRS = [
-  { crate: "tauri", npm: "@tauri-apps/api" },
-  { crate: "tauri-plugin-log", npm: "@tauri-apps/plugin-log" },
-  { crate: "tauri-plugin-opener", npm: "@tauri-apps/plugin-opener" },
-];
+const NPM_ONLY = new Set(["@tauri-apps/cli"]);
+
+/**
+ * 从 `package.json` 推导 Rust crate ↔ npm 包的配对表。
+ *
+ * 映射规则就两条：`@tauri-apps/api` → `tauri`，`@tauri-apps/plugin-X` →
+ * `tauri-plugin-X`。**纯 Rust 侧的插件天然不在表内**（updater / window-state /
+ * single-instance 在 npm 侧根本没有条目），这正是想要的 —— 它们没有可漂移的两侧。
+ *
+ * 推导取代手工表的理由：手工表漏加一对不会被任何东西发现，而这个守卫守的偏偏是
+ * 「除了 `tauri build` 没人看得见」的那类不一致（评审发现）。今天加一对
+ * `@tauri-apps/plugin-dialog` + `tauri-plugin-dialog` 并把版本错开，旧表照样绿。
+ */
+export function derivePairs(pkgJsonSrc) {
+  const pkg = JSON.parse(pkgJsonSrc);
+  const names = new Set([
+    ...Object.keys(pkg.dependencies ?? {}),
+    ...Object.keys(pkg.devDependencies ?? {}),
+  ]);
+  const pairs = [];
+  for (const npm of [...names].sort()) {
+    if (!npm.startsWith("@tauri-apps/") || NPM_ONLY.has(npm)) continue;
+    if (npm === "@tauri-apps/api") {
+      pairs.push({ crate: "tauri", npm });
+      continue;
+    }
+    const plugin = npm.match(/^@tauri-apps\/plugin-(.+)$/);
+    if (plugin) {
+      pairs.push({ crate: `tauri-plugin-${plugin[1]}`, npm });
+      continue;
+    }
+    throw new Error(
+      `认不出的 @tauri-apps 包 "${npm}" —— 它要么该进 NPM_ONLY（构建工具），` +
+        "要么需要在这里补一条映射规则；守卫拒绝静默跳过",
+    );
+  }
+  if (pairs.length === 0) {
+    throw new Error(
+      "从 package.json 推导不出任何 tauri 配对 —— 依赖被挪走或字段改名时，" +
+        "本守卫必须响亮失败而不是「没找到 = 没问题」",
+    );
+  }
+  return pairs;
+}
 
 /** "2.11.5" → "2.11"。取不出 major.minor 就抛，绝不返回 undefined 让两侧同为
  *  undefined 地「相等」通过（同 check-toolchain-parity 的取舍）。 */
@@ -99,7 +137,7 @@ export function extractNpmVersion(lockSrc, pkg) {
 }
 
 /** 核心校验（纯函数，可测）：返回错误信息数组（空 = 通过）。 */
-export function checkTauriParity({ cargoLock, pnpmLock, pairs = TAURI_PAIRS }) {
+export function checkTauriParity({ cargoLock, pnpmLock, pairs }) {
   const errors = [];
   for (const { crate, npm } of pairs) {
     const crateVersion = extractCrateVersion(cargoLock, crate);
@@ -121,14 +159,16 @@ export function checkTauriParity({ cargoLock, pnpmLock, pairs = TAURI_PAIRS }) {
 // realpath 双侧归一：symlink 调用下裸比较不相等 → 守卫静默 exit 0，比没有守卫更糟。
 if (process.argv[1] && pathToFileURL(realpathSync(process.argv[1])).href === import.meta.url) {
   const root = join(dirname(fileURLToPath(import.meta.url)), "..");
+  const pairs = derivePairs(readFileSync(join(root, "package.json"), "utf8"));
   const errors = checkTauriParity({
     cargoLock: readFileSync(join(root, "Cargo.lock"), "utf8"),
     pnpmLock: readFileSync(join(root, "pnpm-lock.yaml"), "utf8"),
+    pairs,
   });
   if (errors.length > 0) {
     for (const e of errors) console.error(`✗ ${e}`);
     console.error(`\ntauri parity check FAILED (${errors.length}).`);
     process.exit(1);
   }
-  console.log("✓ tauri parity OK — Rust crate 与 npm 包的 major.minor 逐对一致");
+  console.log(`✓ tauri parity OK — ${pairs.length} 对 Rust crate / npm 包的 major.minor 逐对一致`);
 }

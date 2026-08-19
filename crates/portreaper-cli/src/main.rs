@@ -26,7 +26,7 @@
 use std::io::Write;
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
-use portreaper_core::{scan_once, CpuSampling, ProcessEntry, Whitelist};
+use portreaper_core::{platform_name, scan_once, CpuSampling, ProcessEntry, Whitelist};
 use serde::Serialize;
 
 /// JSON 输出的契约版本。**破坏性变更**（删字段、改字段语义）才递增；
@@ -374,16 +374,6 @@ fn now_unix() -> u64 {
         .duration_since(UNIX_EPOCH)
         .map(|d| d.as_secs())
         .unwrap_or(0)
-}
-
-fn platform_name() -> &'static str {
-    if cfg!(target_os = "macos") {
-        "macos"
-    } else if cfg!(windows) {
-        "windows"
-    } else {
-        "unknown"
-    }
 }
 
 #[cfg(test)]

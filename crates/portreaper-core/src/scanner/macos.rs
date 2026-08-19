@@ -468,6 +468,12 @@ impl PlatformState {
         // ESTABLISHED 才是真正的「无人认领」。**只对命令行呈现为自动化实例的 PID**
         // 再查一次 lsof —— 日常这个集合为空 ⇒ 零额外开销；刻意不放宽上面那次
         // `-sTCP:LISTEN` 过滤：那会把全机所有 TCP 连接拉进本项目最贵的一次调用。
+        // 这里对全进程表跑一遍 is_automation_instance，随后 scan_from 的孤儿循环
+        // 会经 identify_app 的阶梯 0b 再跑一遍同一个谓词 —— 确实是重复计算，但
+        // **实测不值得为它重构**（评审提出，已量化）：把这段额外重复 10 遍，release
+        // 构建的整轮扫描从 0.16s 只升到 0.17s，即单次约 1ms、占 0.6%。把 AppIdentity
+        // 缓存穿进采集层要动的是本项目最热也最密集注释的那段代码，换 1ms 不划算。
+        // 真要动它之前，请先重测 —— 进程数或谓词复杂度变了，结论才可能变。
         let automation_csv = procs
             .iter()
             .filter(|(_, m)| super::identify::is_automation_instance(&m.full_command))

@@ -15,6 +15,25 @@ use std::fmt;
 
 use serde::Serialize;
 
+/// 当前构建目标的平台名 —— 三个前端共用的**唯一**推导。
+///
+/// 曾在 `portreaper-cli` 与 `src-tauri/commands.rs` 各写一份 cfg 判断，且第三分支
+/// 还不一致（CLI 给 `unknown`，GUI 给 `windows`）——两者最终喂给同一族消费者
+/// （`ScanReport.platform` 与前端的 `Os`），这种分叉迟早会变成「同一台机器两个前端
+/// 说法不同」（评审发现）。
+///
+/// 本函数陈述事实，`unknown` 是诚实的第三档；要不要把它收窄成某个具体平台，
+/// 是各前端自己的展示策略（GUI 侧的取舍写在 `get_platform` 上）。
+pub fn platform_name() -> &'static str {
+    if cfg!(target_os = "macos") {
+        "macos"
+    } else if cfg!(windows) {
+        "windows"
+    } else {
+        "unknown"
+    }
+}
+
 /// 创建时间容差（秒）：macOS 两侧都由 `now - etime` 推导，存在 ±1~2s 抖动；
 /// 被复用的 PID 创建时间必然晚于扫描时刻，远超此容差。
 const START_TOLERANCE_SECS: u64 = 5;
