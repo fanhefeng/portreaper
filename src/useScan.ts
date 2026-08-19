@@ -2,8 +2,9 @@ import { useCallback, useEffect, useRef, useState } from "react";
 import { invoke } from "@tauri-apps/api/core";
 import { SCAN_TIMEOUT_MS, sweepableEntries, withTimeout, type ProcessEntry } from "./model";
 
-/** 轮询间隔 —— 产品口径「每 2 秒自动扫描」（footer 文案与 CLAUDE.md 同）。 */
-const POLL_INTERVAL_MS = 2000;
+/** 缺省轮询间隔 —— 产品口径「每 2 秒自动扫描」（settings 的默认档、footer 文案
+ *  与 CLAUDE.md 同）。实际间隔由设置注入（App 传 settings.scanIntervalSecs）。 */
+const DEFAULT_POLL_INTERVAL_MS = 2000;
 
 /**
  * 扫描轮询 hook：entries / scanError 状态 + 2s 轮询 + 托盘计数推送。
@@ -15,7 +16,7 @@ const POLL_INTERVAL_MS = 2000;
  * actionError（kill / 清扫 / 收藏）属于操作流程，留在 App —— 两路的展示优先级
  * 与「点击关闭」也由 App 决定，本 hook 只负责扫描一路。
  */
-export function useScan() {
+export function useScan(pollIntervalMs: number = DEFAULT_POLL_INTERVAL_MS) {
   const [entries, setEntries] = useState<ProcessEntry[]>([]);
   const [scanError, setScanError] = useState<string | null>(null);
   // 「还没扫过」与「扫过了，是空的」必须分得开：entries 初值是 []，不区分的话
@@ -77,11 +78,12 @@ export function useScan() {
     return refresh();
   }, [refresh]);
 
+  // 间隔变化会重跑本 effect：立即按新节奏重扫一次，不等旧周期走完。
   useEffect(() => {
     refresh();
-    const id = setInterval(refresh, POLL_INTERVAL_MS);
+    const id = setInterval(refresh, pollIntervalMs);
     return () => clearInterval(id);
-  }, [refresh]);
+  }, [refresh, pollIntervalMs]);
 
   /** 错误横幅「点击关闭」用：清掉扫描错误（操作错误由 App 自己清）。 */
   const clearScanError = useCallback(() => setScanError(null), []);

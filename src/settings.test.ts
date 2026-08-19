@@ -1,0 +1,107 @@
+// settings 模块单测：localStorage 持久化、逐字段校验回退、订阅通知、
+// 外观应用（data-theme + set_window_theme 同步）。
+// 模块有 import 时副作用（load + applyAppearance），需要干净初始状态的用例
+// 走 vi.resetModules + 动态 import —— mock 工厂随之重建，invoke 实例要一并重取。
+import { describe, it, expect, vi, afterEach } from "vite-plus/test";
+import { act, renderHook } from "@testing-library/react";
+
+vi.mock("@tauri-apps/api/core", () => ({
+  invoke: vi.fn(() => Promise.resolve(undefined)),
+}));
+
+type SettingsModule = typeof import("./settings");
+
+/** 重置模块注册表后按当前 localStorage 重新求值 settings 模块，
+ *  连同它实际引用的那份 invoke mock 一起返回。 */
+async function freshSettings() {
+  vi.resetModules();
+  const core = await import("@tauri-apps/api/core");
+  const mod: SettingsModule = await import("./settings");
+  return { mod, invoke: vi.mocked(core.invoke) };
+}
+
+afterEach(() => {
+  localStorage.clear();
+  vi.unstubAllGlobals();
+});
+
+describe("settings 持久化", () => {
+  it("未存储时给缺省值；appearance 缺省 dark（升级用户不换肤）", async () => {
+    localStorage.clear();
+    const { mod } = await freshSettings();
+    const { result } = renderHook(() => mod.useSettings());
+    expect(result.current.scanIntervalSecs).toBe(2);
+    expect(result.current.autoCheckUpdates).toBe(true);
+    expect(result.current.appearance).toBe("dark");
+    // import 时即应用外观：首帧就有 data-theme，不等 React 挂载
+    expect(document.documentElement.dataset.theme).toBe("dark");
+  });
+
+  it("逐字段校验：单个字段损坏只丢那一个，不整体回默认", async () => {
+    localStorage.setItem(
+      "portreaper.settings",
+      // scanIntervalSecs 7 不在档位表、autoCheckUpdates 是字符串 —— 都该回退
+      JSON.stringify({ scanIntervalSecs: 7, autoCheckUpdates: "yes", appearance: "light" }),
+    );
+    const { mod } = await freshSettings();
+    const { result } = renderHook(() => mod.useSettings());
+    expect(result.current.scanIntervalSecs).toBe(2);
+    expect(result.current.autoCheckUpdates).toBe(true);
+    expect(result.current.appearance).toBe("light");
+  });
+
+  it("存储不是 JSON 时整体回默认（不抛）", async () => {
+    localStorage.setItem("portreaper.settings", "not-json{");
+    const { mod } = await freshSettings();
+    const { result } = renderHook(() => mod.useSettings());
+    expect(result.current.scanIntervalSecs).toBe(2);
+  });
+
+  it("updateSettings 落盘并通知订阅者", async () => {
+    localStorage.clear();
+    const { mod } = await freshSettings();
+    const { result } = renderHook(() => mod.useSettings());
+    act(() => mod.updateSettings({ scanIntervalSecs: 5, autoCheckUpdates: false }));
+    expect(result.current.scanIntervalSecs).toBe(5);
+    expect(result.current.autoCheckUpdates).toBe(false);
+    const stored = JSON.parse(localStorage.getItem("portreaper.settings") ?? "{}") as Record<
+      string,
+      unknown
+    >;
+    expect(stored.scanIntervalSecs).toBe(5);
+    expect(stored.autoCheckUpdates).toBe(false);
+  });
+});
+
+describe("外观", () => {
+  it("切换 appearance 写 <html data-theme> 并同步原生主题（set_window_theme）", async () => {
+    localStorage.clear();
+    const { mod, invoke } = await freshSettings();
+    invoke.mockClear(); // 丢掉 import 时那次初始应用
+    act(() => mod.updateSettings({ appearance: "light" }));
+    expect(document.documentElement.dataset.theme).toBe("light");
+    expect(invoke).toHaveBeenCalledWith("set_window_theme", { theme: "light" });
+  });
+
+  it("非外观字段的变更不触发原生主题同步", async () => {
+    localStorage.clear();
+    const { mod, invoke } = await freshSettings();
+    invoke.mockClear();
+    act(() => mod.updateSettings({ scanIntervalSecs: 3 }));
+    expect(invoke).not.toHaveBeenCalledWith("set_window_theme", expect.anything());
+  });
+
+  it("resolveTheme：dark/light 直通，system 读 prefers-color-scheme", async () => {
+    const { mod } = await freshSettings();
+    expect(mod.resolveTheme("dark")).toBe("dark");
+    expect(mod.resolveTheme("light")).toBe("light");
+
+    const fakeMatchMedia = (query: string) =>
+      ({
+        matches: query.includes("light"),
+        addEventListener: () => {},
+      }) as unknown as MediaQueryList;
+    vi.stubGlobal("matchMedia", fakeMatchMedia);
+    expect(mod.resolveTheme("system")).toBe("light");
+  });
+});

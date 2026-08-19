@@ -50,7 +50,21 @@ function extractEnumVariants(source, enumName) {
   for (const rawLine of block.split("\n")) {
     const line = rawLine.trim();
     if (line === "" || line.startsWith("//")) continue; // 空行 / 注释（含 ///）
-    if (/^#\[[^\]]*\]$/.test(line)) continue; // 单行属性
+    if (/^#\[[^\]]*\]$/.test(line)) {
+      // 属性整体跳过，但 `rename` 必须响亮失败：本守卫按变体名推导 snake_case
+      // wire 键，`#[serde(rename = "k8s_managed")]` 会让推导出的 `kubernetes_managed`
+      // 与引擎实际发出的键分道扬镳 —— i18n 补齐了推导出的那个键，守卫照样全绿，
+      // 而 UI 渲染的是裸键。与 check-model-parity 的 enum 解析同一口径（评审发现：
+      // 同一个仓库两个守卫对同一条 serde 语义两种态度）。
+      // `rename = "x"` 与 `rename(serialize = "x")` 都会改名，一律拒绝
+      if (/\brename\b/.test(line)) {
+        throw new Error(
+          `enum ${enumName}: 变体带 ${line} —— 本守卫按变体名推导 snake_case wire 键，` +
+            "不实现任何 rename 形态；请先在这里实现该语义再加那条属性",
+        );
+      }
+      continue;
+    }
     if (/^pub enum [A-Za-z0-9_]+ \{$/.test(line)) continue; // 块首行
     const m = line.match(/^([A-Z][A-Za-z0-9]*)\s*,?\s*(?:\/\/.*)?$/);
     if (m) {

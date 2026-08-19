@@ -13,6 +13,10 @@ import { render, screen, fireEvent, act, cleanup } from "@testing-library/react"
 vi.mock("@tauri-apps/api/core", () => ({
   invoke: vi.fn(() => Promise.resolve(undefined)),
 }));
+vi.mock("@tauri-apps/api/event", () => ({
+  // 托盘/⌘, 的 open-settings 事件监听：测试里不派发，给一个可解卸的空监听即可
+  listen: vi.fn(() => Promise.resolve(() => {})),
+}));
 vi.mock("@tauri-apps/plugin-opener", () => ({
   openUrl: vi.fn(() => Promise.resolve()),
 }));
@@ -20,6 +24,7 @@ vi.mock("@tauri-apps/plugin-opener", () => ({
 import { invoke } from "@tauri-apps/api/core";
 import { ACTION_TIMEOUT_MS, SCAN_TIMEOUT_MS } from "./model";
 import { setLang } from "./i18n";
+import { updateSettings } from "./settings";
 import { makeEntry } from "./test-fixtures";
 import App from "./App";
 
@@ -59,6 +64,9 @@ afterEach(() => {
   vi.useRealTimers();
   mockInvoke.mockReset();
   mockInvoke.mockImplementation(() => Promise.resolve(undefined));
+  // settings 与 i18n 一样是模块级状态，localStorage.clear() 清不掉它 ——
+  // 改过扫描间隔的用例会让后续用例的 2s 轮询节奏假设失效，必须显式复位。
+  updateSettings({ scanIntervalSecs: 2, autoCheckUpdates: true, appearance: "dark" });
   localStorage.clear();
 });
 
@@ -677,5 +685,46 @@ describe("platform variance", () => {
     expect(screen.getAllByText("Terminate").length).toBe(1);
     expect(screen.queryByText("Kill")).toBeNull();
     expect(screen.queryByText("Force")).toBeNull();
+  });
+});
+
+describe("settings modal", () => {
+  it("footer 设置按钮打开弹窗，Esc 关闭", async () => {
+    route({ get_platform: () => "macos", scan_ports: () => [] });
+    render(<App />);
+    await advance(0);
+
+    fireEvent.click(screen.getByText("Settings"));
+    expect(screen.getByText("Scan interval")).toBeTruthy();
+
+    fireEvent.keyDown(window, { key: "Escape" });
+    expect(screen.queryByText("Scan interval")).toBeNull();
+  });
+
+  it("改扫描间隔即时生效：footer 文案跟随 + 轮询节奏切换", async () => {
+    let scans = 0;
+    route({
+      get_platform: () => "macos",
+      scan_ports: () => {
+        scans += 1;
+        return [];
+      },
+    });
+    render(<App />);
+    await advance(0);
+    expect(scans).toBe(1);
+
+    fireEvent.click(screen.getByText("Settings"));
+    fireEvent.click(screen.getByText("10s"));
+    expect(screen.getByText(/rescans every 10s/)).toBeTruthy();
+
+    // 间隔变更会立即按新节奏重扫一次（useScan 的 effect 重跑）
+    await advance(0);
+    expect(scans).toBe(2);
+    // 旧的 2s 节奏必须已停：2s 后不触发，满 10s 才触发
+    await advance(2100);
+    expect(scans).toBe(2);
+    await advance(8000);
+    expect(scans).toBe(3);
   });
 });

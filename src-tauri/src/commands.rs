@@ -19,7 +19,15 @@ pub struct ScannerState(pub Mutex<Scanner>);
 #[tauri::command]
 pub async fn scan_ports(app: AppHandle) -> Result<Vec<ProcessEntry>, String> {
     tauri::async_runtime::spawn_blocking(move || {
-        let state = app.state::<ScannerState>();
+        // try_state 而非 state（评审发现）：`Manager::state` 在类型尚未 manage 时
+        // 直接 panic，而窗口在 `Builder::build()` 时就已创建并开始加载 —— webview
+        // 抢在 setup 跑到 `app.manage(ScannerState(..))` 之前发出首个 scan_ports 是
+        // 有窗口的。那一下 panic 会经 JoinError 变成一条不可行动的 "scan task failed"，
+        // 外加一份 backtrace 写进 bootstrap 日志。概率低，但换成可重试的错误零成本，
+        // 且同文件的 update_tray_title / set_tray_language 本来就是这么写的。
+        let Some(state) = app.try_state::<ScannerState>() else {
+            return Err("ERR_SCAN_BUSY: scanner not ready yet".to_string());
+        };
         // try_lock 而非 lock（评审发现）：前端 10s 超时后仍每 2s 轮询，若某轮
         // scan 里 lsof 永久挂死（网络挂载卷等），排队 lock 会让阻塞池线程每
         // ~10s 新增一个、直至 tokio 阻塞池 512 上限耗尽 —— 那之后 kill_process
@@ -36,7 +44,9 @@ pub async fn scan_ports(app: AppHandle) -> Result<Vec<ProcessEntry>, String> {
             }
         };
         let wl = whitelist::get_all();
-        Ok(scanner.scan(&wl))
+        // 采集失败原样上抛：前端的四态空状态里有一条「扫描失败 + 重试」分支在等它，
+        // 而返回空表会被渲染成「这台机器很干净」（引擎侧注释详述）。
+        scanner.scan(&wl)
     })
     .await
     .map_err(|e| format!("scan task failed: {e}"))?
@@ -96,7 +106,21 @@ pub async fn kill_process(pid: u32, force: bool, start_unix: Option<u64>) -> Res
 /// 一个字都不用改。
 #[tauri::command]
 pub fn open_log_dir(app: tauri::AppHandle) {
-    crate::open_app_dir(&app, crate::paths::log_dir(&app));
+    crate::open_app_dir(&app, crate::paths::log_dir());
+}
+
+/// 外观设置（settings.ts appearance）落到原生窗口 chrome：标题栏等跟随
+/// webview 内容换肤，否则浅色内容配深色标题栏。CSS 换肤由前端 data-theme
+/// 自理，这里只同步原生层。"system" / 未知值 → None（跟随 OS）。
+/// 本 crate 自己的命令，不经 capabilities ACL（同 open_log_dir 的注释）。
+#[tauri::command]
+pub fn set_window_theme(app: tauri::AppHandle, theme: String) {
+    let theme = match theme.as_str() {
+        "dark" => Some(tauri::Theme::Dark),
+        "light" => Some(tauri::Theme::Light),
+        _ => None,
+    };
+    app.set_theme(theme);
 }
 
 /// 前端平台感知（驱动平台分叉的文案与按钮布局），不引入额外 JS 插件。
@@ -111,14 +135,24 @@ pub fn get_platform() -> &'static str {
 
 /// 持久化失败（磁盘满/权限/路径被占）会上抛给前端：星标回弹 + 错误横幅，
 /// 而不是内存假成功、重启后丢收藏（评审发现）。
+///
+/// async + spawn_blocking 的理由同 `scan_ports`（见本文件顶部）：每次点 ★ 都要
+/// 走 merge 读盘 → create_dir_all → write → rename 四次同步文件操作，还可能先阻塞
+/// 在与在飞扫描共享的白名单 Mutex 上。压在主线程时，配置目录落在网络卷或磁盘打嗝
+/// 就表现为「点一下星标，整个窗口和托盘一起卡住」（评审发现：scan 早已挪走，
+/// 这两条一直留在原地）。
 #[tauri::command]
-pub fn add_whitelist(key: String) -> Result<(), String> {
-    whitelist::add(key)
+pub async fn add_whitelist(key: String) -> Result<(), String> {
+    tauri::async_runtime::spawn_blocking(move || whitelist::add(key))
+        .await
+        .map_err(|e| format!("whitelist task failed: {e}"))?
 }
 
 #[tauri::command]
-pub fn remove_whitelist(key: String) -> Result<(), String> {
-    whitelist::remove(&key)
+pub async fn remove_whitelist(key: String) -> Result<(), String> {
+    tauri::async_runtime::spawn_blocking(move || whitelist::remove(&key))
+        .await
+        .map_err(|e| format!("whitelist task failed: {e}"))?
 }
 
 /// 托盘计数展示：macOS 用菜单栏标题文本；Windows 通知区无标题，用 tooltip。
@@ -178,15 +212,23 @@ pub fn set_tray_language(app: tauri::AppHandle, lang: String) -> Result<(), Stri
     if let Some(items) = app.try_state::<crate::TrayMenuItems>() {
         let (show, quit) = crate::tray_texts(lang);
         items.show.set_text(show).map_err(|e| e.to_string())?;
+        items
+            .settings
+            .set_text(crate::settings_text(lang))
+            .map_err(|e| e.to_string())?;
         items.dir.set_lang(lang)?;
         items.quit.set_text(quit).map_err(|e| e.to_string())?;
     }
-    // macOS 应用菜单的 ⌘Q 替代项 + 「打开目录」菜单（顶部应用菜单栏那份）同步语言
+    // macOS 应用菜单的 ⌘Q 替代项 + 设置项 + 「打开目录」菜单（顶部应用菜单栏那份）同步语言
     #[cfg(target_os = "macos")]
     if let Some(items) = app.try_state::<crate::AppMenuItems>() {
         items
             .quit_to_tray
             .set_text(crate::quit_to_tray_text(lang))
+            .map_err(|e| e.to_string())?;
+        items
+            .settings
+            .set_text(crate::settings_text(lang))
             .map_err(|e| e.to_string())?;
         items.dir.set_lang(lang)?;
     }

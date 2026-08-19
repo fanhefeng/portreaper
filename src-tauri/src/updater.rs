@@ -16,7 +16,20 @@ use tauri_plugin_updater::UpdaterExt;
 
 /// 检查更新的网络超时。手动检查有 UI 等着它，挂死 30s 已是极限；
 /// 前端另有一层更宽的 withTimeout 兜底（invoke 永不 settle 的那类故障）。
+///
+/// **只作用于检查请求**：`UpdaterBuilder::timeout` 设的值不会传给 `check()` 产出的
+/// `Update`（插件在那里把 `timeout` 硬编码成 `None`），下载超时另见 `INSTALL_TIMEOUT`。
 const CHECK_TIMEOUT_SECS: u64 = 30;
+
+/// 下载 + 安装的后端超时。
+///
+/// **必须短于前端的 `INSTALL_TIMEOUT_MS`（10 分钟，src/updater.ts）**，因为只有
+/// 后端这一侧能把 `Update` 放回 `PendingUpdate`。若前端先超时：它把状态落到
+/// `installFailed`，而挂死的后端任务仍 `take` 着那份 update —— 用户点「重试」拿到
+/// `no pending update; run check_update first`，可 `useUpdater.check` 在
+/// `installFailed` 态又直接早退，那句提示指向一个 UI 不允许的动作，只能重启应用
+/// 才能再更新（评审发现）。给两侧留 2 分钟余量，后端总是先醒。
+const INSTALL_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(8 * 60);
 
 /// `check_update` 拿到的待装更新，供 `install_update` 消费。
 ///
@@ -138,8 +151,12 @@ pub async fn install_update(
     // 每累计 ≥256 KiB 才发一条（最后的 Installing 保证终态一定送达）。
     let mut downloaded: u64 = 0;
     let mut last_sent: u64 = 0;
-    let result = update
-        .download_and_install(
+    // 超时包在最外层：插件自己的 Update 没有超时（见 INSTALL_TIMEOUT 的注释），
+    // 一条连接不断、却不再有数据的 TCP 黑洞会让这个 await 永不返回。
+    // `download_and_install` 取 &self，故超时后 `update` 仍在本栈上，放得回去。
+    let result = tokio::time::timeout(
+        INSTALL_TIMEOUT,
+        update.download_and_install(
             |chunk_len, content_len| {
                 downloaded += chunk_len as u64;
                 if downloaded - last_sent >= 256 * 1024 {
@@ -153,19 +170,30 @@ pub async fn install_update(
             || {
                 let _ = on_progress.send(InstallProgress::Installing);
             },
-        )
-        .await;
+        ),
+    )
+    .await;
 
+    // 三种收尾，两种都要把那份 update 放回去 —— 唯一不放回的是装成功了。
     match result {
-        Ok(()) => {
+        Ok(Ok(())) => {
             log::info!("update install: {} installed", update.version);
             Ok(())
         }
-        Err(e) => {
+        Ok(Err(e)) => {
             log::warn!("update install failed: {e}");
             // 失败的那份放回去：网络闪断后用户点重试，不必重新 check
             *state.0.lock().unwrap_or_else(PoisonError::into_inner) = Some(update);
             Err(e.to_string())
+        }
+        Err(_elapsed) => {
+            log::warn!(
+                "update install timed out after {}s",
+                INSTALL_TIMEOUT.as_secs()
+            );
+            // 同样放回：超时最可能是网络卡住，重试完全合理，不该逼用户重启应用
+            *state.0.lock().unwrap_or_else(PoisonError::into_inner) = Some(update);
+            Err("update download timed out".to_string())
         }
     }
 }

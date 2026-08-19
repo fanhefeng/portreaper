@@ -1,9 +1,11 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { invoke } from "@tauri-apps/api/core";
+import { listen } from "@tauri-apps/api/event";
 import { openUrl } from "@tauri-apps/plugin-opener";
 import { useI18n } from "./i18n";
 import {
   ACTION_TIMEOUT_MS,
+  displayCommand,
   isSameProcess,
   killErrorCode,
   legacyWhitelistKey,
@@ -18,10 +20,12 @@ import {
   type Translator,
 } from "./model";
 import { useScan } from "./useScan";
+import { useSettings } from "./settings";
 import { useUpdater } from "./updater";
 import { Section } from "./components/Section";
 import { BatchConfirmModal } from "./components/BatchConfirmModal";
 import { KillConfirmModal, type KillConfirm } from "./components/KillConfirmModal";
+import { SettingsModal } from "./components/SettingsModal";
 import { UpdateModal } from "./components/UpdateModal";
 import "./App.css";
 
@@ -73,9 +77,15 @@ function App() {
   // Windows 单按钮），落定前不渲染，避免 Windows 上首帧闪现 SIGTERM 双按钮（评审发现）。
   // get_platform 失败时回退 macOS（保守：双按钮语义在 Windows 后端也安全 —— force 被忽略）。
   const [os, setOs] = useState<Os | null>(null);
+  // 设置（扫描间隔 / 自动检查更新 / 外观）：localStorage 存储 + 即时生效，
+  // 语言仍由 useI18n 一路管理（见 settings.ts 头注释）。
+  const settings = useSettings();
+  const [settingsOpen, setSettingsOpen] = useState(false);
   // 扫描轮询（entries / scanError / freshScan）整体在 useScan 里：并发语义
   //（inFlight 复用、freshScan 等在途）在那儿有直接单测。
-  const { entries, scanError, hasScanned, lastScanOk, clearScanError, freshScan } = useScan();
+  const { entries, scanError, hasScanned, lastScanOk, clearScanError, freshScan } = useScan(
+    settings.scanIntervalSecs * 1000,
+  );
   const [filter, setFilter] = useState<Filter>("all");
   const [search, setSearch] = useState("");
   // 错误分两路（评审发现）：扫描错误由下一次成功轮询自动清除（自愈语义，useScan 负责）；
@@ -104,7 +114,7 @@ function App() {
   const [sweeping, setSweeping] = useState(false);
   const [expandedPid, setExpandedPid] = useState<number | null>(null);
   // 应用内更新：状态机 + 弹窗开合都在 hook 里，footer 只渲染入口
-  const updater = useUpdater();
+  const updater = useUpdater(settings.autoCheckUpdates);
   // 弹窗关闭后焦点还给触发按钮（a11y：键盘用户不丢上下文）
   const modalTrigger = useRef<HTMLElement | null>(null);
 
@@ -112,6 +122,25 @@ function App() {
     invoke<Os>("get_platform")
       .then(setOs)
       .catch(() => setOs("macos"));
+  }, []);
+
+  // 托盘「设置…」与 macOS ⌘, 都经 Rust 侧 emit 这个事件打开设置弹窗
+  // （capabilities 的 core:default 已含 event:default，白名单零改动）。
+  // 非 Tauri 环境（单测的 happy-dom）里 listen 会 reject —— 静默吞掉，
+  // 与 i18n 的 set_tray_language 同一约定。
+  useEffect(() => {
+    let unlisten: (() => void) | null = null;
+    let disposed = false;
+    listen("open-settings", () => setSettingsOpen(true))
+      .then((un) => {
+        if (disposed) un();
+        else unlisten = un;
+      })
+      .catch(() => {});
+    return () => {
+      disposed = true;
+      unlisten?.();
+    };
   }, []);
 
   // 目标终于自己退了（或被别的方式清掉了）：横幅自动收起。没有这一条它会一直
@@ -137,14 +166,18 @@ function App() {
       else if (batchConfirm) setBatchConfirm(null);
       else if (updateModalOpen) {
         if (updateModalClosable) closeUpdateModal();
-      } else setExpandedPid(null);
+      } else if (settingsOpen) setSettingsOpen(false);
+      else setExpandedPid(null);
     };
     window.addEventListener("keydown", onKey);
     return () => window.removeEventListener("keydown", onKey);
-  }, [confirm, batchConfirm, updateModalOpen, updateModalClosable, closeUpdateModal]);
+  }, [confirm, batchConfirm, updateModalOpen, updateModalClosable, closeUpdateModal, settingsOpen]);
 
-  // 弹窗（确认 / 批量）全部关闭后，焦点还给打开它的按钮
-  const anyModalOpen = confirm !== null || batchConfirm !== null;
+  // 弹窗（确认 / 批量 / 设置）全部关闭后，焦点还给打开它的按钮
+  // 更新弹窗也算在内（评审发现：它曾是唯一不归还焦点的弹窗）—— 键盘用户 Tab 到
+  // footer 徽标、回车打开、按「稍后」关掉后，焦点会掉回 <body>，得从头 Tab 一遍。
+  const anyModalOpen =
+    confirm !== null || batchConfirm !== null || settingsOpen || updater.modalOpen;
   useEffect(() => {
     if (!anyModalOpen && modalTrigger.current) {
       modalTrigger.current.focus();
@@ -194,7 +227,7 @@ function App() {
         pid: e.pid,
         // 完整命令行（含脚本路径/参数）—— 毁灭性确认应让用户看清杀的到底是什么，
         // lsof 短名 "node" 不足以辨认（评审发现）；退回短名仅当完整命令为空
-        command: e.full_command || e.command,
+        command: displayCommand(e),
         ports: e.ports,
         app_label: e.app_label,
         force,
@@ -386,7 +419,7 @@ function App() {
                   ? anchor.app_label
                   : `${anchor.app_label} (+${survivors.length - 1})`,
               startUnix: anchor.start_unix,
-              command: anchor.full_command || anchor.command,
+              command: displayCommand(anchor),
               ports: anchor.ports,
             });
           }
@@ -688,8 +721,24 @@ function App() {
       </main>
 
       <footer className="footer">
-        <span>{t("footer.status", { procs: entries.length, ports: totalPortCount })}</span>
+        <span>
+          {t("footer.status", {
+            procs: entries.length,
+            ports: totalPortCount,
+            secs: settings.scanIntervalSecs,
+          })}
+        </span>
         <span className="footer-right">
+          {/* 设置入口与更新/版本同区：footer 是元信息 + 应用级操作的聚集地。 */}
+          <button
+            className="footer-btn"
+            onClick={() => {
+              rememberTrigger();
+              setSettingsOpen(true);
+            }}
+          >
+            {t("settings.open")}
+          </button>
           {/* 检查更新入口挨着版本号：这里是应用里唯一能「看见自己版本」的地方，
               「我是什么版本」与「有没有新版本」是同一个问题的两半。 */}
           {(() => {
@@ -697,7 +746,7 @@ function App() {
             switch (s.phase) {
               case "idle":
                 return (
-                  <button className="footer-update-btn" onClick={() => void updater.check(true)}>
+                  <button className="footer-btn" onClick={() => void updater.check(true)}>
                     {t("update.check")}
                   </button>
                 );
@@ -714,7 +763,13 @@ function App() {
                 );
               case "installed":
                 return (
-                  <button className="footer-update-badge" onClick={updater.openModal}>
+                  <button
+                    className="footer-update-badge"
+                    onClick={() => {
+                      rememberTrigger();
+                      updater.openModal();
+                    }}
+                  >
                     {t("update.restartBadge")}
                   </button>
                 );
@@ -722,7 +777,13 @@ function App() {
                 // available / downloading / installing / installFailed：
                 // 徽标常驻（弹窗被「稍后」收起后，这是唯一的重入口）
                 return (
-                  <button className="footer-update-badge" onClick={updater.openModal}>
+                  <button
+                    className="footer-update-badge"
+                    onClick={() => {
+                      rememberTrigger();
+                      updater.openModal();
+                    }}
+                  >
                     {t("update.badge", { version: s.info.version })}
                   </button>
                 );
@@ -765,6 +826,8 @@ function App() {
           onOpenReleasePage={updater.openReleasePage}
         />
       )}
+
+      {settingsOpen && <SettingsModal onClose={() => setSettingsOpen(false)} />}
     </div>
   );
 }

@@ -136,9 +136,13 @@ impl Scanner {
         self.state.warm_up();
     }
 
-    pub fn scan(&mut self, whitelist: &[String]) -> Vec<ProcessEntry> {
-        let collected = self.state.collect();
-        scan_from(collected, whitelist)
+    /// 采集失败时**返回错误而不是空表**（评审发现）：空表与「这台机器上确实没有
+    /// 监听端口」在类型上不可区分，前端会照着后者渲染 —— 宣布一切正常、托盘计数
+    /// 归零，而实际上这一轮什么都没看到。前端本来就备好了 scan-failed 空态与重试
+    /// 入口，缺的只是让它触发的信号。
+    pub fn scan(&mut self, whitelist: &[String]) -> Result<Vec<ProcessEntry>, String> {
+        let collected = self.state.collect()?;
+        Ok(scan_from(collected, whitelist))
     }
 }
 
@@ -152,11 +156,16 @@ impl Default for Scanner {
 ///
 /// 这是 CLI / 脚本的入口。常驻前端**不要**用它 —— 每次新建 Scanner 会丢掉
 /// Windows 的采样区间，CPU 列会永远是 0%。
-pub fn scan_once(whitelist: &[String], cpu: CpuSampling) -> Vec<ProcessEntry> {
+pub fn scan_once(whitelist: &[String], cpu: CpuSampling) -> Result<Vec<ProcessEntry>, String> {
     let mut scanner = Scanner::new();
-    if let CpuSampling::Interval(d) = cpu {
-        scanner.warm_up();
-        std::thread::sleep(d);
+    // 只有真的靠采样区间取 CPU 的平台才付这份等待（macOS 的 pcpu 来自 ps，付了
+    // 也拿不到任何东西）。判据由平台叶子文件声明，编排层不写 `cfg!(windows)` ——
+    // 与 chain_hits_init / dead_root_terminates_chain 同一条架构纪律。
+    if platform_impl::PlatformState::NEEDS_CPU_INTERVAL {
+        if let CpuSampling::Interval(d) = cpu {
+            scanner.warm_up();
+            std::thread::sleep(d);
+        }
     }
     scanner.scan(whitelist)
 }
@@ -473,8 +482,9 @@ mod live_smoke {
     #[test]
     #[ignore]
     fn live_scan() {
-        // 走 scan_once + 预热：真机冒烟应当看到与 CLI 相同的读数（含 CPU）
-        let entries = super::scan_once(&[], super::CpuSampling::default());
+        // 走 scan_once + 预热：真机冒烟应当看到与 CLI 相同的读数（含 CPU）。
+        // 采集失败直接让冒烟失败 —— 这个用例的全部意义就是「在真机上跑通」。
+        let entries = super::scan_once(&[], super::CpuSampling::default()).expect("采集失败");
         // 「行」而非「监听者」：v0.6.0 起第二条扫描路径会带进无端口的孤儿 dev 进程
         let orphans = entries.iter().filter(|e| e.ports.is_empty()).count();
         println!(

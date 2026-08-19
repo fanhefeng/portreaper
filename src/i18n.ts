@@ -28,7 +28,7 @@ const zh = {
   allclear: "未发现僵尸进程，一切正常",
 
   // ---- footer ----
-  "footer.status": "{procs} 个进程 · {ports} 个端口 · 每 2 秒自动扫描",
+  "footer.status": "{procs} 个进程 · {ports} 个端口 · 每 {secs} 秒自动扫描",
 
   // ---- errors ----
   "error.clickToClose": "· 点击关闭",
@@ -232,6 +232,20 @@ const zh = {
   "update.close": "关闭",
   "update.retry": "重试",
 
+  // ---- 设置（footer 入口 + SettingsModal；存储见 src/settings.ts）----
+  "settings.open": "设置",
+  "settings.title": "设置",
+  "settings.language": "语言",
+  "settings.appearance": "外观",
+  "settings.appearance.system": "跟随系统",
+  "settings.appearance.dark": "深色",
+  "settings.appearance.light": "浅色",
+  "settings.scanInterval": "扫描间隔",
+  "settings.scanInterval.option": "{n} 秒",
+  "settings.autoCheck": "自动检查更新",
+  "settings.autoCheck.note": "启动时检查一次，之后每 24 小时一次",
+  "settings.done": "完成",
+
   // ---- batch modal ----
   "batch.title": "清扫 {n} 个疑似僵尸进程",
   "batch.signal": "信号",
@@ -332,7 +346,7 @@ const en: Record<I18nKey, string> = {
   "section.starred": "Starred",
   allclear: "No zombies. All clear",
 
-  "footer.status": "{procs} processes · {ports} ports · rescans every 2s",
+  "footer.status": "{procs} processes · {ports} ports · rescans every {secs}s",
 
   "error.clickToClose": "· click to dismiss",
   "error.killFailed": "Kill failed: {err}",
@@ -523,6 +537,19 @@ const en: Record<I18nKey, string> = {
   "update.restart": "Restart now",
   "update.close": "Close",
   "update.retry": "Retry",
+
+  "settings.open": "Settings",
+  "settings.title": "Settings",
+  "settings.language": "Language",
+  "settings.appearance": "Appearance",
+  "settings.appearance.system": "System",
+  "settings.appearance.dark": "Dark",
+  "settings.appearance.light": "Light",
+  "settings.scanInterval": "Scan interval",
+  "settings.scanInterval.option": "{n}s",
+  "settings.autoCheck": "Check for updates automatically",
+  "settings.autoCheck.note": "Once at launch, then every 24 hours",
+  "settings.done": "Done",
 
   "batch.title": "Sweep {n} suspected zombie processes",
   "batch.signal": "Signal",

@@ -4,8 +4,9 @@
 //! 全部子进程强制 en_US.UTF-8，避免本地化输出破坏列解析。
 
 use std::collections::{HashMap, HashSet};
-use std::process::Command;
-use std::time::{SystemTime, UNIX_EPOCH};
+use std::process::{Command, Stdio};
+use std::sync::mpsc;
+use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 use super::classify::ReasonCode;
 use super::identify::{basename, project_binary_label, AppIdentity};
@@ -134,14 +135,23 @@ pub(crate) fn identify_app(full_command: &str, short_command: &str, exe_path: &s
 
     // 0. 脚本/模块身份优先于一切路径与 .app 判定 —— 决策树共享在
     //    identify::script_identity_step（双平台逐行同构，曾各写一份且真漂移过）。
-    //    macOS 侧注入的差异：标签用原样 short_command；脚本自身也在标准路径时
+    //    macOS 侧注入的差异：标签用原样 short_command；脚本自身也在常规安装路径时
     //    归「系统自带的脚本任务」（/System/.../foo.py → system）。
+    //
+    //    这里必须用**事实**谓词 is_conventional_install_path，不能用豁免谓词
+    //    is_standard_install_path（评审发现）：后者刻意把 /private/var/folders/ 也算
+    //    进去，那条 carve-out 是给 App Translocation 的 .app 让路的，而 .app 要到
+    //    阶梯 1 才处理。用在这里的后果是 `python3 /private/var/folders/…/serve.py`
+    //    被判成「系统自带脚本」→ 类别 system → exe_is_standard_install 为真 →
+    //    classify 吃下 InstalledApp 硬豁免，永不标记；无端口时整行都不出现。
+    //    安装器/测试框架把脚本落在 TMPDIR 是常见形态，而临时目录恰恰是「非常规
+    //    安装位置」最成立的场景 —— 正是这两个谓词绝不可互换的那条不变量。
     if let Some(id) = super::identify::script_identity_step(
         full_command,
         short_command,
         short_command,
         short_command,
-        is_standard_install_path,
+        is_conventional_install_path,
         |script| AppIdentity {
             label: basename(script).to_string(),
             category: SYSTEM_CATEGORY.to_string(),
@@ -174,33 +184,32 @@ pub(crate) fn identify_app(full_command: &str, short_command: &str, exe_path: &s
         };
     }
 
-    // 1. .app bundle —— 抽出 .app 名（exe 来自 ps comm，含空格也完整）
-    if let Some(idx) = exe.find(".app/") {
-        let before = &exe[..idx];
-        if let Some(slash) = before.rfind('/') {
-            let app_name = &before[slash + 1..];
-            // 开发工具自带 / 下载的 .app 是项目本地的开发 runtime —— electron 把
-            // Electron.app 装在 node_modules/electron/dist、Playwright 把 Chromium.app
-            // 下载到 ~/Library/Caches/ms-playwright，形态与 /Applications 里的真应用
-            // 一模一样。它们不是用户安装的应用，不能享受 installed-app 豁免，否则被杀掉
-            // 父进程的孤儿 dev runtime 会因「长得像已安装应用」永远漏网。
-            // 用户安装的应用绝不会住在这些目录里，故此信号零误伤（判定见 identify.rs）。
-            if super::identify::is_dev_tool_runtime_path(exe) {
-                return AppIdentity {
-                    label: app_name.to_string(),
-                    category: DEV_SCRIPT_CATEGORY.to_string(),
-                };
-            }
-            let category = if exe.starts_with("/System/") || exe.starts_with("/Library/") {
-                SYSTEM_CATEGORY
-            } else {
-                INSTALLED_APP_CATEGORY
-            };
+    // 1. .app bundle —— 抽出 .app 名（exe 来自 ps comm，含空格也完整）。
+    //    取法收敛在 identify::app_bundle_name 一处：这里曾与 automation_label 各写
+    //    一份逐字相同的 find/rfind，而真机上有嵌套 bundle，两处一旦分叉，同一进程的
+    //    两个标签会指向不同的 app 名（评审发现）。
+    if let Some(app_name) = super::identify::app_bundle_name(exe) {
+        // 开发工具自带 / 下载的 .app 是项目本地的开发 runtime —— electron 把
+        // Electron.app 装在 node_modules/electron/dist、Playwright 把 Chromium.app
+        // 下载到 ~/Library/Caches/ms-playwright，形态与 /Applications 里的真应用
+        // 一模一样。它们不是用户安装的应用，不能享受 installed-app 豁免，否则被杀掉
+        // 父进程的孤儿 dev runtime 会因「长得像已安装应用」永远漏网。
+        // 用户安装的应用绝不会住在这些目录里，故此信号零误伤（判定见 identify.rs）。
+        if super::identify::is_dev_tool_runtime_path(exe) {
             return AppIdentity {
                 label: app_name.to_string(),
-                category: category.to_string(),
+                category: DEV_SCRIPT_CATEGORY.to_string(),
             };
         }
+        let category = if exe.starts_with("/System/") || exe.starts_with("/Library/") {
+            SYSTEM_CATEGORY
+        } else {
+            INSTALLED_APP_CATEGORY
+        };
+        return AppIdentity {
+            label: app_name.to_string(),
+            category: category.to_string(),
+        };
     }
 
     // 2a. /Applications/ 下的裸二进制
@@ -291,19 +300,72 @@ pub(crate) fn system_bin(program: &str) -> &str {
     }
 }
 
+/// 单个采集子进程的墙钟上限。
+///
+/// `Command::output()` **没有超时**，而 `lsof` 是本项目最容易卡死的调用：任何一个
+/// 失联的 NFS / SMB / FUSE 挂载点都会让它阻塞在内核态（`lsof -b` 这个选项存在的
+/// 理由就是它）。一次挂死的后果不是「这轮扫描慢」，而是**永久不可用**：
+/// `spawn_blocking` 线程再也不返回 ⇒ `ScannerState` 的 Mutex 永不释放 ⇒ 此后每轮
+/// 轮询都走 `try_lock` 的 `WouldBlock` 分支返回 `ERR_SCAN_BUSY`，托盘计数冻结、
+/// 界面永远显示扫描错误，只能退出重开（评审发现：本项目唯一「一次触发就再也回不来」
+/// 的故障）。CLI / Raycast 侧则表现为命令直接挂住。
+///
+/// 取 5s：本机全部采集子进程合计实测 0.155s，30 倍余量；真卡住时也把损失封在一轮里。
+const COLLECT_TIMEOUT: Duration = Duration::from_secs(5);
+
 fn cmd_output(program: &str, args: &[&str]) -> Option<String> {
-    let output = match Command::new(system_bin(program))
+    cmd_output_within(program, args, COLLECT_TIMEOUT)
+}
+
+/// 超时可注入的本体 —— 单测用 200ms 跑真实的挂死子进程，不必让测试套等 5 秒。
+fn cmd_output_within(program: &str, args: &[&str], timeout: Duration) -> Option<String> {
+    let child = match Command::new(system_bin(program))
         .args(args)
         .env("LANG", "en_US.UTF-8")
         .env("LC_ALL", "en_US.UTF-8")
-        .output()
+        .stdin(Stdio::null())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()
     {
-        Ok(o) => o,
+        Ok(c) => c,
         Err(e) => {
             // 采集层失败不能静默退化为空输出（与 windows.rs 的留痕对齐）：
             // ps 失败 ⇒ 表格凭空清空、launchctl 失败 ⇒ 托管豁免失效，
             // 没有留痕时用户与开发者都拿不到任何线索（评审发现）。
             log::warn!("{program} {args:?} failed to spawn: {e}; scan may be degraded");
+            return None;
+        }
+    };
+
+    // 收尾放到线程里跑，主线程只等一个带超时的信号。
+    //
+    // 必须用 `wait_with_output()` 而不是「自己轮询 try_wait」：`ps -A` 在这台机器上
+    // 就有近百 KB 输出，管道缓冲区（通常 64 KiB）填满后子进程会阻塞在 write 上永不
+    // 退出 —— 不并发抽干管道的话，等来的是一个自己造出来的死锁。
+    let pid = child.id();
+    let (tx, rx) = mpsc::channel();
+    std::thread::spawn(move || {
+        let _ = tx.send(child.wait_with_output());
+    });
+
+    let output = match rx.recv_timeout(timeout) {
+        Ok(Ok(o)) => o,
+        Ok(Err(e)) => {
+            log::warn!("{program} {args:?} failed to run: {e}; scan may be degraded");
+            return None;
+        }
+        Err(_) => {
+            // 超时：按 PID 直接 SIGKILL。**这里没有 PID 复用风险** —— 子进程尚未被
+            // wait 回收（`wait_with_output` 还挂在那个线程里），未回收的进程会一直
+            // 占着自己的 PID 槽位，内核不会把它分给别人。杀掉后管道关闭，那个线程
+            // 随即结束并顺手把它 reap 掉，不留僵尸。
+            unsafe { libc::kill(pid as libc::pid_t, libc::SIGKILL) };
+            log::error!(
+                "{program} {args:?} exceeded {:?} and was killed; scan is degraded \
+                 (a stale network mount makes lsof hang in the kernel)",
+                timeout
+            );
             return None;
         }
     };
@@ -337,10 +399,30 @@ impl PlatformState {
 
     /// macOS 的 CPU 读数不依赖采样区间，无需预热。
     pub(crate) fn warm_up(&mut self) {}
+
+    /// macOS 的 `pcpu` 由 `ps` 直接给出，与采样区间无关 —— `scan_once` 据此
+    /// 跳过那段等待。它曾是无条件的，而 `CpuSampling::default()` 就是
+    /// `Interval(200ms)`：CLI / Raycast 每次扫描都白等 200ms，比本机全部采集
+    /// 子进程加起来（lsof + 两次 ps + launchctl + cwd lsof，实测 0.155s）还久，
+    /// 且换不到任何东西（评审发现）。
+    pub(crate) const NEEDS_CPU_INTERVAL: bool = false;
 }
 
 impl PlatformState {
-    pub(crate) fn collect(&mut self) -> Collected {
+    /// 采集一次。**两个不可替代的数据源失败时整体失败**，绝不静默退化成空结果
+    /// （评审发现）：`cmd_output` 返回 `None` 只有两种成因 —— 子进程起不来、或被
+    /// 看门狗杀掉，两者都意味着这一轮拿到的不是这台机器的真实状态。此前一律
+    /// `unwrap_or_default()`，于是 `ps` 一失败 → 进程表凭空清空 → 所有监听者被
+    /// 丢弃 → `scan()` 返回空 Vec 且**没有任何错误信号**，界面落进四态空状态里的
+    /// 「一切正常」分支，宣布「没有发现任何监听端口」并把托盘计数清零。
+    /// CLAUDE.md 自己写着那句话在任何一台 Mac 上都是假的，而这条路径会稳定地打印它。
+    ///
+    /// 分界线是「这一轮还能不能代表这台机器」：
+    /// - lsof 监听表、ps 进程表 ⇒ 不可替代，失败即整体失败；
+    /// - ps comm、launchctl ⇒ 降级但仍有意义（前者退化 exe 路径，后者丢托管豁免、
+    ///   方向是多报而非漏报，用户看得见），保持 `unwrap_or_default` + 日志留痕；
+    /// - cwd / ESTABLISHED ⇒ 纯增强证据，本就是条件调用。
+    pub(crate) fn collect(&mut self) -> Result<Collected, String> {
         let now = SystemTime::now()
             .duration_since(UNIX_EPOCH)
             .map(|d| d.as_secs())
@@ -348,7 +430,7 @@ impl PlatformState {
 
         let listeners = parse_lsof(
             &cmd_output("lsof", &["-iTCP", "-sTCP:LISTEN", "-P", "-n", "-FpcLn"])
-                .unwrap_or_default(),
+                .ok_or("lsof (listening sockets) failed or timed out")?,
         );
         let comm_map =
             parse_comm(&cmd_output("ps", &["-A", "-o", "pid=,comm="]).unwrap_or_default());
@@ -361,7 +443,7 @@ impl PlatformState {
                     "pid=,ppid=,state=,tty=,etime=,pcpu=,rss=,user=,command=",
                 ],
             )
-            .unwrap_or_default(),
+            .ok_or("ps (process table) failed or timed out")?,
             &comm_map,
             now,
         );
@@ -413,13 +495,13 @@ impl PlatformState {
             )
         };
 
-        Collected {
+        Ok(Collected {
             listeners,
             procs,
             launchd_pids,
             cwds,
             established_local_ports,
-        }
+        })
     }
 }
 
@@ -672,6 +754,57 @@ fn parse_launchctl(text: &str) -> HashSet<u32> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// 采集看门狗：挂死的子进程必须被杀掉并如实报失败，而不是把整条扫描拖住。
+    ///
+    /// 这是本项目唯一「一次触发就再也回不来」的故障：`Command::output()` 没有超时，
+    /// 一个卡在失联网络挂载上的 lsof 会让 spawn_blocking 线程永不返回、`ScannerState`
+    /// 的锁永不释放，此后每轮轮询都只能返回 `ERR_SCAN_BUSY`（评审发现）。
+    ///
+    /// 用真实的挂死子进程测，不是 mock —— 要验证的恰恰是「真的能把它杀掉」。
+    #[test]
+    fn hung_subprocess_is_killed_instead_of_hanging_the_scan() {
+        let started = std::time::Instant::now();
+        let out = cmd_output_within("sleep", &["30"], Duration::from_millis(200));
+        let elapsed = started.elapsed();
+
+        assert!(
+            out.is_none(),
+            "超时的采集必须如实返回 None，不能假装拿到了空输出"
+        );
+        assert!(
+            elapsed < Duration::from_secs(5),
+            "看门狗没有生效：等了 {elapsed:?}，说明还在等子进程自己退出"
+        );
+    }
+
+    /// 超时的子进程必须**彻底消失**：既不能还活着（漏了 SIGKILL —— 每 2 秒一轮的
+    /// 轮询会不断堆积挂死进程），也不能变成僵尸（杀了没回收）。回收发生在那个持有
+    /// `wait_with_output` 的线程里 —— 管道一关它就返回，顺手把子进程 reap 掉。
+    ///
+    /// 用一个不会与旁人相撞的独特时长做标记，才能断言「这一个」的下场，而不是去数
+    /// 全机所有 sleep。
+    #[test]
+    fn timed_out_subprocess_is_neither_alive_nor_zombie() {
+        const MARKER: &str = "27182818";
+        cmd_output_within("sleep", &[MARKER], Duration::from_millis(100));
+        // 给那个收尾线程一点时间完成 reap
+        std::thread::sleep(Duration::from_millis(400));
+
+        let ps = cmd_output("ps", &["-A", "-o", "stat=,command="]).unwrap_or_default();
+        let survivors: Vec<&str> = ps.lines().filter(|l| l.contains(MARKER)).collect();
+        assert!(
+            survivors.is_empty(),
+            "超时的采集子进程既没被杀死也没被回收，残留：{survivors:?}"
+        );
+    }
+
+    /// 正常命令不受看门狗影响（防止「为了修挂死把正常路径也改坏了」）。
+    #[test]
+    fn normal_subprocess_still_returns_stdout() {
+        let out = cmd_output("ps", &["-A", "-o", "pid="]).expect("ps 应当正常返回");
+        assert!(out.lines().count() > 1, "ps 输出异常：{out:?}");
+    }
 
     #[test]
     fn etime_formats() {
@@ -957,6 +1090,34 @@ n[::1]:9333->[::1]:60123
         );
         assert_eq!(label, "http.server · python3");
         assert_eq!(cat, "dev-script");
+
+        // 脚本落在 TMPDIR（安装器 / 测试框架的常见形态）必须是 dev-script。
+        // 阶梯 0 曾把**豁免**谓词 is_standard_install_path 当**事实**谓词用，而前者
+        // 刻意收了 /private/var/folders/ —— 那条 carve-out 是给 App Translocation 的
+        // .app 让路的，.app 要到阶梯 1 才处理。误用的后果：临时目录里的脚本被判成
+        // 「系统自带脚本任务」→ 类别 system → 吃下 InstalledApp 硬豁免、永不标记，
+        // 无端口时整行都不出现（评审发现）。
+        let AppIdentity {
+            label,
+            category: cat,
+        } = identify_app(
+            "/usr/bin/python3 /private/var/folders/dx/T/tmpXYZ/serve.py",
+            "python3",
+            "/usr/bin/python3",
+        );
+        assert_eq!(cat, "dev-script", "临时目录里的脚本不是系统自带脚本任务");
+        assert_eq!(label, "serve.py · python3");
+
+        // 对照：真正住在系统路径下的脚本仍归 system —— 上面的修正不得把这条打死
+        assert_eq!(
+            identify_app(
+                "/usr/bin/python3 /System/Library/Foo/bar.py",
+                "python3",
+                "/usr/bin/python3",
+            )
+            .category,
+            "system",
+        );
 
         // KNOWN-GAPS Gap 1：headless 自动化实例的身份在命令行 —— 必须先于
         // .app / /Applications 阶梯判定，否则归 installed-app 即吃硬豁免。

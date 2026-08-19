@@ -21,6 +21,18 @@ test("真实源码当前必须通过全部校验", () => {
   assert.deepEqual(checkParity(real), []);
 });
 
+test("变体带 #[serde(rename)] 时响亮失败 —— 守卫按变体名推导键，不实现 rename", () => {
+  // 评审实测过的反例：加一个 rename 到别的 wire 名，再照守卫的提示把推导出的
+  // 那个键在 i18n 与 EXEMPT_REASONS 里补齐 —— 旧版守卫返回 0 个错误，而引擎实际
+  // 发出的是 `k8s_managed`，UI 渲染裸键。守卫必须拒绝猜测，逼人来实现该语义。
+  const classifySrc = real.classifySrc.replace(
+    /pub enum ReasonCode \{/,
+    'pub enum ReasonCode {\n    #[serde(rename = "k8s_managed")]\n    KubernetesManaged,',
+  );
+  assert.notEqual(classifySrc, real.classifySrc, "突变未生效：enum 声明形态已变");
+  assert.throws(() => checkParity({ ...real, classifySrc }), /rename/);
+});
+
 test("Rust 新增未归类的 ReasonCode 必须被拦截", () => {
   const classifySrc = real.classifySrc.replace(
     /pub enum ReasonCode \{/,

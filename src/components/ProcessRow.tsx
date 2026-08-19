@@ -1,6 +1,7 @@
 import { memo, useMemo } from "react";
 import { reasonKey, storyKey, useI18n, verdictKey, type Lang } from "../i18n";
 import {
+  displayCommand,
   exemptReasons,
   formatDuration,
   formatPorts,
@@ -144,11 +145,11 @@ function RowImpl({ e, expanded, shared }: RowProps) {
             {/* 名称/次级说明在 960px 下必被 CSS 省略号截断，而详情一次只能展开
                 一行 —— 不挂 title 的话，用户认出「这是哪个项目」的唯一出路就是
                 逐行展开。完整命令行比 app_label 更能定身份，故用它当悬浮内容。 */}
-            <span className="row-name" title={e.full_command || e.command}>
+            <span className="row-name" title={displayCommand(e)}>
               {name}
             </span>
             {nameSub && (
-              <span className="row-name-sub" title={e.full_command || e.command}>
+              <span className="row-name-sub" title={displayCommand(e)}>
                 {nameSub}
               </span>
             )}

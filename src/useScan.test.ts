@@ -115,6 +115,28 @@ describe("useScan polling", () => {
     expect(scans).toBe(3);
   });
 
+  it("轮询间隔可注入（设置的扫描间隔档）：5s 档下 2s 不触发、满 5s 触发", async () => {
+    let scans = 0;
+    route({
+      scan_ports: () => {
+        scans += 1;
+        return [makeEntry()];
+      },
+    });
+    renderHook(() => useScan(5000));
+    await advance(0);
+    expect(scans).toBe(1);
+
+    await advance(2100);
+    expect(scans).toBe(1); // 缺省 2s 档会在这里触发 —— 注入值必须真的生效
+    // 卡在 5s 边界两侧断言：只断言「2.1s 不触发、5.1s 触发」的话，注入值退化成
+    // 3s/4s 档同样能过 —— 那正是这条测试要盯住的漂移（评审发现）。
+    await advance(2899);
+    expect(scans).toBe(1);
+    await advance(1);
+    expect(scans).toBe(2);
+  });
+
   it("inFlight 复用：上一轮扫描未落定时，后续轮询不发起并发扫描", async () => {
     let scans = 0;
     const gate: { open: (() => void) | null } = { open: null };

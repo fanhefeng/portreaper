@@ -16,10 +16,17 @@
 //! - **损坏备份**：解析失败的旧文件先挪到 `.corrupt`，绝不让后续首次保存覆盖旧数据；
 //! - **失败回滚**：持久化失败时回滚内存修改并上抛错误 —— 内存与磁盘永远一致，
 //!   前端得以「星标弹回 + 错误横幅」，而不是「看起来成功、重启后消失」。
-//! - **读不出就不写**（`writable`）：只有 `NotFound` 才意味着「首次启动，空表」。
-//!   权限/IO 错误下文件**是存在的**，把它当空表再保存等于用空表覆盖用户全部收藏。
-//!   备份 `.corrupt` 的 rename 若失败同理 —— 旧数据还躺在原地，让位没成功。
-//!   这类实例转为只读：读照常，add/remove 响亮失败（评审发现）。
+//! - **读不出就不写**（`writable` + `DiskRead` 三态）：只有 `NotFound` 才意味着
+//!   「首次启动，空表」。权限/IO 错误下文件**是存在的**，把它当空表再保存等于用空表
+//!   覆盖用户全部收藏。备份 `.corrupt` 的 rename 若失败同理 —— 旧数据还躺在原地，
+//!   让位没成功。这类实例转为只读：读照常，add/remove 响亮失败（评审发现）。
+//!
+//!   这一层**必须覆盖全部三条读盘路径**（`load` / `merge_from_disk` / `refresh`），
+//!   而不只是 `load`：常驻 GUI 一辈子只 load 一次，之后每次 add/remove 都走
+//!   `merge_from_disk`。它一度把三种结果压成 `Option::None`「保留内存视图后继续
+//!   覆写」，于是「GUI 启动时文件还不存在（内存空表）→ 用户在 Raycast 加了一批星
+//!   → 文件变得读不出 → 在桌面版点一次 ★」会用空表覆写掉全部收藏 —— `save` 走
+//!   rename，只要目录可写就能替换掉一个读不出的文件（评审发现）。
 //! - **写前合并**（`merge_from_disk`）：core 拆分后 GUI / CLI / Raycast 是**三个
 //!   进程**共写同一份文件，而 add/remove 的落盘是「整表覆写」。常驻 GUI 的内存
 //!   快照会越来越旧，直接覆写就把 CLI 刚加的收藏抹掉。故每次修改前先取一遍磁盘
@@ -54,6 +61,16 @@ struct WhitelistStore {
     entries: Vec<String>,
 }
 
+/// 一次读盘的三种结果。**`Absent` 与 `Unusable` 必须分开**：前者意味着磁盘上
+/// 没有任何用户数据（首次启动 / 文件被删），拿内存视图重建它是安全的；后者意味着
+/// 文件**就在那儿**、只是这一刻读不出或解析不了，覆写它就是抹掉用户的收藏。
+/// 把两者压成一个 `Option::None` 正是 v0.11.0 之前那条数据丢失路径的成因。
+enum DiskRead {
+    Entries(Vec<String>),
+    Absent,
+    Unusable,
+}
+
 /// 一份已加载的白名单，连同它的落盘位置。
 #[derive(Clone)]
 pub struct Whitelist {
@@ -63,11 +80,38 @@ pub struct Whitelist {
     writable: bool,
 }
 
+/// 损坏文件的备份落点。**不能是固定的 `.json.corrupt`**（评审发现）：Unix 的
+/// `rename` 是替换语义，第二次损坏会直接盖掉第一次那份备份，而「用户的旧收藏可以
+/// 手工找回」正是这层防护承诺的全部内容 —— 第二次事故时它就不成立了。
+///
+/// 后缀用「自纪元起的秒数」而非可读时间：不引入时间格式化依赖，且天然单调递增；
+/// 取不到系统时间时退回 PID。秒级粒度挡不住同一秒内的第二次事故，故再加一个
+/// 「占用就换名」的序号 —— 这个函数的**唯一职责**就是绝不返回一个已存在的路径。
+fn corrupt_backup_path(path: &Path) -> PathBuf {
+    let stamp = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_secs().to_string())
+        .unwrap_or_else(|_| std::process::id().to_string());
+    let base = path.with_extension(format!("json.{stamp}.corrupt"));
+    if !base.exists() {
+        return base;
+    }
+    for n in 1..1000 {
+        let candidate = path.with_extension(format!("json.{stamp}-{n}.corrupt"));
+        if !candidate.exists() {
+            return candidate;
+        }
+    }
+    // 同一秒内一千次损坏：已经不是数据保护问题了，退回基名（rename 会替换它）
+    base
+}
+
 impl Whitelist {
     /// 从磁盘载入。文件不存在（`NotFound`）是首次启动的常态，返回空表而非错误。
     ///
-    /// 文件存在但解析失败时，把它备份为 `whitelist.json.corrupt` 再让位 ——
-    /// 用户的旧收藏可以手工找回，而不是被下一次保存静默覆盖。
+    /// 文件存在但解析失败时，把它备份到一个带时间戳的 `.corrupt` 文件再让位
+    /// （命名规则见 `corrupt_backup_path` —— 刻意不是固定名，否则第二次损坏会
+    /// 盖掉第一份备份）：用户的旧收藏可以手工找回，而不是被下一次保存静默覆盖。
     ///
     /// 文件存在却读不出来（权限/IO），或备份 rename 没成功 —— 两种情况下旧数据
     /// 都还在磁盘上，此时返回的实例是**只读**的：绝不拿一张空表去覆盖它。
@@ -76,8 +120,12 @@ impl Whitelist {
             Ok(data) => match serde_json::from_str::<WhitelistStore>(&data) {
                 Ok(store) => (store.entries, true),
                 Err(e) => {
-                    log::warn!("whitelist.json corrupted ({e}), backing up to .corrupt");
-                    match fs::rename(&path, path.with_extension("json.corrupt")) {
+                    let backup = corrupt_backup_path(&path);
+                    log::warn!(
+                        "whitelist.json corrupted ({e}), backing up to {}",
+                        backup.display()
+                    );
+                    match fs::rename(&path, &backup) {
                         // 让位成功：原文件已挪走，可以安全地从空表重建
                         Ok(()) => (Vec::new(), true),
                         Err(e) => {
@@ -129,21 +177,51 @@ impl Whitelist {
         &self.path
     }
 
-    /// 只读地取一次磁盘现状。读不出/解析不了都返回 `None` —— 这里绝不做备份、
-    /// 也绝不改 `writable`：那是 `load` 的职责，写路径上重复一遍只会把「让位」
-    /// 这种有副作用的动作散落到多处。
-    fn read_disk_entries(&self) -> Option<Vec<String>> {
-        let data = fs::read_to_string(&self.path).ok()?;
-        serde_json::from_str::<WhitelistStore>(&data)
-            .ok()
-            .map(|s| s.entries)
+    /// 只读地取一次磁盘现状。**三态**，绝不把「文件不在」与「文件在但读不出」
+    /// 压成同一个值 —— 那正是「读不出就不写」这层防护的判据所在：前者可以安全地
+    /// 用内存视图重建，后者的磁盘上**还躺着用户的数据**。
+    ///
+    /// 这里仍然绝不做 `.corrupt` 备份、也不自己改 `writable`：备份是 `load`
+    /// 的职责（有副作用的「让位」动作只该有一处），`writable` 由调用方按各自的
+    /// 读/写语义处置。
+    fn read_disk_entries(&self) -> DiskRead {
+        match fs::read_to_string(&self.path) {
+            Ok(data) => match serde_json::from_str::<WhitelistStore>(&data) {
+                Ok(store) => DiskRead::Entries(store.entries),
+                // 解析不了：文件里仍是用户的（可能可人工恢复的）数据，不可覆写
+                Err(e) => {
+                    log::warn!("whitelist.json unparsable during merge/refresh ({e})");
+                    DiskRead::Unusable
+                }
+            },
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => DiskRead::Absent,
+            Err(e) => {
+                log::error!("whitelist.json unreadable during merge/refresh ({e})");
+                DiskRead::Unusable
+            }
+        }
     }
 
-    /// 用磁盘现状作为本次修改的基准，纳入其他进程期间的改动。读不出就保留内存
-    /// 视图（文件被删/被占的降级形态，后续 save 会重建它）。
-    fn merge_from_disk(&mut self) {
-        if let Some(disk) = self.read_disk_entries() {
-            self.entries = disk;
+    /// 用磁盘现状作为本次修改的基准，纳入其他进程期间的改动。
+    ///
+    /// **失败会上抛**（评审发现）：模块文档第四层防护「读不出就不写」此前只在
+    /// `load` 里兑现，而常驻 GUI 只 load 一次 —— 之后每一次 add/remove 都走这里，
+    /// 把三种读盘结果压成「保留内存视图，继续整表覆写」。真实事故形态：GUI 启动
+    /// 时文件尚不存在（内存视图为空表），用户随后在 Raycast/CLI 加了一批星，此后
+    /// 文件变得读不出（权限变更 / Windows 上被别的进程独占 / IO 错误）—— 下一次
+    /// 在桌面版点 ★ 就会用「空表 + 这一个」整表覆写掉全部收藏。`save` 走的是
+    /// rename，只需目录写权限，文件本身读不出**不妨碍**覆写它。
+    fn merge_from_disk(&mut self) -> Result<(), String> {
+        match self.read_disk_entries() {
+            DiskRead::Entries(disk) => {
+                self.entries = disk;
+                Ok(())
+            }
+            // 文件不存在：内存视图就是唯一真相，save 会重建它
+            DiskRead::Absent => Ok(()),
+            DiskRead::Unusable => Err(
+                "whitelist file exists but could not be read; refusing to overwrite it".to_string(),
+            ),
         }
     }
 
@@ -157,8 +235,23 @@ impl Whitelist {
     ///
     /// 语义是**替换**而非并集：取消星标同样要传播。取并集会让内存里的旧键永远
     /// 留着，un-star 在桌面版永不生效。
+    ///
+    /// 读路径不返回错误（每 2 秒一次的扫描没有可展示的失败出口），但它**会**顺带
+    /// 维护 `writable`：读得出就解除只读、读不出就转入只读。两个方向都必要 ——
+    /// 只转不解的话，启动那一刻恰好读不出的常驻实例会整个会话拒绝收藏（托盘应用
+    /// 可以连开数天，用户只能重启）；只解不转的话，运行期变得不可读的文件会在
+    /// 下一次 add 时被整表覆写。
     pub fn refresh(&mut self) {
-        self.merge_from_disk();
+        match self.read_disk_entries() {
+            DiskRead::Entries(disk) => {
+                self.entries = disk;
+                self.writable = true;
+            }
+            // 文件不存在：内存视图即真相，save 会重建它 —— 创建新文件是安全的
+            DiskRead::Absent => self.writable = true,
+            // 读不出：保留内存视图，并转入只读，绝不让后续 save 覆写磁盘上那份
+            DiskRead::Unusable => self.writable = false,
+        }
     }
 
     fn ensure_writable(&self) -> Result<(), String> {
@@ -175,7 +268,7 @@ impl Whitelist {
     /// 会把其他进程的改动从内存里丢掉，直到下次 mutate 才自愈（评审发现）。
     pub fn add(&mut self, key: String) -> Result<(), String> {
         self.ensure_writable()?;
-        self.merge_from_disk();
+        self.merge_from_disk()?;
         let snapshot = self.entries.clone();
         if self.contains(&key) {
             return Ok(());
@@ -191,7 +284,7 @@ impl Whitelist {
     /// 移出白名单并落盘。不存在的 key 是幂等的 no-op。快照时序同 `add`。
     pub fn remove(&mut self, key: &str) -> Result<(), String> {
         self.ensure_writable()?;
-        self.merge_from_disk();
+        self.merge_from_disk()?;
         let snapshot = self.entries.clone();
         let Some(idx) = self.entries.iter().position(|x| x == key) else {
             return Ok(());
@@ -256,6 +349,17 @@ mod tests {
             .any(|e| e.unwrap().file_name().to_string_lossy().ends_with(".tmp"))
     }
 
+    /// 目录里所有 `.corrupt` 结尾的备份。备份名带时间戳，不能再按固定名断言。
+    fn corrupt_backups(dir: &Path) -> Vec<String> {
+        let mut v: Vec<String> = fs::read_dir(dir)
+            .unwrap()
+            .map(|e| e.unwrap().file_name().to_string_lossy().into_owned())
+            .filter(|n| n.ends_with(".corrupt"))
+            .collect();
+        v.sort();
+        v
+    }
+
     #[test]
     fn corrupted_file_is_backed_up_not_discarded() {
         let dir = temp_dir_for("corrupt");
@@ -265,11 +369,39 @@ mod tests {
         let wl = Whitelist::load(path.clone());
 
         assert!(wl.entries().is_empty());
-        assert!(
-            dir.join("whitelist.json.corrupt").exists(),
-            "损坏文件必须备份"
-        );
+        assert_eq!(corrupt_backups(&dir).len(), 1, "损坏文件必须备份");
         assert!(!path.exists(), "损坏文件应已挪走");
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    /// 第二次损坏不得盖掉第一次那份备份 —— 固定名 `.json.corrupt` 配上 Unix
+    /// rename 的替换语义，正好把「旧收藏可以手工找回」这句承诺在第二次事故时作废
+    /// （评审发现）。
+    #[test]
+    fn second_corruption_keeps_the_first_backup() {
+        let dir = temp_dir_for("corrupt-twice");
+        let path = dir.join("whitelist.json");
+
+        fs::write(&path, r#"{"entries":["/first/round"]}x"#).unwrap();
+        Whitelist::load(path.clone());
+        let after_first = corrupt_backups(&dir);
+        assert_eq!(after_first.len(), 1);
+
+        // 第二次损坏（测试跑在同一秒内 —— 靠「占用就换名」的序号区分）
+        fs::write(&path, r#"{"entries":["/second/round"]}y"#).unwrap();
+        Whitelist::load(path.clone());
+        let after_second = corrupt_backups(&dir);
+
+        assert_eq!(
+            after_second.len(),
+            2,
+            "第二次备份把第一次覆盖掉了：{after_second:?}"
+        );
+        let first_content = fs::read_to_string(dir.join(&after_first[0])).unwrap();
+        assert!(
+            first_content.contains("/first/round"),
+            "第一份备份的内容被改写了：{first_content}"
+        );
         let _ = fs::remove_dir_all(&dir);
     }
 
@@ -383,17 +515,113 @@ mod tests {
         let _ = fs::remove_dir_all(&dir);
     }
 
+    /// 上一条钉的是「**load 那一刻**读不出」。这条钉「**常驻实例活着的时候**才变得
+    /// 读不出」—— 同一层防护的另一半，而它一度完全缺失（评审发现）。
+    ///
+    /// 缺失的原因很具体：GUI 一辈子只 `load` 一次，此后每次 add/remove 都走
+    /// `merge_from_disk`，而它曾把「文件不存在」与「文件读不出」压成同一个
+    /// `Option::None`，两者都当作「保留内存视图，继续整表覆写」。
+    ///
+    /// 事故形态：GUI 启动时文件还不存在（内存是空表）→ 用户在 Raycast/CLI 加了
+    /// 一批星 → 文件此后读不出 → 用户在桌面版点一次 ★ → 磁盘被「空表 + 这一个」
+    /// 覆写，此前的收藏全没。注意 `save` 走的是 rename：文件本身读不出**不妨碍**
+    /// 覆写它，只要目录可写。
+    #[test]
+    fn disk_becoming_unreadable_after_load_blocks_writes() {
+        let dir = temp_dir_for("unreadable-later");
+        let path = dir.join("whitelist.json");
+
+        // GUI 启动：文件尚不存在 ⇒ 一个可写的空表实例
+        let mut resident = Whitelist::load(path.clone());
+        assert!(resident.entries().is_empty());
+
+        // 另一个前端（Raycast / CLI）随后加了一批星
+        let mut ephemeral = Whitelist::load(path.clone());
+        ephemeral.add("/raycast/one".to_string()).unwrap();
+        ephemeral.add("/raycast/two".to_string()).unwrap();
+
+        // 文件在常驻实例运行期间损坏：**内容还在**，只是解析不了 ——
+        // 正是「读不出就不写」要保护的形态（用户的收藏仍可人工找回）
+        let intact = fs::read_to_string(&path).unwrap();
+        fs::write(&path, format!("{intact}<<<truncated garbage")).unwrap();
+
+        let err = resident.add("/gui/three".to_string()).unwrap_err();
+        assert!(!err.is_empty(), "读不出磁盘时必须响亮失败");
+        assert!(!resident.contains("/gui/three"), "拒写后不得留下内存假象");
+
+        let after = fs::read_to_string(&path).unwrap();
+        assert!(
+            after.starts_with(&intact) && after.contains("/raycast/one"),
+            "读不出的文件绝不可被整表覆写 —— 用户的收藏还在里面"
+        );
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    /// `refresh` 必须**双向**维护 `writable`，两个方向都是事故点：
+    /// - 只解不转：运行期变得不可读的文件会在下一次 add 时被覆写；
+    /// - 只转不解：启动那一刻恰好读不出的常驻 GUI 会**整个会话**拒绝收藏，
+    ///   而托盘应用可以连开数天，用户只能靠重启应用自愈 —— 偏偏 refresh 每
+    ///   2 秒就拿着磁盘现状路过一次，没有理由不复位。
+    #[test]
+    fn refresh_maintains_writability_in_both_directions() {
+        let dir = temp_dir_for("writable-recovery");
+        let path = dir.join("whitelist.json");
+
+        // 启动那一刻读不出（目录占位）⇒ 只读实例
+        fs::create_dir_all(&path).unwrap();
+        let mut wl = Whitelist::load(path.clone());
+        assert!(wl.add("/a".to_string()).is_err(), "只读实例必须拒写");
+
+        // 磁盘恢复正常，且外部此间已写入内容
+        fs::remove_dir_all(&path).unwrap();
+        fs::write(&path, r#"{"entries":["/external/one"]}"#).unwrap();
+        wl.refresh();
+
+        assert!(wl.contains("/external/one"), "refresh 必须取到磁盘现状");
+        wl.add("/a".to_string())
+            .expect("磁盘恢复可读后必须重新可写");
+        let disk = Whitelist::load(path.clone());
+        assert!(disk.contains("/external/one"), "恢复写入不得抹掉外部内容");
+        assert!(disk.contains("/a"));
+
+        // 反方向：再次变得读不出 ⇒ refresh 要转回只读，把拒绝提前到 add 入口
+        fs::remove_file(&path).unwrap();
+        fs::create_dir_all(&path).unwrap();
+        wl.refresh();
+        assert!(
+            wl.add("/b".to_string()).is_err(),
+            "磁盘重新变得读不出后必须转回只读"
+        );
+        let _ = fs::remove_dir_all(&dir);
+    }
+
     /// 损坏文件的备份 rename 失败时同样转只读 —— 让位没成功，旧数据还在原地。
-    /// 构造：`.corrupt` 目标预先占成一个非空目录，rename 过不去。
+    ///
+    /// 构造：把备份目标预先占成一个**非空目录**，rename 过不去。备份名现在带时间戳
+    /// **构造手法变了**（备份改带时间戳的连带后果）：`corrupt_backup_path` 现在
+    /// 「占用就换名」，再也无法靠预置一个同名目录把 rename 堵死 —— 那本身正是这次
+    /// 改动想要的行为。改成把**目录本身**设为只读，让 rename 在权限上失败。
+    ///
+    /// 这个构造是 unix-only 的（Windows 的只读目录语义不同），故 cfg 到 macOS ——
+    /// 不变量本身与平台无关，只是造不出同一个现场。root 下 chmod 形同虚设，
+    /// 那时**跳过**而不是假通过。
+    #[cfg(target_os = "macos")]
     #[test]
     fn failed_corrupt_backup_also_locks_writes() {
+        use std::os::unix::fs::PermissionsExt;
+        if unsafe { libc::geteuid() } == 0 {
+            eprintln!("skipped: 以 root 运行时 chmod 不生效，造不出 rename 失败");
+            return;
+        }
         let dir = temp_dir_for("backup-fail");
         let path = dir.join("whitelist.json");
         fs::write(&path, "{ definitely not json").unwrap();
-        let blocker = dir.join("whitelist.json.corrupt");
-        fs::create_dir_all(blocker.join("occupied")).unwrap();
+        fs::set_permissions(&dir, fs::Permissions::from_mode(0o555)).unwrap();
 
         let mut wl = Whitelist::load(path.clone());
+
+        // 先把权限放回来：下面的断言与清理都要读写这个目录
+        fs::set_permissions(&dir, fs::Permissions::from_mode(0o755)).unwrap();
 
         assert!(
             wl.add("/usr/bin/z".to_string()).is_err(),

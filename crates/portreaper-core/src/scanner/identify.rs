@@ -171,15 +171,26 @@ fn is_temp_dir_path(value: &str) -> bool {
         || norm.contains("/windows/temp/")
 }
 
+/// macOS `.app` bundle 名：`/Applications/Foo.app/Contents/MacOS/Foo` → `Foo.app`
+/// 之前那段 `Foo`。
+///
+/// **单一实现**（评审发现）：此处与 `macos.rs` 的路径阶梯 1 曾各写一份逐字相同的
+/// `find(".app/")` + `rfind('/')`。真机上存在嵌套 bundle
+/// （`/Applications/X.app/Contents/MacOS/y.app/Contents/MacOS/y`），`find` 取最外层、
+/// `rfind` 取最内层前缀 —— 两份实现只要有一处改了取法，同一个进程的自动化标签与
+/// installed-app 标签就会指向不同的 app 名。这正是本文件其余部分
+/// （`is_dev_build_artifact` / `is_dev_tool_runtime_path`）已经合并过的同一类教训。
+pub(crate) fn app_bundle_name(exe_path: &str) -> Option<&str> {
+    let idx = exe_path.find(".app/")?;
+    let before = &exe_path[..idx];
+    let slash = before.rfind('/')?;
+    Some(&before[slash + 1..])
+}
+
 /// 自动化实例的标签：「Chrome · headless」—— 主名取 .app 名（macOS bundle）或
 /// exe 基名。前端 splitLabel 按 " · " 拆成主/副两行渲染。
 pub(crate) fn automation_label(exe_path: &str, short_command: &str) -> String {
-    let name = exe_path
-        .find(".app/")
-        .and_then(|idx| {
-            let before = &exe_path[..idx];
-            before.rfind('/').map(|slash| &before[slash + 1..])
-        })
+    let name = app_bundle_name(exe_path)
         .map(|app| app.to_string())
         .unwrap_or_else(|| strip_exe(basename(exe_path)).to_string());
     let name = if name.is_empty() {

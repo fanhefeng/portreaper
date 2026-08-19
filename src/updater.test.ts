@@ -60,6 +60,31 @@ describe("useUpdater 检查一路", () => {
     expect(result.current.modalOpen).toBe(true);
   });
 
+  it("已发现的更新不被自动检查打断 —— 否则一次网络抖动就把徽标清没了", async () => {
+    let calls = 0;
+    route({
+      check_update: () => {
+        calls += 1;
+        if (calls === 1) return INFO;
+        throw "network flake"; // 第二次（自动）检查失败
+      },
+    });
+    const { result } = renderHook(() => useUpdater());
+    await act(async () => {
+      await result.current.check(true);
+    });
+    expect(result.current.state).toMatchObject({ phase: "available", info: INFO });
+
+    // 24h 定时器与「自动检查更新」开关由关转开都走 check(false)。available 是
+    // 已有结论，自动重查成功也只是同一条结论，失败却会静默落回 idle。
+    await act(async () => {
+      await result.current.check(false);
+    });
+
+    expect(result.current.state).toMatchObject({ phase: "available", info: INFO });
+    expect(calls).toBe(1); // 连请求都不该发起
+  });
+
   it("手动检查无更新 → upToDate，短暂停留后自动回落 idle", async () => {
     route({ check_update: () => null });
     const { result } = renderHook(() => useUpdater());
@@ -95,6 +120,60 @@ describe("useUpdater 检查一路", () => {
       await result.current.check(false);
     });
     expect(result.current.state.phase).toBe("idle");
+  });
+});
+
+// autoCheck 来自设置（settings.autoCheckUpdates）。isDevBuild 走注入 ——
+// vitest 里 import.meta.env.DEV 恒为 true，不注入 false 这个门根本测不到。
+describe("useUpdater 自动检查的设置门", () => {
+  it("autoCheck=true 且非 dev：挂载即检查一次，24h 后再来一次", async () => {
+    let checks = 0;
+    route({
+      check_update: () => {
+        checks += 1;
+        return null;
+      },
+    });
+    renderHook(() => useUpdater(true, false));
+    await advance(0);
+    expect(checks).toBe(1);
+    await advance(24 * 60 * 60_000);
+    expect(checks).toBe(2);
+  });
+
+  it("autoCheck=false：不自动检查；手动检查不受影响", async () => {
+    let checks = 0;
+    route({
+      check_update: () => {
+        checks += 1;
+        return null;
+      },
+    });
+    const { result } = renderHook(() => useUpdater(false, false));
+    await advance(0);
+    expect(checks).toBe(0);
+    await act(async () => {
+      await result.current.check(true);
+    });
+    expect(checks).toBe(1);
+  });
+
+  it("设置从关到开：立即检查并恢复节奏", async () => {
+    let checks = 0;
+    route({
+      check_update: () => {
+        checks += 1;
+        return null;
+      },
+    });
+    const { rerender } = renderHook(({ on }: { on: boolean }) => useUpdater(on, false), {
+      initialProps: { on: false },
+    });
+    await advance(0);
+    expect(checks).toBe(0);
+    rerender({ on: true });
+    await advance(0);
+    expect(checks).toBe(1);
   });
 });
 

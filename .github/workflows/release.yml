@@ -41,6 +41,23 @@ jobs:
       - name: Release asset name parity check
         run: node scripts/check-release-assets.mjs
 
+      # The remaining parity guards, moved in front of the build matrix (review
+      # finding). They also run in ci.yml, but a tag can be pushed on a commit
+      # that never went through a PR — and the failure mode they guard is the
+      # expensive one: check-tauri-parity's whole reason to exist is that a
+      # tauri crate/npm major.minor mismatch is invisible to every other gate
+      # and only `tauri build` rejects it, i.e. all three build legs blow up
+      # ~30 minutes in with the draft release already created, leaving you to
+      # delete the tag and start over (that is exactly what happened in v0.9.0).
+      # These take well under a second combined; running them here turns a
+      # 30-minute failure into a 30-second one.
+      - name: Contract parity checks
+        run: |
+          node scripts/check-tauri-parity.mjs
+          node scripts/check-model-parity.mjs
+          node scripts/check-paths-parity.mjs
+          node scripts/check-reason-parity.mjs
+
   # --------------------------------------------------------------------------
   # 2. Create the draft release ONCE, before the build matrix.
   #    Without this, the three parallel tauri-action legs race to create the

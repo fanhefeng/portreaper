@@ -20,6 +20,33 @@ const ASSET_RE = /Portreaper-[A-Za-z0-9.-]+\.(?:dmg|exe)/g;
  *  旧校验只比对文件名集合，不看链接本身）。 */
 const DOWNLOAD_PREFIX = "releases/latest/download/";
 
+/**
+ * 稳定名在 release.yml 里必须**真的被上传**，而不只是在 release notes 里被提到。
+ *
+ * 反例（评审实测）：把「Re-upload assets under stable names」整步删掉，只留 body.md
+ * heredoc 里那三行 `` `Portreaper-macos-arm64.dmg` ``，全文扫的旧判据返回 0 错误。
+ * 后果比单纯改名更狠 —— publish 的 `Verify expected assets exist` 检的全是**版本化**
+ * 名（`^Portreaper_.*_aarch64\.dmg$`），所以 release 会一路绿灯发布，而 website 与
+ * README 的全部下载链接同时 404，正是本守卫头注写的那个故障。
+ *
+ * 判据取 `dist/<name>`：`cp` 的目标与 `gh release upload` 的实参都是这个形态，
+ * release notes 里的裸名不会带路径前缀。
+ */
+const UPLOAD_PREFIX = "dist/";
+
+/** 真正把版本化产物改成稳定名再传上去的那一步。 */
+const REUPLOAD_STEP = "Re-upload assets under stable names";
+
+/** 从 workflow 里切出某个 step 的正文（到下一个同级 `- name:` 为止）。
+ *  按 step 定界而不是全文扫：`echo "dist/Portreaper-…"` 这类无关文本也能让
+ *  全文判据通过，而本守卫要断言的是「那一步确实还在、且确实处理了每个稳定名」。 */
+function stepBody(src, stepName) {
+  const at = src.indexOf(`- name: ${stepName}`);
+  if (at === -1) return null;
+  const next = src.indexOf("\n      - name: ", at + 1);
+  return next === -1 ? src.slice(at) : src.slice(at, next);
+}
+
 function assetSet(source) {
   return new Set(source.match(ASSET_RE) ?? []);
 }
@@ -45,6 +72,24 @@ export function checkAssetNames({ releaseSrc, websiteSrc, readmeSrc }) {
   }
   if (!setEq(release, readme)) {
     errors.push(`稳定资产名不一致：release.yml [${fmt(release)}] vs README.md [${fmt(readme)}]`);
+  }
+
+  // 每个稳定名都必须真的被那一步上传/改名，而不只是在 notes 或注释里被提到
+  const reupload = stepBody(releaseSrc, REUPLOAD_STEP);
+  if (reupload === null) {
+    errors.push(
+      `release.yml 找不到「${REUPLOAD_STEP}」步骤 —— 稳定名全靠它产出；` +
+        "步骤没了 publish 仍会绿灯（它只校验版本化名），而所有稳定下载链接会同时 404",
+    );
+  } else {
+    for (const name of release) {
+      if (!reupload.includes(UPLOAD_PREFIX + name)) {
+        errors.push(
+          `release.yml:「${REUPLOAD_STEP}」步骤里找不到 "${UPLOAD_PREFIX}${name}" ——` +
+            " 这个稳定名只在别处的文本里出现过，没有任何一行真的产出它",
+        );
+      }
+    }
   }
 
   // 每个出现的资产名必须至少带一条完整的稳定下载链接（链接文本里的裸名允许）

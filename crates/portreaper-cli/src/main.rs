@@ -141,7 +141,15 @@ fn cmd_scan(args: &[String]) -> i32 {
     }
 
     let whitelist = load_whitelist();
-    let mut entries = scan_once(whitelist.entries(), cpu);
+    // 采集失败必须是非零退出，绝不能打印一份「空的扫描结果」——Raycast 那边会把它
+    // 当成一台干净的机器渲染，脚本消费者也会把空 entries 当成事实（评审发现）。
+    let mut entries = match scan_once(whitelist.entries(), cpu) {
+        Ok(e) => e,
+        Err(e) => {
+            eprintln!("扫描失败: {e}");
+            return 1;
+        }
+    };
     if !include_orphans {
         // 无端口的行来自第二条扫描路径（孤儿 dev 进程）
         entries.retain(|e| !e.ports.is_empty());

@@ -10,7 +10,7 @@ use std::sync::Mutex;
 use tauri::{
     menu::{MenuBuilder, MenuItem, MenuItemBuilder, Submenu, SubmenuBuilder},
     tray::{MouseButton, MouseButtonState, TrayIconBuilder, TrayIconEvent},
-    AppHandle, Manager, WindowEvent, Wry,
+    AppHandle, Emitter, Manager, WindowEvent, Wry,
 };
 
 /// 当前界面语言（"zh" / "en"）。唯一读取方是 Windows 的托盘 tooltip
@@ -100,15 +100,17 @@ fn build_dir_menu<M: Manager<Wry>>(
 /// 托盘菜单项句柄 —— 语言切换时直接 set_text，无需重建菜单。
 pub struct TrayMenuItems {
     pub show: MenuItem<Wry>,
+    pub settings: MenuItem<Wry>,
     pub dir: DirMenuItems,
     pub quit: MenuItem<Wry>,
 }
 
-/// macOS 应用菜单里的句柄（语言切换时 re-text）：⌘Q 替代项 + 目录菜单的
-/// 应用菜单栏那份 —— 与托盘双入口。
+/// macOS 应用菜单里的句柄（语言切换时 re-text）：⌘Q 替代项 + 设置项（⌘,）
+/// + 目录菜单的应用菜单栏那份 —— 与托盘双入口。
 #[cfg(target_os = "macos")]
 pub struct AppMenuItems {
     pub quit_to_tray: MenuItem<Wry>,
+    pub settings: MenuItem<Wry>,
     pub dir: DirMenuItems,
 }
 
@@ -185,6 +187,15 @@ pub(crate) fn devtools_text(lang: &str) -> &'static str {
     }
 }
 
+/// 「设置…」菜单项文案（托盘 + macOS 应用菜单双入口共用）。
+pub(crate) fn settings_text(lang: &str) -> &'static str {
+    if lang == "zh" {
+        "设置…"
+    } else {
+        "Settings…"
+    }
+}
+
 #[cfg(target_os = "macos")]
 pub(crate) fn quit_to_tray_text(lang: &str) -> &'static str {
     if lang == "zh" {
@@ -209,13 +220,26 @@ fn detect_lang() -> &'static str {
 /// / Windows 无控制台又都吞 stderr，只 eprintln 相当于没报。故直接落一个固定的
 /// 临时文件，用户和我们都能按图索骥。
 ///
-/// 三条自我约束：**只 append 一行**（不做轮转，这个文件只在启动失败时才被写到）、
-/// **写失败就算了**（`let _`）、**不经过任何日志门面** —— 一个报告日志故障的
-/// 函数如果自己也可能触发日志，就会重演 logger.ts 那次自激（46 MB + 打满 CPU）。
+/// 四条自我约束：**只 append**、**有大小上限**、**写失败就算了**（`let _`）、
+/// **不经过任何日志门面** —— 一个报告日志故障的函数如果自己也可能触发日志，
+/// 就会重演 logger.ts 那次自激（46 MB + 打满 CPU）。
+///
+/// 上限那条是后补的（评审发现）：本函数原本假定「这个文件只在启动失败时才被写到，
+/// 故不需要轮转」，而 `install_panic_hook` 把**每一次** panic（含完整 backtrace，
+/// 数 KB）都写到这里，这个前提就不成立了。scanner 里一个确定性的解析 panic 会被
+/// `spawn_blocking` 兜住、前端每 2 秒重试一次 —— 即约 18 MB/小时、无上限，正是
+/// 那次自激的同一形态，只是慢了几个数量级。
+const BOOTSTRAP_LOG_MAX_BYTES: u64 = 1024 * 1024;
+
 fn log_bootstrap_failure(msg: &str) {
     eprintln!("{msg}");
     let path =
         std::env::temp_dir().join(format!("portreaper-{}-bootstrap.log", paths::env_label()));
+    // 到顶就**停写**，不做截断重建：诊断价值全在最早那几条（第一现场），
+    // 尾部无非是同一条 backtrace 的第 N 万份副本。文件落在 temp_dir，由系统回收。
+    if std::fs::metadata(&path).is_ok_and(|m| m.len() >= BOOTSTRAP_LOG_MAX_BYTES) {
+        return;
+    }
     if let Ok(mut f) = std::fs::OpenOptions::new()
         .create(true)
         .append(true)
@@ -275,7 +299,7 @@ fn build_log_plugin<R: tauri::Runtime>(
 /// - **钩子内部不可能再 panic**：只用 `&str`/`String` 与已就位的 IO 兜底路径；
 /// - **两路都写**：`log::error!` 走正常日志（插件未注册时它是空操作，不报错），
 ///   同时再写一份 `log_bootstrap_failure`（它的定位就是「日志系统靠不住时的兜底」，
-///   只追加、不轮转、写失败就算了）；
+///   只追加、带大小上限、写失败就算了 —— 上限正是为本钩子加的，见那边的注释）；
 /// - **链回默认钩子**：debug 下仍要有 Rust 原生的 panic 输出与 backtrace。
 fn install_panic_hook() {
     let default_hook = std::panic::take_hook();
@@ -306,13 +330,29 @@ fn install_panic_hook() {
 /// 把主窗口显示出来并抢到最前。三处调用点共用：托盘「显示窗口」、macOS 的
 /// `RunEvent::Reopen`、Windows 单实例守卫收到的二次启动。
 ///
-/// **必须在 spawn 出来的线程里 set_focus**（见 `RunEvent::Ready` 那段实测注释）：
-/// tao 的 `set_focus` 是 `run_on_main`，从事件回调里内联调用会就地执行，随后被
-/// 启动/激活序列覆盖 —— 实测拿不到前台。
+/// 本函数从主线程内联调用即可。**「必须 spawn 一个线程再 set_focus」那条实测约束
+/// 只对启动路径成立**，它的正文在 `RunEvent::Ready` 那段 —— 成因是启动/激活序列
+/// 随后会把就地执行的激活覆盖掉，而这里的三个调用点（托盘、`Reopen`、Windows
+/// 单实例）都发生在启动早就结束之后，没有东西会来覆盖。
+///
+/// 这句话原本被写成对本函数的普遍约束，与函数体自相矛盾（评审发现）。两个方向的
+/// 误读都有代价：照注释把三处都改成 spawn 是凭空多起三个线程；反过来认定注释是
+/// 错的、顺手把 `Ready` 那段也「简化」掉，则会复发「启动时窗口压在别人下面」。
 fn focus_main(app: &AppHandle) {
     if let Some(w) = app.get_webview_window("main") {
         let _ = w.show();
         let _ = w.set_focus();
+    }
+}
+
+/// 打开设置弹窗：先把窗口带到前台，再通知 webview（SettingsModal 在前端）。
+/// 托盘「设置…」与 macOS 应用菜单 ⌘, 共用（两处菜单项同 id "open-settings"，
+/// 事件全局派发，见托盘 on_menu_event 的注释）。事件监听走 capabilities 里
+/// 已有的 core:default（含 event:default），白名单零改动。
+fn open_settings(app: &AppHandle) {
+    focus_main(app);
+    if let Err(e) = app.emit_to("main", "open-settings", ()) {
+        log::warn!("emit open-settings failed: {e}");
     }
 }
 
@@ -364,6 +404,7 @@ pub fn run() {
             commands::remove_whitelist,
             commands::update_tray_title,
             commands::set_tray_language,
+            commands::set_window_theme,
             updater::check_update,
             updater::install_update,
             updater::restart_app,
@@ -388,8 +429,16 @@ pub fn run() {
             let quit_to_tray = MenuItemBuilder::with_id("quit-to-tray", quit_to_tray_text(lang))
                 .accelerator("Cmd+Q")
                 .build(handle)?;
+            // 「设置…」按 HIG 惯例挂 ⌘,。菜单栏虽不可见（Accessory），但 key
+            // equivalent 仍经这份隐形菜单路由 —— 与 ⌘Q 同一机制。id 与托盘的
+            // 设置项相同，点击由托盘 on_menu_event 全局派发统一处理。
+            let settings = MenuItemBuilder::with_id("open-settings", settings_text(lang))
+                .accelerator("Cmd+,")
+                .build(handle)?;
             let app_submenu = SubmenuBuilder::new(handle, "Portreaper")
                 .about(None)
+                .separator()
+                .item(&settings)
                 .separator()
                 .hide()
                 .hide_others()
@@ -420,7 +469,11 @@ pub fn run() {
             let menu = MenuBuilder::new(handle)
                 .items(&[&app_submenu, &dir.open_dir, &edit_submenu, &window_submenu])
                 .build()?;
-            handle.manage(AppMenuItems { quit_to_tray, dir });
+            handle.manage(AppMenuItems {
+                quit_to_tray,
+                settings,
+                dir,
+            });
             Ok(menu)
         })
         .on_menu_event(|app, event| {
@@ -441,7 +494,7 @@ pub fn run() {
         .setup(|app| {
             // 日志系统运行期注册：此时才拿得到 AppHandle 以解析分环境目录。
             // 放在最前面，让白名单损坏等早期告警也能落盘。
-            match paths::log_dir(app.handle()) {
+            match paths::log_dir() {
                 Ok(dir) => {
                     if let Err(e) = app.handle().plugin(build_log_plugin(dir)) {
                         log_bootstrap_failure(&format!("failed to init logging: {e}"));
@@ -484,12 +537,18 @@ pub fn run() {
             let lang = detect_lang();
             let (show_text, quit_text) = tray_texts(lang);
             let show_item = MenuItemBuilder::with_id("show", show_text).build(app)?;
+            // 与 macOS 应用菜单的设置项同 id：事件全局派发，一处 handler 覆盖双入口
+            let settings_item =
+                MenuItemBuilder::with_id("open-settings", settings_text(lang)).build(app)?;
             // 托盘的 devtools 项挂在根菜单（不入子菜单），故 devtools_in_submenu=false
             let dir = build_dir_menu(&*app, lang, false)?;
             let quit_item = MenuItemBuilder::with_id("quit", quit_text).build(app)?;
             // 用 shadowing 条件插入 devtools 项：prod 下不存在该行，故无 unused_mut 告警。
             let menu = {
-                let b = MenuBuilder::new(app).item(&show_item).item(&dir.open_dir);
+                let b = MenuBuilder::new(app)
+                    .item(&show_item)
+                    .item(&settings_item)
+                    .item(&dir.open_dir);
                 #[cfg(debug_assertions)]
                 let b = b.item(&dir.open_devtools);
                 b.separator().item(&quit_item).build()?
@@ -497,6 +556,7 @@ pub fn run() {
             app.manage(TrayLang(Mutex::new(lang)));
             app.manage(TrayMenuItems {
                 show: show_item,
+                settings: settings_item,
                 dir,
                 quit: quit_item,
             });
@@ -532,11 +592,12 @@ pub fn run() {
             let _tray = tray_builder
                 .on_menu_event(|app, event| match event.id.as_ref() {
                     "show" => focus_main(app),
-                    "open-config-dir" => open_app_dir(app, paths::config_dir(app)),
-                    "open-data-dir" => open_app_dir(app, paths::data_dir(app)),
-                    "open-cache-dir" => open_app_dir(app, paths::cache_dir(app)),
-                    "open-log-dir" => open_app_dir(app, paths::log_dir(app)),
-                    "open-temp-dir" => open_app_dir(app, paths::temp_dir(app)),
+                    "open-settings" => open_settings(app),
+                    "open-config-dir" => open_app_dir(app, paths::config_dir()),
+                    "open-data-dir" => open_app_dir(app, paths::data_dir()),
+                    "open-cache-dir" => open_app_dir(app, paths::cache_dir()),
+                    "open-log-dir" => open_app_dir(app, paths::log_dir()),
+                    "open-temp-dir" => open_app_dir(app, paths::temp_dir()),
                     #[cfg(debug_assertions)]
                     "open-devtools" => {
                         if let Some(w) = app.get_webview_window("main") {
@@ -555,11 +616,9 @@ pub fn run() {
                         ..
                     } = event
                     {
-                        let app = tray.app_handle();
-                        if let Some(w) = app.get_webview_window("main") {
-                            let _ = w.show();
-                            let _ = w.set_focus();
-                        }
+                        // 「显示窗口并抢到最前」只有 focus_main 一处实现 ——
+                        // 这里曾内联重写过一遍，是该规则的第四条漏网路径
+                        focus_main(tray.app_handle());
                     }
                 })
                 .build(app)?;

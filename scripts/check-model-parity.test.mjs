@@ -7,8 +7,10 @@ import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 
 import {
+  checkKillErrorParity,
   checkModelParity,
   checkToleranceParity,
+  extractRustEnumVariants,
   extractRustFields,
   extractTsFields,
 } from "./check-model-parity.mjs";
@@ -160,4 +162,93 @@ test("常量被改名/挪走时响亮失败，而不是「没找到 = 没问题�
   const errs = checkToleranceParity({ ...TOL, desktopSrc: "export const RENAMED = 5;" });
   assert.equal(errs.length, 1);
   assert.match(errs[0], /找不到身份容差常量/);
+});
+
+// ---- KillError 码集三方一致（platform.rs ↔ src/model.ts ↔ raycast/cli.ts）----
+
+const KILL = {
+  platformSrc: readFileSync(join(root, "crates/portreaper-core/src/platform.rs"), "utf8"),
+  desktopSrc: real.desktopSrc,
+  raycastSrc: real.raycastSrc,
+};
+
+test("真实源码的 KillError 码集当前三处一致", () => {
+  assert.deepEqual(checkKillErrorParity(KILL), []);
+});
+
+test("引擎新增变体而两份镜像都没跟上 —— 必须两侧都报", () => {
+  const platformSrc = KILL.platformSrc.replace(
+    /(\n    AccessDenied,)/,
+    "$1\n    /// 新变体\n    TimedOut,",
+  );
+  assert.notEqual(platformSrc, KILL.platformSrc, "突变未生效：锚点变体已变，用例形同虚设");
+  const errors = checkKillErrorParity({ ...KILL, platformSrc });
+  assert.equal(errors.length, 2);
+  for (const e of errors) assert.match(e, /缺少引擎码 \[timed_out\]/);
+});
+
+test("只有 Raycast 一侧漏改时只报它 —— `os` 当初正是这个形态", () => {
+  const raycastSrc = KILL.raycastSrc.replace(/\n  \| "os";/, ";");
+  assert.notEqual(raycastSrc, KILL.raycastSrc, "突变未生效：KillErrorCode 形态已变");
+  const errors = checkKillErrorParity({ ...KILL, raycastSrc });
+  assert.equal(errors.length, 1);
+  assert.match(errors[0], /raycast/);
+  assert.match(errors[0], /缺少引擎码 \[os\]/);
+});
+
+test("变体带 #[serde(rename)] 时响亮失败 —— 守卫不实现该语义，不能按变体名放行", () => {
+  const platformSrc = KILL.platformSrc.replace(
+    /(\n    AccessDenied,)/,
+    '\n    #[serde(rename = "k8s_gone")]\n    KubernetesGone,$1',
+  );
+  assert.notEqual(platformSrc, KILL.platformSrc, "突变未生效");
+  assert.throws(() => checkKillErrorParity({ ...KILL, platformSrc }), /rename/);
+});
+
+test("enum 被改名/挪走时响亮失败，而不是「没找到 = 没问题」", () => {
+  const platformSrc = KILL.platformSrc.replace("pub enum KillError", "pub enum KillFailure");
+  assert.notEqual(platformSrc, KILL.platformSrc, "突变未生效");
+  assert.throws(() => checkKillErrorParity({ ...KILL, platformSrc }), /找不到/);
+});
+
+test("wire 名推导逐字对齐 serde：连续大写要插满下划线，不能给近似值", () => {
+  // serde_derive internals/case.rs：首字符之外每遇一个大写先插 `_` 再整体小写。
+  // 近似写法 `([a-z0-9])([A-Z])` 对 IOError 给出 ioerror，而引擎发的是 i_o_error ——
+  // 守卫拿错的 wire 名比对通过，等于说假话（评审发现）。
+  const platformSrc = KILL.platformSrc.replace(/(\n    AccessDenied,)/, "$1\n    IOError,");
+  assert.notEqual(platformSrc, KILL.platformSrc, "突变未生效");
+  const errors = checkKillErrorParity({ ...KILL, platformSrc });
+  assert.equal(errors.length, 2);
+  for (const e of errors) assert.match(e, /缺少引擎码 \[i_o_error\]/);
+});
+
+test("容器级 rename_all 不是 snake_case 时响亮失败 —— 守卫只实现了这一种", () => {
+  const platformSrc = KILL.platformSrc.replace(
+    'rename_all = "snake_case"',
+    'rename_all = "kebab-case"',
+  );
+  assert.notEqual(platformSrc, KILL.platformSrc, "突变未生效");
+  assert.throws(() => checkKillErrorParity({ ...KILL, platformSrc }), /kebab-case/);
+});
+
+test("rename(serialize = …) 也必须被拦下 —— 只查 `rename =` 抓不到它", () => {
+  const platformSrc = KILL.platformSrc.replace(
+    /(\n    AccessDenied,)/,
+    '\n    #[serde(rename(serialize = "k8s_gone"))]\n    KubernetesGone,$1',
+  );
+  assert.notEqual(platformSrc, KILL.platformSrc, "突变未生效");
+  assert.throws(() => checkKillErrorParity({ ...KILL, platformSrc }), /rename/);
+});
+
+test("结构体变体（Os { message }）也算一个码，且其字段不被误当成变体", () => {
+  const variants = extractRustEnumVariants(KILL.platformSrc, "KillError");
+  assert.ok(variants.includes("os"), "Os 变体必须被识别");
+  assert.ok(!variants.includes("message"), "变体体内的字段不得被当成变体");
+  assert.deepEqual(variants, [
+    "identity_unknown",
+    "process_gone",
+    "pid_reused",
+    "access_denied",
+    "os",
+  ]);
 });

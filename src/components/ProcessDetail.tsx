@@ -1,5 +1,6 @@
 import { categoryKey, reasonKey, reasonTipKey, stateKey, useI18n } from "../i18n";
 import {
+  displayCommand,
   exemptReasons,
   formatDuration,
   formatPorts,
@@ -33,7 +34,7 @@ export function ProcessDetail({ e, os, id }: { e: ProcessEntry; os: Os | null; i
     <div className="detail" id={id}>
       <div className="detail-grid">
         <span className="detail-label">{t("detail.command")}</span>
-        <span className="detail-value mono selectable">{e.full_command || e.command}</span>
+        <span className="detail-value mono selectable">{displayCommand(e)}</span>
 
         <span className="detail-label">{t("detail.path")}</span>
         <span className="detail-value mono selectable">{e.exe_path || "—"}</span>

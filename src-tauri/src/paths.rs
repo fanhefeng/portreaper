@@ -36,27 +36,27 @@ fn required(opt: Option<PathBuf>, what: &str) -> tauri::Result<PathBuf> {
 }
 
 /// 分环境后的配置目录（白名单 whitelist.json 落此处）。
-pub fn config_dir(_app: &AppHandle) -> tauri::Result<PathBuf> {
+pub fn config_dir() -> tauri::Result<PathBuf> {
     required(portreaper_core::paths::config_dir(), "config")
 }
 
 /// 分环境后的日志目录（tauri-plugin-log 的 Folder target 指向此处）。
-pub fn log_dir(_app: &AppHandle) -> tauri::Result<PathBuf> {
+pub fn log_dir() -> tauri::Result<PathBuf> {
     required(portreaper_core::paths::log_dir(), "log")
 }
 
 /// 分环境后的缓存目录（可重建的临时性数据，OS 可能在空间紧张时回收）。
-pub fn cache_dir(_app: &AppHandle) -> tauri::Result<PathBuf> {
+pub fn cache_dir() -> tauri::Result<PathBuf> {
     required(portreaper_core::paths::cache_dir(), "cache")
 }
 
 /// 分环境后的数据（文件存储）目录。
-pub fn data_dir(_app: &AppHandle) -> tauri::Result<PathBuf> {
+pub fn data_dir() -> tauri::Result<PathBuf> {
     required(portreaper_core::paths::data_dir(), "data")
 }
 
 /// 分环境后的应用专属临时目录。
-pub fn temp_dir(_app: &AppHandle) -> tauri::Result<PathBuf> {
+pub fn temp_dir() -> tauri::Result<PathBuf> {
     Ok(portreaper_core::paths::temp_dir())
 }
 

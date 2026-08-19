@@ -50,6 +50,42 @@ test("README 漏掉一个资产必须被拦截", () => {
   assert.ok(errors.some((e) => e.includes("README.md")));
 });
 
+test("删掉整个「Re-upload assets under stable names」步骤必须被拦截", () => {
+  // 旧判据在整份 workflow 全文扫资产名，而 release notes 的 heredoc 里也写着这三个
+  // 稳定名 —— 把真正干活的那一步删掉，守卫照样返回 0 错误。而 publish 的 verify 只
+  // 校验版本化名，于是 release 绿灯发布、全部稳定下载链接同时 404（评审实测反例）。
+  const step = real.releaseSrc.indexOf("      - name: Re-upload assets under stable names");
+  assert.notEqual(step, -1, "锚点步骤名已变，用例形同虚设");
+  const next = real.releaseSrc.indexOf("\n      - name: ", step + 1);
+  assert.notEqual(next, -1, "找不到下一个步骤，切法已失配");
+  const releaseSrc = real.releaseSrc.slice(0, step) + real.releaseSrc.slice(next + 1);
+
+  // 反例必须仍保留 notes 里的裸名 —— 否则拦下它的是「集合不一致」，测不到本用例
+  assert.ok(releaseSrc.includes("`Portreaper-macos-arm64.dmg`"), "notes 裸名应当仍在");
+  assert.ok(!releaseSrc.includes("dist/Portreaper-macos-arm64.dmg"), "上传行应已被切掉");
+
+  const errors = checkAssetNames({ ...real, releaseSrc });
+  assert.equal(errors.length, 1, "步骤整个不见了，报一条就够");
+  assert.match(errors[0], /找不到「Re-upload assets under stable names」步骤/);
+});
+
+test("把上传命令换成 echo 也必须被拦截 —— 判据是那一步真的产出了稳定名", () => {
+  // 上一条测「步骤没了」；这条测「步骤还在但不干活了」。全文扫的判据对后者无能为力：
+  // 只要文件里任何地方出现过 `dist/<name>` 就算数（评审发现）。
+  const step = real.releaseSrc.indexOf("      - name: Re-upload assets under stable names");
+  const next = real.releaseSrc.indexOf("\n      - name: ", step + 1);
+  const body = real.releaseSrc.slice(step, next);
+  const gutted = body
+    .replace(/gh release upload[\s\S]*?(?=\n\n|$)/, 'echo "would upload"')
+    .replace(/^\s*cp "dist\/.*$/gm, '          echo "would copy"');
+  const releaseSrc = real.releaseSrc.slice(0, step) + gutted + real.releaseSrc.slice(next);
+  assert.ok(!gutted.includes('cp "dist/'), "突变未生效：cp 行还在");
+
+  const errors = checkAssetNames({ ...real, releaseSrc });
+  assert.equal(errors.length, 3, "三个稳定名都该报");
+  for (const e of errors) assert.match(e, /步骤里找不到/);
+});
+
 test("en 字典缺键必须被拦截（website 无 tsc 兜底）", () => {
   // 在 zh 字典里加一个 en 没有的键
   const i18nSrc = real.i18nSrc.replace(/zh: \{/, 'zh: {\n    "only.in.zh": "孤键",');

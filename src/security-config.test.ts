@@ -12,14 +12,25 @@
 //   invoke + openUrl —— 任何新增权限（如曾经的 4 个 core:window:allow-* 死权限，
 //   评审发现：无消费者、徒增注入后攻击面）都必须先改这里、强制过一次评审。
 import { describe, it, expect } from "vite-plus/test";
-import { readFileSync } from "node:fs";
+import { readdirSync, readFileSync } from "node:fs";
 import { join } from "node:path";
 
 // happy-dom 环境下 import.meta.url 是 http: 协议，不能喂给 fs ——
 // vitest 的工作目录就是项目根，直接从 cwd 解析。
 const conf = JSON.parse(readFileSync(join(process.cwd(), "src-tauri/tauri.conf.json"), "utf8"));
-const caps = JSON.parse(
-  readFileSync(join(process.cwd(), "src-tauri/capabilities/default.json"), "utf8"),
+
+// **必须枚举整个目录，不能只读 default.json**（评审发现）：tauri.conf.json 没有设
+// `app.security.capabilities`，该字段缺省时 Tauri 2 会启用 `capabilities/` 目录下的
+// **全部**文件。只断言 default.json 的话，新增一个 extra.json 放行 shell:allow-execute
+// / fs:default 能通过本测试、typecheck、全部守卫脚本与 clippy —— 攻击面已经打开，
+// 而这几条断言正是为「新增权限必须先改这里、强制过一次评审」而存在的。
+const CAPS_DIR = join(process.cwd(), "src-tauri/capabilities");
+const capFiles = readdirSync(CAPS_DIR)
+  .filter((f) => f.endsWith(".json"))
+  .sort();
+/** 真正生效的权限面 = 目录下所有 capability 文件的 permissions 并集。 */
+const allPermissions: unknown[] = capFiles.flatMap(
+  (f) => JSON.parse(readFileSync(join(CAPS_DIR, f), "utf8")).permissions ?? [],
 );
 
 describe("security config guards", () => {
@@ -57,8 +68,14 @@ describe("security config guards", () => {
     expect(security.devCsp).toBeUndefined();
   });
 
+  it("capabilities 目录只有 default.json —— 多一个文件就是多一份被静默启用的权限", () => {
+    // 这条与下面的并集断言是两道独立的闸：即便有人连同本断言一起改了文件集，
+    // 并集断言仍会因为新权限而失败。
+    expect(capFiles).toEqual(["default.json"]);
+  });
+
   it("权限面是精确的全量白名单：core:default + log:default + scoped opener，不多一项", () => {
-    const perms: unknown[] = caps.permissions;
+    const perms: unknown[] = allPermissions;
     // 字符串型权限精确等于期望集合 —— 新增任何权限必须显式修改本断言。
     // log:default：前端 logger.ts 把未捕获异常转发到后端日志文件所需（仅写日志，
     // 无读取/无文件系统访问，攻击面极小）。
@@ -72,7 +89,7 @@ describe("security config guards", () => {
   });
 
   it("opener 权限已收窄：无 opener:default，open-url 仅限 localhost", () => {
-    const perms: unknown[] = caps.permissions;
+    const perms: unknown[] = allPermissions;
     expect(perms).not.toContain("opener:default");
     expect(perms).not.toContain("opener:allow-open-url"); // 裸形（无 scope）也不允许
 

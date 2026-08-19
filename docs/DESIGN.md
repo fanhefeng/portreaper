@@ -8,10 +8,19 @@ green accent ≤10%, red strictly semantic).
 
 ## Theme
 
-Dark only. Scene: a developer at night, dark IDE and terminal filling the
-screen, opens the tray window for under 15 seconds to find and kill a port
-squatter. The window must feel native to that ambient light and surface its
-single answer instantly.
+Dark-first, light available (设置 › 外观). The anchoring scene is unchanged:
+a developer at night, dark IDE and terminal filling the screen, opens the tray
+window for under 15 seconds to find and kill a port squatter — the palette is
+therefore designed dark and the light theme mirrors it token for token.
+Mechanism: `src/settings.ts` stamps `data-theme="dark"|"light"` on `<html>`
+(the "system" setting resolves `prefers-color-scheme`); **bare `:root` IS the
+dark theme** (also the pre-JS first frame), and `:root[data-theme="light"]`
+overrides every token + `color-scheme`. Deliberately NOT a
+`prefers-color-scheme` media query: the explicit dark/light settings must be
+able to override the OS. Native window chrome follows via the
+`set_window_theme` command (`AppHandle::set_theme`). The appearance default is
+**dark**, not system — the light theme was added later, and upgrade users must
+not get reskinned until they opt in.
 
 ## Color (OKLCH, defined in `:root` of App.css)
 
@@ -19,7 +28,11 @@ Neutrals are tinted toward the brand green hue (h≈165, chroma 0.004–0.008).
 **Every token is declared twice: sRGB hex/rgb first, oklch second** — macOS
 10.15–12.2 WKWebView (Safari < 15.4) cannot parse oklch and would otherwise
 drop every color. Never add a color as a bare oklch literal; add a token with
-both declarations.
+both declarations — **and define it in both theme blocks** (bare `:root` dark
++ `:root[data-theme="light"]`): a token that exists in only one theme renders
+as the other theme's color after a toggle. The table below lists the dark
+values; the light counterparts keep the same hue discipline with accents
+darkened to hold ≥4.5:1 on the light background.
 
 | Token | Value | Role |
 |---|---|---|

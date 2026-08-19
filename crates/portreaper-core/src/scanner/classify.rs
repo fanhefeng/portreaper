@@ -118,6 +118,19 @@ pub(crate) const GRACE_SECS: u64 = 10;
 /// 不变量：标准安装路径 / launchd 托管 ⇒ 永不自动标记（白名单逻辑在 scan() 外层，不在此处）。
 pub(crate) fn classify(s: &ProcessSnapshot) -> Verdict {
     // ---- 1. 硬正向：defunct 永远标记 ----
+    //
+    // **实际只覆盖一个窄竞态窗口，不是常态路径**（评审发现：此处与 CLAUDE.md 都曾
+    // 把它写得像主路径）。稳态僵尸根本喂不到这里：
+    //   - 监听者一路：僵尸已释放全部 fd，`lsof -sTCP:LISTEN` 报不到它；
+    //   - 无端口孤儿一路：要先过 dev-like 预闸，而 macOS 的 `ps` 对僵尸的
+    //     `command` 与 `comm` **都只输出 `<defunct>`**（本机实测 5 个僵尸，无一例外），
+    //     进程名整个丢失 ⇒ dev 关键字/类别/自动化三个判据全假 ⇒ 整行被丢弃。
+    // 真正会走到这里的是「lsof 与 ps 两次快照之间（~50ms）刚好死掉的监听者」。
+    //
+    // 这条规则本身是对的，保留：拿到带 Z 的快照就该这么判。但**不要**为了让它
+    // 常态生效去放宽孤儿预闸 —— 僵尸已经死了，杀它没有任何效果，该处理的是不回收
+    // 子进程的父进程；把它列进一个承诺「杀掉就能拿回端口」的工具里，只会让
+    // confirmGone 永远报「仍在」。
     if s.state.as_deref().is_some_and(|st| st.contains('Z')) {
         return Verdict {
             is_suspect: true,

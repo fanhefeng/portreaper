@@ -434,6 +434,11 @@ impl PlatformState {
     pub(crate) fn warm_up(&mut self) {
         refresh_processes(&mut self.sys);
     }
+
+    /// Windows 的 `cpu_percent` 是 sysinfo **两次 refresh 之间**的增量，一次性
+    /// 调用者必须真的等这段区间，否则每一行都恒为 0%（与 macOS 成对的平台语义，
+    /// 由 `scan_once` 读取 —— 编排层不再自己 `cfg!(windows)`）。
+    pub(crate) const NEEDS_CPU_INTERVAL: bool = true;
 }
 
 /// 必须用 `_specifics` + 显式 refresh_kind（评审发现的 Windows 核心失效）：便捷的
@@ -477,11 +482,22 @@ fn sanitize_times(start: u64, run: u64) -> (Option<u64>, u64) {
 }
 
 impl PlatformState {
-    pub(crate) fn collect(&mut self) -> Collected {
+    /// 与 macOS 同签名（编译期多态的既有纪律）。
+    ///
+    /// 失败成因与 macOS **不同但同类**：这边不 shell 出子进程，没有「挂死/起不来」
+    /// 那条路；但 `GetExtendedTcpTable` 自身会失败，而它一失败端口列表就凭空变空 ——
+    /// 与 macOS 那条「ps 失败 ⇒ 界面宣布一切正常」是同一个谎。故两族**全部**失败时
+    /// 整体失败；一族成功则保留部分结果（IPv6 在某些环境本就不可用）。
+    /// 进程表来自 sysinfo，没有可失败的返回值，不参与这个判断。
+    pub(crate) fn collect(&mut self) -> Result<Collected, String> {
+        let (tables, tcp_ok) = tcp_tables();
+        if !tcp_ok {
+            return Err("GetExtendedTcpTable failed for both IPv4 and IPv6".to_string());
+        }
         let TcpTables {
             listeners: ports_by_pid,
             mut established_local,
-        } = tcp_tables();
+        } = tables;
 
         refresh_processes(&mut self.sys);
         let sys = &self.sys;
@@ -579,13 +595,13 @@ impl PlatformState {
             ports.dedup();
         }
 
-        Collected {
+        Ok(Collected {
             listeners,
             procs,
             launchd_pids: Default::default(),
             cwds,
             established_local_ports: established_local,
-        }
+        })
     }
 }
 
@@ -636,8 +652,16 @@ struct TcpTables {
 /// LISTENER 表大一两个数量级，这些 ESTABLISHED 行会先落进 `established_local`，
 /// 由 `collect()` 在 procs 到手后收窄到自动化实例。收窄之所以只能后置，是因为
 /// 判据要读进程的命令行，而进程表此刻还没采。
-fn tcp_tables() -> TcpTables {
+/// 返回 `(表, 是否至少有一个地址族成功)`。
+///
+/// 第二个值是给 `collect()` 用的失败信号：两族**全部**失败时端口列表会凭空变空，
+/// 而这正是本函数里那两条 log::error 早就写着要防的形态 —— 只留痕不上报的话，
+/// 界面会把它渲染成「这台机器很干净」（评审发现；macOS 侧的同一问题已由
+/// `cmd_output` 的 ok_or 修掉，这边补齐对称性）。
+/// 一族成功即保留部分结果：IPv6 在某些环境下本就不可用，不该整轮失败。
+fn tcp_tables() -> (TcpTables, bool) {
     let mut out = TcpTables::default();
+    let mut any_ok = false;
 
     unsafe {
         for af in [u32::from(AF_INET.0), u32::from(AF_INET6.0)] {
@@ -696,6 +720,7 @@ fn tcp_tables() -> TcpTables {
                         out.push_row(row.dwState, row.dwOwningPid, row.dwLocalPort);
                     }
                 }
+                any_ok = true;
                 break;
             }
             if !settled {
@@ -707,7 +732,7 @@ fn tcp_tables() -> TcpTables {
         }
     }
 
-    out
+    (out, any_ok)
 }
 
 impl TcpTables {

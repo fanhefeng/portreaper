@@ -152,6 +152,19 @@ export function formatPorts(ports: number[], sep = " "): string {
   return ports.map((p) => `:${p}`).join(sep);
 }
 
+/**
+ * 展示用的命令行：优先完整命令行，为空时退回 lsof 短名。
+ *
+ * 「显示哪一个」是展示契约的一部分（毁灭性确认要让用户看清杀的是什么，短名
+ * `node` 不够辨认），此前六处各写一遍 `e.full_command || e.command`（评审发现）——
+ * 与 `formatPorts` 收敛四处 join 是同一理由：漏改一处只会在个别界面上表现为
+ * 不一致，没有任何东西会报错。取 `Pick` 而非整个 `ProcessEntry`，确认框那类
+ * 只携带部分字段的快照也能直接用。
+ */
+export function displayCommand(e: Pick<ProcessEntry, "full_command" | "command">): string {
+  return e.full_command || e.command;
+}
+
 /** 变更类 invoke（kill / 白名单）共用的超时与本地化：与 SCAN_TIMEOUT_MS 同一
  *  故障类（后端子进程挂起 → invoke 永不 settle），但后果更糟 —— runAction 的
  *  finally 永不执行，sweeping/killingPid 卡死会**永久禁用**清扫和行内按钮且无

@@ -34,6 +34,13 @@ tauri-plugin-log = "2" # 统一日志系统（分环境目录 + 大小轮转，�
 # 也因此**不进** check-tauri-parity.mjs 的配对表（那张表只管「Rust crate + npm 包」
 # 成对存在的插件；本插件没有 npm 侧，加错表反而会响亮失败）。
 tauri-plugin-updater = "2"
+# 只为 `tokio::time::timeout`（updater.rs 的下载超时）。tauri 的 async runtime 本就是
+# tokio，这里不引入新的运行时、只启用 time feature —— `tauri::async_runtime` 没有
+# 导出 timeout，而插件的下载路径**自带不了**超时：`check()` 构造 `Update` 时把
+# timeout 硬编码成 None（tauri-plugin-updater 2.10.1 的 updater.rs:553，builder 上
+# 设的值只作用于检查请求）。没有它，一次连接不断但不再有数据的下载会让
+# PendingUpdate 被永久 take 走，用户只能重启应用才能再更新（评审发现）。
+tokio = { version = "1", features = ["time"] }
 # updater.rs 的 UpdateInfo / InstallProgress 需要 derive(Serialize) —— 这是本 crate
 # 第一个真实的 serde 消费者（此前「零 derive、刻意不依赖 serde」的历史见 git blame）。
 serde = { version = "1", features = ["derive"] }

@@ -39,7 +39,7 @@ export function KillConfirmModal(props: {
       </div>
       <div className="modal-row">
         <span className="modal-label">{t("confirm.cmd")}</span>
-        <span className="mono">{confirm.command}</span>
+        <span className="mono modal-cmd">{confirm.command}</span>
       </div>
       <div className="modal-row">
         <span className="modal-label">{t("confirm.pid")}</span>

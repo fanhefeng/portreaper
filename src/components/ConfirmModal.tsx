@@ -45,8 +45,19 @@ export function ConfirmModal(props: {
  *  焦点不该逃出弹窗这条 a11y 不变量是同一条。 */
 export function trapTab(ev: ReactKeyboardEvent<HTMLDivElement>) {
   if (ev.key !== "Tab") return;
-  const btns = ev.currentTarget.querySelectorAll<HTMLButtonElement>("button");
-  if (btns.length === 0) return;
+  // 只认**可聚焦**的按钮：disabled 的按钮 querySelectorAll 找得到、Tab 却根本不会
+  // 停在它上面，拿它当边界等于没有边界。
+  const btns = Array.from(ev.currentTarget.querySelectorAll<HTMLButtonElement>("button")).filter(
+    (b) => !b.disabled,
+  );
+  if (btns.length === 0) {
+    // 一个可聚焦元素都没有（UpdateModal 的下载/安装阶段就是这样）：直接吃掉 Tab。
+    // 放行的话焦点会走进弹窗背后的列表 —— 在一个 aria-modal="true" 的弹窗后面用
+    // 键盘按到「终止」按钮上（评审发现）。容器自身带 tabIndex={-1} 并已被聚焦，
+    // 本处理器才收得到这个事件。
+    ev.preventDefault();
+    return;
+  }
   const first = btns[0];
   const last = btns[btns.length - 1];
   const active = document.activeElement;

@@ -7,12 +7,15 @@
 /* 色板：OKLCH，中性色整体微染品牌色相（h≈165），克制策略 ——
    绿 accent 只给 收藏/全清/focus/端口悬停；红色只给僵尸判定与 kill。
    每个 token 先声明 sRGB 回退再用 oklch 覆盖：macOS 10.15–12.2 的
-   WKWebView（Safari < 15.4）不认 oklch，没有回退会导致全部颜色失效。 */
+   WKWebView（Safari < 15.4）不认 oklch，没有回退会导致全部颜色失效。
+
+   主题机制：裸 :root 是深色（历史默认，设置里的「深色」档与未设 data-theme
+   的首帧都落在这里）；浅色整套在下方 :root[data-theme="light"] 块里覆盖。
+   data-theme 由 src/settings.ts 写在 <html> 上（system 档解析 matchMedia）——
+   刻意不用 prefers-color-scheme 媒体查询分支：dark/light 档要能压过 OS。 */
 :root {
   /* 纯暗色 UI 必须显式声明，否则滚动条、<input>、选区高亮、文本插入符、
-     UA 默认聚焦环全部按浅色渲染 —— 在深色面板上就是一道道刺眼的白。
-     这与「要不要做浅色主题」是两笔账：DESIGN.md 的 Dark only 是既定决定，
-     这一行只是去兑现它。 */
+     UA 默认聚焦环全部按浅色渲染 —— 在深色面板上就是一道道刺眼的白。 */
   color-scheme: dark;
 
   --bg: #0b0e0d;
@@ -65,14 +68,88 @@
 
   --warn: #dca744;
   --warn: oklch(0.76 0.13 80);
+  /* .cpu-hot 徽标的软底/描边（曾是就地字面量，浅色主题要求 token 化） */
+  --warn-soft: rgb(220 167 68 / 0.12);
+  --warn-soft: oklch(0.76 0.13 80 / 0.12);
+  --warn-border: rgb(220 167 68 / 0.32);
+  --warn-border: oklch(0.76 0.13 80 / 0.32);
 
   --backdrop: rgb(2 4 3 / 0.6);
   --backdrop: oklch(0.1 0.005 165 / 0.6);
+
+  --shadow-modal: 0 24px 60px rgb(0 0 0 / 0.5);
 
   --mono: ui-monospace, SFMono-Regular, "SF Mono", Menlo, Consolas, monospace;
   --sans:
     -apple-system, BlinkMacSystemFont, "SF Pro Text", "Segoe UI", "PingFang SC", "Hiragino Sans GB",
     "Microsoft YaHei", system-ui, sans-serif;
+}
+
+/* ───── 浅色主题（data-theme="light"，见 src/settings.ts） ─────
+   与深色同一套 token 名、同一条 h≈165 微染纪律，逐 token 覆盖：
+   - 明度关系镜像翻转：--bg 是浅灰绿底，--bg-elev 反而更亮（浅色主题里
+     「抬升面」向白走，与深色里向亮走同义）；
+   - accent/danger/warn 全部压暗：深色版的亮值在白底上不足 4.5:1；
+   - --text-dim 0.50：≈4.6:1 on --bg，与深色版同一条 WCAG AA 底线。 */
+:root[data-theme="light"] {
+  color-scheme: light;
+
+  --bg: #f0f4f2;
+  --bg: oklch(0.965 0.004 165);
+  --bg-elev: #fbfdfc;
+  --bg-elev: oklch(0.99 0.002 165);
+  --surface: #e4e9e6;
+  --surface: oklch(0.93 0.005 165);
+  --surface-2: #d6dcd9;
+  --surface-2: oklch(0.89 0.006 165);
+  --border: #ccd3cf;
+  --border: oklch(0.87 0.006 165);
+  --border-strong: #aab2ae;
+  --border-strong: oklch(0.78 0.008 165);
+  --text: #232f2a;
+  --text: oklch(0.25 0.01 165);
+  --text-muted: #4d5954;
+  --text-muted: oklch(0.45 0.012 165);
+  --text-dim: #5b6762;
+  --text-dim: oklch(0.5 0.012 165);
+
+  --accent: #0a7d5e;
+  --accent: oklch(0.56 0.13 165);
+  --accent-soft: rgb(10 125 94 / 0.1);
+  --accent-soft: oklch(0.56 0.13 165 / 0.1);
+  --accent-border-soft: rgb(10 125 94 / 0.28);
+  --accent-border-soft: oklch(0.56 0.13 165 / 0.28);
+  --accent-border: rgb(10 125 94 / 0.45);
+  --accent-border: oklch(0.56 0.13 165 / 0.45);
+  --on-accent: #f7fbf9;
+  --on-accent: oklch(0.98 0.003 165);
+
+  --danger: #c23934;
+  --danger: oklch(0.55 0.19 25);
+  --danger-btn: #b92f2c;
+  --danger-btn: oklch(0.53 0.2 25);
+  --on-danger: #fdf7f6;
+  --on-danger: oklch(0.98 0.005 25);
+  --danger-text: #b23a35;
+  --danger-text: oklch(0.52 0.18 25);
+  --danger-soft: rgb(194 57 52 / 0.08);
+  --danger-soft: oklch(0.55 0.19 25 / 0.08);
+  --danger-soft-hover: rgb(194 57 52 / 0.13);
+  --danger-soft-hover: oklch(0.55 0.19 25 / 0.13);
+  --danger-border: rgb(194 57 52 / 0.3);
+  --danger-border: oklch(0.55 0.19 25 / 0.3);
+
+  --warn: #8a6a1e;
+  --warn: oklch(0.55 0.12 80);
+  --warn-soft: rgb(138 106 30 / 0.12);
+  --warn-soft: oklch(0.55 0.12 80 / 0.12);
+  --warn-border: rgb(138 106 30 / 0.35);
+  --warn-border: oklch(0.55 0.12 80 / 0.35);
+
+  --backdrop: rgb(52 60 56 / 0.4);
+  --backdrop: oklch(0.3 0.005 165 / 0.4);
+
+  --shadow-modal: 0 24px 60px rgb(30 40 36 / 0.2);
 }
 
 html,
@@ -586,15 +663,13 @@ button {
 }
 
 /* 「负载烧在子进程里」徽标：暖色描边胶囊，与端口/无端口徽标同体量但明确示警。
-   颜色沿用 --warn（= verdict-likely 的暖色），软背景/描边按本文件既有风格
-   写成 rgb + oklch 双行回退，不引入 color-mix（webview 版本下限未验证）。 */
+   颜色沿用 --warn（= verdict-likely 的暖色），软背景/描边走 --warn-soft/-border
+   token（双主题各有一份，rgb + oklch 双行回退在 token 定义处）。 */
 .cpu-hot {
   font-size: 10px;
   color: var(--warn);
-  background: rgb(220 167 68 / 0.12);
-  background: oklch(0.76 0.13 80 / 0.12);
-  border: 1px solid rgb(220 167 68 / 0.32);
-  border: 1px solid oklch(0.76 0.13 80 / 0.32);
+  background: var(--warn-soft);
+  border: 1px solid var(--warn-border);
   border-radius: 4px;
   padding: 1px 5px;
   white-space: nowrap;
@@ -854,7 +929,7 @@ button {
 }
 
 .footer-version {
-  color: var(--text-faint, var(--text-dim));
+  color: var(--text-dim);
   opacity: 0.75;
   user-select: text;
 }
@@ -867,8 +942,9 @@ button {
   flex-shrink: 0;
 }
 
-/* 检查更新：与 footer 文本同层级的低调文字钮，不抢内容区的注意力 */
-.footer-update-btn {
+/* footer 文字钮（设置 / 检查更新）：与 footer 文本同层级的低调样式，
+   不抢内容区的注意力 */
+.footer-btn {
   background: transparent;
   border: none;
   padding: 0;
@@ -877,7 +953,7 @@ button {
   cursor: pointer;
 }
 
-.footer-update-btn:hover {
+.footer-btn:hover {
   color: var(--text-muted);
   text-decoration: underline;
 }
@@ -941,7 +1017,7 @@ button {
   padding: 20px 22px;
   width: 460px;
   max-width: 92vw;
-  box-shadow: 0 24px 60px rgb(0 0 0 / 0.5);
+  box-shadow: var(--shadow-modal);
   animation: pop-in 0.18s ease-out;
 }
 
@@ -972,6 +1048,18 @@ button {
 
 .modal-row .mono {
   font-size: 12px;
+}
+
+/* 确认框里的完整命令行。规则与详情面板的 .detail-value 一致，而此前只有那一处有
+   —— 同一份数据展开看正常、点终止看溢出（评审发现）。
+   成因：.modal 是固定 460px，flex item 默认 min-width:auto 收不到 min-content 以下，
+   而 headless Chrome 这类命令行里有 --field-trial-handle=… 之类数百字符、不含空格
+   的 token，既无折行机会也无法收缩，于是横向捅出弹窗被窗口边缘裁掉。
+   把短名换成完整命令行的初衷正是「毁灭性确认要让用户看清杀的是什么」，溢出把那次
+   修复的收益整个抵消了。 */
+.modal-cmd {
+  min-width: 0;
+  word-break: break-all;
 }
 
 .modal-label {
@@ -1161,11 +1249,119 @@ button {
   margin-right: auto;
 }
 
+/* ───── 设置弹窗（SettingsModal —— 复用 .modal 骨架类） ───── */
+
+.settings-modal {
+  width: 440px;
+}
+
+.settings-modal .modal-body {
+  gap: 14px;
+}
+
+.settings-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  font-size: 12.5px;
+}
+
+.settings-label {
+  display: flex;
+  flex-direction: column;
+  gap: 1px;
+  color: var(--text);
+  min-width: 0;
+}
+
+.settings-note {
+  font-size: 11px;
+  color: var(--text-dim);
+}
+
+/* 分段选择：与 header 的 .filter-tabs 同一视觉配方，但底色用 --bg-elev ——
+   它坐在 .modal-body（--surface）里，同色会糊成一片 */
+.segmented {
+  display: flex;
+  background: var(--bg-elev);
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  padding: 2px;
+  gap: 2px;
+  flex-shrink: 0;
+}
+
+.segmented button {
+  background: transparent;
+  border: none;
+  color: var(--text-muted);
+  padding: 4px 10px;
+  font-size: 12px;
+  font-weight: 500;
+  cursor: pointer;
+  border-radius: 6px;
+  transition:
+    color 0.15s ease-out,
+    background 0.15s ease-out;
+}
+
+.segmented button:hover {
+  color: var(--text);
+}
+
+.segmented button.active {
+  background: var(--surface-2);
+  color: var(--text);
+}
+
+/* 开关（role="switch"，aria-checked 驱动样式 —— 状态即样式源，不会漂移） */
+.switch {
+  position: relative;
+  width: 34px;
+  height: 20px;
+  border-radius: 999px;
+  border: 1px solid var(--border-strong);
+  background: var(--surface-2);
+  cursor: pointer;
+  padding: 0;
+  flex-shrink: 0;
+  transition:
+    background 0.15s ease-out,
+    border-color 0.15s ease-out;
+}
+
+.switch::after {
+  content: "";
+  position: absolute;
+  top: 2px;
+  left: 2px;
+  width: 14px;
+  height: 14px;
+  border-radius: 50%;
+  background: var(--text-muted);
+  transition:
+    transform 0.15s ease-out,
+    background 0.15s ease-out;
+}
+
+.switch[aria-checked="true"] {
+  background: var(--accent);
+  border-color: var(--accent);
+}
+
+.switch[aria-checked="true"]::after {
+  transform: translateX(14px);
+  background: var(--on-accent);
+}
+
 @media (prefers-reduced-motion: reduce) {
   .modal-backdrop,
   .modal,
   .disclosure,
-  .update-progress-fill {
+  .update-progress-fill,
+  .switch,
+  .switch::after {
     animation: none;
     transition: none;
   }

@@ -50,8 +50,12 @@ export const TRANSIENT_REVERT_MS = 6_000;
 const AUTO_CHECK_INTERVAL_MS = 24 * 60 * 60_000;
 
 /** 应用内更新：状态机 + 动作。弹窗开合是独立一路（modalOpen）——
- *  「稍后」收起弹窗后 footer 徽标仍在，available 状态不因此丢失。 */
-export function useUpdater() {
+ *  「稍后」收起弹窗后 footer 徽标仍在，available 状态不因此丢失。
+ *
+ *  `autoCheck` 来自设置（settings.autoCheckUpdates）：只门控启动检查 + 24h 定时，
+ *  footer 的手动检查不受影响。`isDevBuild` 参数只为可测性存在 ——
+ *  vitest 里 import.meta.env.DEV 恒为 true，不注入的话 autoCheck 的门永远测不到。 */
+export function useUpdater(autoCheck: boolean = true, isDevBuild: boolean = import.meta.env.DEV) {
   const [state, setState] = useState<UpdaterState>({ phase: "idle" });
   const [modalOpen, setModalOpen] = useState(false);
   // 状态的 ref 镜像：动作函数要在**同步代码里**读当前状态做准入判断，而
@@ -95,6 +99,12 @@ export function useUpdater() {
       ) {
         return;
       }
+      // `available` 是一个**已经有结论**的状态：重查成功只会得到同一条结论，
+      // 失败却会把它清掉 —— 自动检查的 catch 分支是静默的，直接落 idle，footer
+      // 上那枚「有新版本」徽标就凭空消失了。触发不需要任何刻意操作：本 effect
+      // 在 autoCheck 由关转开时立即重查一次，24h 定时器更是自己会来（评审发现）。
+      // 手动检查放行 —— 那是用户主动要求的，且 checkFailed 有可见反馈。
+      if (!manual && cur === "available") return;
       clearRevert();
       setState({ phase: "checking", manual });
       try {
@@ -181,12 +191,13 @@ export function useUpdater() {
 
   // 自动检查：启动一次 + 每 24h。dev 下跳过 —— 端点上是正式版的 latest.json，
   // 对着 debug 构建报「有新版本」只会制造噪音（手动检查仍可用，便于联调）。
+  // 设置里关掉 autoCheck 后清掉定时器；重新打开则立即检查一次并恢复节奏。
   useEffect(() => {
-    if (import.meta.env.DEV) return;
+    if (isDevBuild || !autoCheck) return;
     void check(false);
     const id = setInterval(() => void check(false), AUTO_CHECK_INTERVAL_MS);
     return () => clearInterval(id);
-  }, [check]);
+  }, [check, autoCheck, isDevBuild]);
 
   useEffect(() => clearRevert, [clearRevert]);
 

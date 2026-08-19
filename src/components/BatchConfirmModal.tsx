@@ -1,5 +1,5 @@
 import { useI18n } from "../i18n";
-import { formatPorts, type Os, type ProcessEntry } from "../model";
+import { displayCommand, formatPorts, type Os, type ProcessEntry } from "../model";
 import { ConfirmModal } from "./ConfirmModal";
 
 /** 批量清扫确认弹窗（纯展示，从 App.tsx 抽出）：信号说明 + **全部**目标 +
@@ -35,7 +35,7 @@ export function BatchConfirmModal(props: {
         <span className="modal-label">{t("batch.procs")}</span>
         <div className="batch-list">
           {targets.map((s) => (
-            <div key={s.pid} className="batch-item mono" title={s.full_command || s.command}>
+            <div key={s.pid} className="batch-item mono" title={displayCommand(s)}>
               <span className="batch-pid">PID {s.pid}</span>
               <span className="batch-label">{s.app_label}</span>
               <span className="batch-ports muted">{formatPorts(s.ports)}</span>
