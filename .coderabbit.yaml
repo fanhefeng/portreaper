@@ -439,9 +439,11 @@ reviews:
         never on message text.
 
         Any visual change here invalidates `metadata/*.png`, which `ray lint`
-        validates and the Store shows. Regenerate them with
-        `scripts/capture-raycast-metadata.sh` before resubmitting, and keep the
-        existing privacy practice (only throwaway demo processes on screen).
+        validates and the Store shows. Retake them with Raycast's own
+        Window Capture command (Store review rejects composited images) using
+        the demo processes from `scripts/raycast-screenshot-fixtures.sh`, and
+        keep the existing privacy practice (only throwaway demo processes on
+        screen). The procedure lives in docs/RAYCAST-MAINTAINING.md.
 
   tools:
     # Already enforced locally (pre-push) and in CI. Duplicating them here

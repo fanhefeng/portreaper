@@ -296,55 +296,58 @@ Terminate（**普通终止，不是强杀**）→ 进程真的消失、端口释
 （**验完已还原**）—— 注意扩展下载的那份当时还是 `0.8.1`：它是按
 `releases/latest` 取的，此后再没刷新过，schema 没变所以也没有任何机制提醒它过期。
 
-### 重出截图的操作顺序
+### 重出截图的操作顺序（2026-08-28 重写：必须用 Raycast 自带的 Window Capture）
 
-`npm run typecheck` → 造演示进程（见下）→ `npm run dev` 载入新构建后
-`pkill -f "ray develop"`（否则 watcher 自己会以孤儿身份出现在嫌疑列表里）→
-`bash scripts/capture-raycast-metadata.sh <输出路径>` → `npx ray lint` →
-`npx ray build` → `npm outdated --prefix integrations/raycast` → `npm run publish`
-（会**更新同一个 PR**，不会重开）。
+**为什么重写**：2026-08-21 人工评审对四张截图逐一驳回 —— *"looks cropped and has a
+side border, the corner is cut off weirdly. Please use the 'Capture Window' command in
+Raycast."* 被驳的正是当时 `scripts/capture-raycast-metadata.sh` 合成出来的图：自己截
+窗口矩形再叠到渐变背景上，窗口两侧有一条深色边、圆角处露出底层轮廓，而且 `-resize`
+过的窗口发虚。**评审员认的不是尺寸对不对，是有没有走官方工具。** 那个脚本已删除，
+别再写一个回来。
 
-**演示进程怎么造**（决定了截图里能出现哪些徽标）：
+顺序：`npm run typecheck` → `scripts/raycast-screenshot-fixtures.sh start`（造演示进程，
+见下）→ `npm run dev` 载入新构建（Window Capture 只对 **dev 模式**加载的扩展去掉
+开发标记，所以 `ray develop` 要一直开着；watcher 那个 `raycast · node` 孤儿会被
+`dev-server` 过滤词挡在画面外，不用像以前那样杀掉）→ 逐张截图（见下）→
+`npx ray lint`（"validate extension metadata" 那一项）→ `npx ray build` →
+`npm outdated --prefix integrations/raycast` → 提交、推到 PR →
+`scripts/raycast-screenshot-fixtures.sh stop`。
 
-```bash
-# 脚本本身要捕获 SIGTERM（像 vite/node 那样），否则做不出 stopped 那一档
-R=~/pr-demo-screens
-for p in web-app api-gateway docs-site e2e-suite storefront; do mkdir -p "$R/$p/src"; done
-# …把 dev-server.js 放进每个 src/，内容见本节末
-(cd "$R/web-app/src"     && nohup node "$R/web-app/src/dev-server.js" 5173 &)
-(cd "$R/api-gateway/src" && nohup node "$R/api-gateway/src/dev-server.js" 3000 &)
-(cd "$R/docs-site/src"   && nohup node "$R/docs-site/src/dev-server.js" 4321 &)
-(cd "$R/e2e-suite/src"   && nohup node "$R/e2e-suite/src/dev-server.js" --no-listen &)
-(cd "$R/storefront/src"  && nohup node "$R/storefront/src/dev-server.js" 5180 &)
-(cd "$R/storefront/src"  && nohup node "$R/storefront/src/dev-server.js" 5181 &)
-sleep 12                                  # 跨过 10s 宽限期，否则全是 possible
-kill -STOP $(pgrep -f "dev-server.js 4321")   # 造 stopped 那一档
-```
+**Window Capture 在 Raycast 2.x 里的形态**（与旧文档描述的「Advanced 里的热键」不同）：
 
-四个不显然、但缺一不可的点（每个都踩过）：
+- 它是内置命令 `Raycast › Capture Window`（设置里搜 "capture" 能找到），本机注册的
+  热键是 **⌘⌥⌃7**（Raycast 日志里 `Hotkey shortcut: ⌘⌥⌃ #26` / `windowCapture`）。
+  选项：Copy to clipboard、Show in Finder、Custom Wallpaper；`Save to Metadata`
+  勾上后直接写进 dev 扩展的 `metadata/`，文件名形如 `Raycast 2026-08-28 14.37.30.png`，
+  自己改名成 `portreaper-N.png`。
+- 触发后**不会立刻截**：先弹一个预览覆盖层（Raycast 窗口叠在当前壁纸上，底部一个
+  相机按钮 + `Save to Metadata` 复选框），点相机才落盘。预览是**实时合成**的，
+  这一点是第 4 张图的关键，见下。
+- 覆盖层一失焦就作废（日志 `Window Capture was cancelled by user`）—— 截图期间
+  别切应用、别让任何新窗口冒出来。
+- 用 deeplink `raycast://extensions/raycast/raycast/capture-window` 也能触发，但
+  外部触发会先弹「Request to run」确认（选 Always Run Command 后不再弹），且
+  **确认框（`confirmAlert`）弹着的时候 deeplink 会被直接吞掉**，热键也被屏蔽。
 
-- **必须用绝对脚本路径启动**。`extract_project_name` 要求路径形如
-  `/Users/<user>/…/<项目>/src/…`（认 `src`/`dist`/`node_modules` 这类停用词，
-  取它前一段）。用 `cd` 进去再跑 `node dev-server.js`，argv 里是相对路径，
-  标签就退化成 `dev-server.js · node`，项目名整个消失。
-- **每个进程从自己的项目目录启动**。全从同一个 cwd 启动的话，引擎按
-  「同 cwd + 同脚本身份」把六行**互相**判成重复实例，画面上一片 `dup of`。
-- **放在 `/tmp` 不行**：`extract_project_name` 只认 `/Users/` 下的路径。
-- 脚本名 `dev-server.js` 同时充当截图里的搜索过滤词 —— 它出现在 `app_label` 与
-  `full_command` 里，一个词就把开发机上的真实进程全挡在画面外（务必先确认它
-  在你机器上零命中：`portreaper-cli scan --json | grep -c dev-server`）。
+四张图分别怎么摆（都先在搜索框输入 `dev-server`）：
 
-```js
-// dev-server.js
-const port = process.argv[2];
-process.on("SIGTERM", () => process.exit(0));   // 捕获信号，才做得出 stopped 那一档
-if (port && port !== "--no-listen") {
-  require("node:net").createServer(() => {}).listen(Number(port), "127.0.0.1");
-}
-setInterval(() => {}, 1 << 30);
-```
+| 图 | 状态 | 操作 |
+|---|---|---|
+| 1 | 满宽列表，五种徽标同框 | ⌘⇧D 收起详情 → ⌘⌥⌃7 → 点相机 |
+| 2 | 列表 + 详情面板，选中被挂起的 docs-site | ↓↓ 选到 docs-site（详情默认展开）→ ⌘⌥⌃7 → 点相机 |
+| 3 | ⌘K 动作面板 | ↓↓ → ⌘⇧D → ⌘K → ⌘⌥⌃7 → 点相机 |
+| 4 | 终止确认框 | ↓↓ → ⌘⇧D → **先 ⌘⌥⌃7 再立刻回车**（确认框弹出后热键与 deeplink 都失效，只能反过来：覆盖层先起、再让确认框在实时预览里出现）→ 点相机 → **Esc 关覆盖层 → 点 Cancel**（别按回车，那是 Terminate） |
 
-用完清干净：`pkill -CONT -f dev-server.js; pkill -f dev-server.js; rm -rf ~/pr-demo-screens`。
+> 自动化备忘（2026-08-28 这轮是无人值守做的，记下来免得重摸）：System Events 的
+> `key code 26 using {command down, option down, control down}` **触发不了** Raycast
+> 的全局热键，得用 CGEvent 在 HID 层投递（`CGEvent(keyboardEventSource:virtualKey:keyDown:)`
+> + `post(tap: .cghidEventTap)`）；发按键的进程需要辅助功能权限，这台机器上 Warp 没有、
+> Ghostty 有，`open -na Ghostty --args -e <脚本>` 起的脚本会继承 Ghostty 的授权，但要先
+> `set visible of process "Ghostty" to false`，否则 Ghostty 窗口一冒头 Raycast 就收起。
+
+**演示进程**：`scripts/raycast-screenshot-fixtures.sh start | stop`。脚本头部写着四个
+缺一不可的点（绝对路径、各自 cwd、必须在 `/Users/` 下、`dev-server` 零命中），
+不再重复。
 
 **deeplink 打开命令时有个会误杀进程的坑**：
 `open "raycast://extensions/fhf1121/portreaper/search-ports"` 会先弹一次
@@ -435,14 +438,9 @@ Confirmed 的孤儿不会被降档。判定分层由分区标题与 Dropdown 呈
       顺带注意：deeplink 的「Request to run」确认框背后就是 Raycast 的应用列表，
       别在它还在的时候截图。
 
-      生成用 **`scripts/capture-raycast-metadata.sh`**（维护者工具，在主仓库
-      `scripts/` 下，不随扩展提交）。三个会静默毁掉成果的坑已固化进脚本，
-      不必再靠记忆规避：只截窗口矩形而非全屏、取面积最大的窗口（⌘K 动作面板与
-      输入法候选条都是独立窗口）、圆角遮罩剔除窗口外像素。
-
-      脚本管不到、调用方要自己注意的第四个坑：`ray develop` 的 watcher 自己
-      就是个无端口孤儿，会以 `raycast · node` 出现在嫌疑列表里。扩展一旦载入
-      Raycast，watcher 就可以停掉、命令仍可用 —— 截图前先 `pkill -f "ray develop"`。
+      **2026-08-28 四张全部用 Raycast 自带的 Window Capture 重出**（人工评审驳回了
+      此前合成脚本的产物，见《重出截图的操作顺序》）。演示进程由
+      `scripts/raycast-screenshot-fixtures.sh` 生成；截图本身只能走官方工具。
 
   > README 里引用的图片放**顶层 `media/`**，不能混进 `metadata/` 或 `assets/`。
   > 目前 README 未引用任何图片，故无需建 `media/`。
@@ -452,12 +450,22 @@ Confirmed 的孤儿不会被降档。判定分层由分区标题与 Dropdown 呈
       SHA-256 校验、校验失败即删、UI 明示，并引用上述先例 —— 这是审核最关注的一点，
       主动说明比等着被问效率高。
 
-      **当前状态：raycast/extensions#30075，OPEN，等待人工评审**
+      **当前状态：raycast/extensions#30075，OPEN，2026-08-28 重新标为 Ready for review**
       （2026-08-08 提交；raycastbot 提示初审最长 15 个工作日）。
 
-      机器人评审（greptile）提了三条，均成立、均已修并推到同一个 PR，
-      见 commit `Update portreaper extension`：schema 不兼容的托管副本换不掉、
-      无身份令牌的行仍摆着终止入口、偏好标题不合 title case 约定。
+      机器人评审（greptile）共提了四条，均成立、均已修并推到同一个 PR：
+      schema 不兼容的托管副本换不掉、无身份令牌的行仍摆着终止入口、偏好标题不合
+      title case 约定（前三条见 commit `Update portreaper extension`）；第四条
+      P1「并发恢复会删掉 CLI」（2026-08-16，落在上一条回复之后 3 分钟，一度漏看）——
+      `load()` 可重入而 `reqId` 只保护 React state，两轮同时进恢复分支时后一轮的
+      `rm(cliPath)` 会删掉前一轮刚装好的副本。修法：去掉两处 `rm`（`installCli`
+      本就以 `rename` 原子覆盖，先删只会制造「磁盘上没有 CLI」的窗口）+
+      `installCliOnce` 单飞下载，见 commit `fix(raycast): 恢复分支不再先删托管 CLI`。
+
+      **人工评审第一轮（2026-08-21，@0xdhrv）**：四张 metadata 截图逐一驳回
+      （"looks cropped and has a side border … Please use the 'Capture Window'
+      command"），PR 被转成草稿。2026-08-28 用 Raycast 自带 Window Capture 全部
+      重出并回复，重新点 Ready for review。教训与新流程见《重出截图的操作顺序》。
 
       两条**再提交时的操作要点**：
 
