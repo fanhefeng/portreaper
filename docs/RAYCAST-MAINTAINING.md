@@ -487,6 +487,27 @@ Confirmed 的孤儿不会被降档。判定分层由分区标题与 Dropdown 呈
         污染 tag 列表（本次已误推并删除；发版请用 `git push origin vX.Y.Z`
         而不是 `--tags`）。
 
+      **PR #30075 已于 2026-08-31 合并，扩展上架。** 上架后的更新发布
+      （2026-09-01 首次走通）有三个新坑，全部记档：
+
+      - **publish 前必须先吸收 raycastbot 的合并提交**（"Update CHANGELOG.md
+        and optimise images"：`{PR_MERGE_DATE}` 换成实际日期 + 全部 png 有损
+        重压）。不吸收则 publish 报 "some edits were made on your PR"。
+      - **`ray pull-contributions` 在本机必挂**：它内部循环 `git fetch
+        --deepen=1`，与本机 git 的 shallow 处理冲突（"shallow file has
+        changed since we read it"，重建 `~/.config/raycast/
+        public-extensions-fork` 缓存也一样）。绕行法：
+        `git clone --depth 1 --filter=blob:none --sparse` 出 raycast/extensions，
+        `sparse-checkout set extensions/portreaper`，`gh pr view <PR> --json
+        commits` 找出非本人提交，手动 diff/合并那些文件。
+      - **无 TTY 环境的认证**：设备码流程在管道 stdin 下直接崩
+        （`setRawMode is not a function`）；CLI 认 `GITHUB_ACCESS_TOKEN`
+        环境变量（`gh auth token` 即可），设了它认证步骤整个跳过。
+        `-I`（non-interactive）**不可用**于公共 Store 发布 —— CLI 明确拒绝；
+        带 token 的交互模式在无 TTY 下反而能走完（没有剩余交互点）。
+        更新的 CHANGELOG 规矩：新条目用新的 `{PR_MERGE_DATE}` 占位段，
+        已上架条目保持 raycastbot 改写后的原文。
+
 ## 人工评审前的自动查重（2026-08-14）
 
 Raycast 团队成员在 PR 上贴了一条带 `<!-- store-duplicate-check -->` 标记的机器初筛：
