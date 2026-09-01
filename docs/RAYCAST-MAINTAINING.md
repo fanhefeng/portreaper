@@ -437,15 +437,9 @@ Confirmed 的孤儿不会被降档。判定分层由分区标题与 Dropdown 呈
       | 文件 | 内容（2026-08-10 重出） |
       |---|---|
       | `portreaper-1.png` | 满宽列表（⌘⇧D 收起详情）：五种徽标同框 —— `no port` / `stopped` / `dup of <pid>` / `confirmed` / `pid` |
-      | `portreaper-2.png` | 列表 + 详情面板，选中的是**被挂起**那行：命令、stopped 的完整说明、Verdict、判定理由 TagList（原始码）、`State: TN · stopped` |
+      | `portreaper-2.png` | 列表 + 详情面板，选中的是**被挂起**那行（2026-09-01 随详情面板可读化改版重出）：首行结论 `Zombie. The terminal that started it is gone.`、Evidence 逐条「短语+为什么」、Verdict 徽标、绿色 `Safe to terminate? Yes`、Ports/Uptime/Started |
       | `portreaper-3.png` | ⌘K 动作面板：Danger Zone（Terminate ↵ / Force Kill ⇧⌘⌫，红色破坏性样式）+ Inspect（Toggle Details / Open localhost:4321） |
       | `portreaper-4.png` | 终止确认弹窗：`PID 76738 · port :4321 · It is suspended; terminating resumes it so it can shut down.` |
-
-      > ⚠️ **详情面板改版后上表已过时**（判定理由改 `REASON_LABEL` 可读文案 +
-      > markdown 区 Evidence 逐条解释、新增 Safe to terminate? 徽标与
-      > Started by / Started / Duplicate of 行、Verdict/State/Type 换新文字、
-      > 字段重排、首行结论 + `→ this process` 启动链）——`portreaper-2.png`
-      > 必受影响，提交 Store 前需按上述流程重截并更新此表。
 
       **画面里只出现临时造的 demo 进程**（`web-app` / `api-gateway` / `docs-site` /
       `e2e-suite` / `storefront` ×2，造法见上一节）—— 搜索框预置 `dev-server`
