@@ -508,6 +508,20 @@ Confirmed 的孤儿不会被降档。判定分层由分区标题与 Dropdown 呈
         更新的 CHANGELOG 规矩：新条目用新的 `{PR_MERGE_DATE}` 占位段，
         已上架条目保持 raycastbot 改写后的原文。
 
+      手动吸收之后 publish 依旧会被记账挡住，还差两步（2026-09-01 实测）：
+
+      - **删掉 fork 上已合并的旧分支**（`gh api -X DELETE repos/<fork>/git/
+        refs/heads/ext/portreaper`）——分支还在时检查走「PR 有新编辑」分支，
+        永远过不去。
+      - **把本地记账 tag 挪到「上游合并态镜像」上**：检查的判据是
+        `__raycast_latest_publish_ext/portreaper__` 所指提交的扩展目录 vs
+        上游 main 的扩展目录。做一个临时提交（从旧 tag 处 checkout，把稀疏
+        克隆里的上游内容整目录覆盖进 `integrations/raycast/`，
+        `git commit --no-verify` —— 跳过格式钩子保持与上游字节一致），
+        `git tag -f` 指过去，回 main 后 publish 即过；publish 成功后 CLI 会
+        自己把 tag 重新指到当前提交，临时提交沦为可回收垃圾。首次走通的
+        更新 PR：#30690（更新描述 + `gh pr ready` 也可全程 `gh` 完成）。
+
 ## 人工评审前的自动查重（2026-08-14）
 
 Raycast 团队成员在 PR 上贴了一条带 `<!-- store-duplicate-check -->` 标记的机器初筛：
