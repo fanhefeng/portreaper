@@ -67,6 +67,30 @@ export function sweepableEntries(entries: ProcessEntry[]): ProcessEntry[] {
   return entries.filter((e) => e.is_zombie_suspect && SWEEPABLE.has(e.confidence));
 }
 
+/** 「能否清理」五档 —— 详情面板的处置建议（safe.* 键族，与 Raycast 扩展的
+ *  Safe to terminate? 同口径）。措辞锚定引擎的清扫策略而非自创安全承诺：
+ *  starred/healthy 不在清扫目标集，duplicate 与 possible 永不入清扫，
+ *  "yes" 直接取自 SWEEPABLE —— 清扫策略变了这里自动跟着变。 */
+export type SafeVerdict = "starred" | "healthy" | "duplicate" | "weak" | "yes";
+
+export function safeVerdict(e: ProcessEntry): SafeVerdict {
+  if (e.is_whitelisted) return "starred";
+  if (!e.is_zombie_suspect) return "healthy";
+  if (e.duplicate_of != null) return "duplicate";
+  return SWEEPABLE.has(e.confidence) ? "yes" : "weak";
+}
+
+/** start_unix → 本地化的绝对启动时间（「已运行 2h」回答跑了多久，这里回答
+ *  几点开始 —— 用户认「是不是昨晚忘关的那个」靠后者）。 */
+export function formatStartTime(startUnix: number, lang: "zh" | "en"): string {
+  return new Date(startUnix * 1000).toLocaleString(lang === "zh" ? "zh-CN" : "en-US", {
+    month: "short",
+    day: "numeric",
+    hour: "numeric",
+    minute: "2-digit",
+  });
+}
+
 /** 豁免类 reason code —— 非嫌疑行的详情里以「为什么不是僵尸」展示 */
 export const EXEMPT_REASONS = new Set([
   "launchd_managed",

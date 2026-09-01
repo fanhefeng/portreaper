@@ -912,6 +912,20 @@ button {
   max-width: 72ch;
 }
 
+/* 「能否清理」处置建议：动作信号灯（绿 = 可以下手、黄 = 自己权衡、红 = 别动），
+   与判定徽标「进程好坏」的着色维度刻意相反。token 均已随主题双定义。 */
+.safe-ok {
+  color: var(--accent);
+}
+
+.safe-warn {
+  color: var(--warn);
+}
+
+.safe-no {
+  color: var(--danger-text);
+}
+
 /* ───── Footer 状态栏 ───── */
 
 .footer {

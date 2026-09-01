@@ -1,18 +1,32 @@
-import { categoryKey, reasonKey, reasonTipKey, stateKey, useI18n } from "../i18n";
+import { categoryKey, reasonKey, reasonTipKey, safeKey, stateKey, useI18n } from "../i18n";
 import {
   displayCommand,
   exemptReasons,
   formatDuration,
   formatPorts,
+  formatStartTime,
+  safeVerdict,
   subtreeCpuExceedsSelf,
   type Os,
   type ProcessEntry,
+  type SafeVerdict,
 } from "../model";
 import { splitLabel } from "../describe";
 
+/** 处置建议着色：绿 = 可以下手、黄 = 自己权衡、红 = 别动 —— 是**动作**的信号灯，
+ *  与判定徽标「进程好坏」的着色维度刻意相反（僵尸恰恰是绿灯）。 */
+const SAFE_CLASS: Record<SafeVerdict, string> = {
+  yes: "safe-ok",
+  weak: "safe-warn",
+  duplicate: "safe-warn",
+  healthy: "safe-no",
+  starred: "detail-dim",
+};
+
 /** 展开行的详情面板：命令 / 路径 / 资源 / 启动链 + 判定证据与豁免理由。 */
 export function ProcessDetail({ e, os, id }: { e: ProcessEntry; os: Os | null; id: string }) {
-  const { t } = useI18n();
+  const { t, lang } = useI18n();
+  const safe = safeVerdict(e);
 
   // 链末节点用主名（app_label 可能带 " · node" 次级说明，链里不需要）
   const selfName = splitLabel(e.app_label).name;
@@ -87,6 +101,15 @@ export function ProcessDetail({ e, os, id }: { e: ProcessEntry; os: Os | null; i
         <span className="detail-label">{t("detail.category")}</span>
         <span className="detail-value">{t(catKey)}</span>
 
+        {/* 绝对启动时间：resources 的「已运行」回答跑了多久，这里回答几点开始 ——
+            用户认「是不是昨晚忘关的那个」靠后者。start_unix 缺失时整行隐藏 */}
+        {e.start_unix != null && (
+          <>
+            <span className="detail-label">{t("detail.started")}</span>
+            <span className="detail-value mono">{formatStartTime(e.start_unix, lang)}</span>
+          </>
+        )}
+
         <span className="detail-label">{t("detail.resources")}</span>
         <span className="detail-value mono">
           {t("detail.resources.value", {
@@ -128,6 +151,11 @@ export function ProcessDetail({ e, os, id }: { e: ProcessEntry; os: Os | null; i
             </span>
           )}
         </span>
+
+        {/* 处置建议收尾：事实（上）→ 建议（这里）→ 证据明细（下方两块）。
+            答案从结构化字段推导（model.ts safeVerdict），措辞锚定清扫策略 */}
+        <span className="detail-label">{t("detail.safe")}</span>
+        <span className={`detail-value ${SAFE_CLASS[safe]}`}>{t(safeKey(safe))}</span>
       </div>
 
       {e.is_zombie_suspect && e.zombie_reasons.length > 0 && (

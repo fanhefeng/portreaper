@@ -4,9 +4,11 @@
 // 否则日常开发中它会常驻在半数行上，从示警退化成噪音。
 import { describe, it, expect } from "vite-plus/test";
 import {
+  formatStartTime,
   hasBusySubtree,
   isSameProcess,
   localizeKillError,
+  safeVerdict,
   subtreeCpuExceedsSelf,
   type ProcessEntry,
   type Translator,
@@ -142,5 +144,58 @@ describe("isSameProcess", () => {
   it("缺令牌时退化为只认 PID（没有可比的东西，宁可认成同一个也不谎报已消失）", () => {
     expect(isSameProcess(makeEntry({ pid: 7, start_unix: null }), 7, 1000)).toBe(true);
     expect(isSameProcess(makeEntry({ pid: 7, start_unix: 1000 }), 7, null)).toBe(true);
+  });
+});
+
+// 「能否清理」处置建议：五档全部锚定清扫策略（starred/healthy 不在目标集、
+// duplicate 与 possible 永不入清扫、confirmed/likely 恰是 SWEEPABLE）。
+// 分支**顺序**也是语义：星标压过一切 —— 引擎照常发出 confidence，
+// 但用户亲手豁免过的行绝不能被建议「可以清」。
+describe("safeVerdict", () => {
+  it("星标压过引擎判定（哪怕引擎判 confirmed）", () => {
+    const e = makeEntry({
+      is_whitelisted: true,
+      is_zombie_suspect: false,
+      confidence: "confirmed",
+    });
+    expect(safeVerdict(e)).toBe("starred");
+  });
+
+  it("健康行不建议动手", () => {
+    expect(safeVerdict(makeEntry({ is_zombie_suspect: false, confidence: "none" }))).toBe(
+      "healthy",
+    );
+  });
+
+  it("重复实例交给用户判断 —— 机器不知道在用哪个", () => {
+    const e = makeEntry({ is_zombie_suspect: true, confidence: "possible", duplicate_of: 4268 });
+    expect(safeVerdict(e)).toBe("duplicate");
+  });
+
+  it("possible 证据弱：清扫永不覆盖 ⇒ 谨慎档", () => {
+    expect(safeVerdict(makeEntry({ is_zombie_suspect: true, confidence: "possible" }))).toBe(
+      "weak",
+    );
+  });
+
+  it("confirmed / likely 与一键清扫目标集同口径 ⇒ 可以清", () => {
+    expect(safeVerdict(makeEntry({ is_zombie_suspect: true, confidence: "confirmed" }))).toBe(
+      "yes",
+    );
+    expect(safeVerdict(makeEntry({ is_zombie_suspect: true, confidence: "likely" }))).toBe("yes");
+  });
+});
+
+// 绝对启动时间：断言只钉「按语言选了对应 locale」这一层，不钉具体时刻
+// （toLocaleString 走本机时区，CI 各机不同；取月中时间戳避免时区跨月）。
+describe("formatStartTime", () => {
+  const aug15 = Math.floor(Date.UTC(2026, 7, 15, 12, 0, 0) / 1000);
+
+  it("zh 走中文日期形态（含「月」）", () => {
+    expect(formatStartTime(aug15, "zh")).toContain("月");
+  });
+
+  it("en 走英文月份缩写", () => {
+    expect(formatStartTime(aug15, "en")).toMatch(/Aug/);
   });
 });

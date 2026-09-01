@@ -6,6 +6,8 @@
 //   reason.*（短标签）+ reasonTip.*（完整解释）用于展开的详情面板
 import { useSyncExternalStore } from "react";
 import { invoke } from "@tauri-apps/api/core";
+// 仅类型（model.ts 反向 import type I18nKey，双向都只有类型边，无运行时环）
+import type { SafeVerdict } from "./model";
 
 const zh = {
   // ---- toolbar ----
@@ -127,6 +129,14 @@ const zh = {
   "detail.resources.tree.tip": "该进程与它全部子进程的 CPU 合计",
   "detail.evidence": "判定依据",
   "detail.whyNot": "为什么不是僵尸",
+  // 处置建议（safe.* 键族）：措辞锚定清扫策略，见 model.ts safeVerdict
+  "detail.safe": "能否清理",
+  "safe.yes": "可以 —— 已无人认领；一键清扫也会清它",
+  "safe.weak": "谨慎 —— 证据较弱，清扫永不会碰它；动手前先看看命令",
+  "safe.duplicate": "由你判断 —— 只有你知道正在用哪个实例；永不自动清扫",
+  "safe.healthy": "不建议 —— 它有活着的启动者",
+  "safe.starred": "已被你收藏豁免 —— 清扫与计数都会跳过它",
+  "detail.started": "启动时间",
 
   // ---- categories ----
   "cat.installed-app": "应用程序",
@@ -309,6 +319,12 @@ export function verdictKey(confidence: string): I18nKey {
   return dynamicKey(`verdict.${confidence}`);
 }
 
+/** 处置建议 → safe.* 键。入参是收窄后的 SafeVerdict 联合，模板字面量类型让
+ *  tsc 直接校验五个键都在字典里 —— 这一族不需要 dynamicKey 的豁免。 */
+export function safeKey(v: SafeVerdict): I18nKey {
+  return `safe.${v}`;
+}
+
 /** 类别 → cat.* 键；未知类别落 cat.unknown。字典本身就是合法类别清单 ——
  *  取代详情面板里手工维护的类别数组（评审发现：数组与字典键重复，会漂移）。 */
 export function categoryKey(category: string): I18nKey {
@@ -436,6 +452,13 @@ const en: Record<I18nKey, string> = {
   "detail.resources.tree.tip": "CPU of this process plus all of its child processes",
   "detail.evidence": "Why flagged",
   "detail.whyNot": "Why not a zombie",
+  "detail.safe": "Safe to clean up",
+  "safe.yes": "Yes — nothing owns it any more; one-click sweep removes it too",
+  "safe.weak": "Careful — evidence is weak, the sweep never touches it; check the command first",
+  "safe.duplicate": "Your call — only you know which copy is in use; never swept automatically",
+  "safe.healthy": "Not recommended — it has a live owner",
+  "safe.starred": "Exempt by your star — sweep and counts skip it",
+  "detail.started": "Started",
 
   "cat.installed-app": "Application",
   "cat.system": "System process",
