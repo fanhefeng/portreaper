@@ -417,16 +417,23 @@ reviews:
         this directory are inline English literals ON PURPOSE — do NOT report
         them as missing i18n keys. The typed-bilingual-dict rule under
         `src/**/*.{ts,tsx}` covers the repo-root desktop webview only.
-        Same reason verdict reasons render as raw engine codes (`ppid1_orphan`)
-        instead of prose — rationale in docs/RAYCAST-MAINTAINING.md. A PR that
-        introduces a reason glossary/word table here is a finding, not an
-        improvement.
+
+        Verdict reasons render through the `REASON_LABEL` (short phrase) and
+        `REASON_TIP` (one-line explanation) glossaries in `search-ports.tsx` —
+        plain-English text whose key sets are each machine-checked against the
+        Rust `ReasonCode` enum (set equality) by
+        `scripts/check-reason-parity.mjs` in CI + pre-push. That guard is
+        the reason the glossaries are allowed to exist at all (the extension
+        used to render raw engine codes precisely because the guard did not
+        cover this directory — history in docs/RAYCAST-MAINTAINING.md).
+        Another glossary, or reason-code prose anywhere outside those two
+        tables, is a finding: they are the only sanctioned places a reason
+        code name may appear in this directory.
 
         Row appearance may branch ONLY on structured fields (`confidence`,
-        `is_zombie_suspect`, `ports`, `duplicate_of`, `state`). Branching on
-        specific `zombie_reasons` code names is a finding:
-        `scripts/check-reason-parity.mjs` does not cover this directory, so a
-        code name copied here is an unguarded drift path.
+        `is_zombie_suspect`, `ports`, `duplicate_of`, `state`). Branching
+        BEHAVIOR on specific `zombie_reasons` code names is still a finding —
+        the glossary maps codes to display text, it does not license logic.
 
         Kill flow: "signal delivered" is not "process exited". After a
         successful `kill`, `confirmTermination` re-scans (with `--cpu=skip`)

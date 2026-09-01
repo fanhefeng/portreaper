@@ -15,6 +15,7 @@ const real = {
   classifySrc: readFileSync(join(root, "crates/portreaper-core/src/scanner/classify.rs"), "utf8"),
   i18nSrc: readFileSync(join(root, "src/i18n.ts"), "utf8"),
   modelSrc: readFileSync(join(root, "src/model.ts"), "utf8"),
+  raycastSrc: readFileSync(join(root, "integrations/raycast/src/search-ports.tsx"), "utf8"),
 };
 
 test("真实源码当前必须通过全部校验", () => {
@@ -116,6 +117,46 @@ test("带负载 / 显式判别值的变体必须响亮报错而非静默跳过",
     "pub enum ReasonCode {\n    Sneaky = 3,",
   );
   assert.throws(() => checkParity({ ...real, classifySrc: discriminant }), /unrecognized line/);
+});
+
+test("Raycast 词表漏码必须被拦截（新码没配可读文案）", () => {
+  const raycastSrc = real.raycastSrc.replace(/^\s*defunct: .*\r?\n/m, "");
+  assert.notEqual(raycastSrc, real.raycastSrc, "突变未生效：REASON_LABEL 的 defunct 行形态已变");
+  const errors = checkParity({ ...real, raycastSrc });
+  assert.ok(errors.some((e) => e.includes('"defunct"') && e.includes("REASON_LABEL")));
+});
+
+test("Raycast 词表含陈旧码必须被拦截（枚举已删、词表还留）", () => {
+  const raycastSrc = real.raycastSrc.replace(
+    /const REASON_LABEL[^=]*= \{/,
+    '$&\n  ghost_code: "stale entry",',
+  );
+  assert.notEqual(raycastSrc, real.raycastSrc, "突变未生效：REASON_LABEL 声明形态已变");
+  const errors = checkParity({ ...real, raycastSrc });
+  assert.ok(errors.some((e) => e.includes('"ghost_code"') && e.includes("REASON_LABEL")));
+});
+
+test("Raycast 解释表（REASON_TIP）漏码/陈旧码同样被拦截", () => {
+  // 把 REASON_TIP 的 defunct 键改名 —— 一次突变同时制造「缺 defunct」与
+  // 「多出 defunct_renamed」两种错误，且都必须标明出自 REASON_TIP
+  const raycastSrc = real.raycastSrc.replace(
+    /(const REASON_TIP[^=]*= \{\s*\n\s*)defunct:/,
+    "$1defunct_renamed:",
+  );
+  assert.notEqual(raycastSrc, real.raycastSrc, "突变未生效：REASON_TIP 的 defunct 键形态已变");
+  const errors = checkParity({ ...real, raycastSrc });
+  assert.ok(errors.some((e) => e.includes('"defunct"') && e.includes("REASON_TIP")));
+  assert.ok(errors.some((e) => e.includes('"defunct_renamed"') && e.includes("REASON_TIP")));
+});
+
+test("Raycast 词表出现认不出的行必须响亮报错而非静默跳过", () => {
+  // spread / 跨行值 / 计算键都会让「按行认键」漏检 —— 守卫必须拒绝这种形态
+  const raycastSrc = real.raycastSrc.replace(
+    /const REASON_LABEL[^=]*= \{/,
+    "$&\n  ...spreadFromSomewhere,",
+  );
+  assert.notEqual(raycastSrc, real.raycastSrc, "突变未生效：REASON_LABEL 声明形态已变");
+  assert.throws(() => checkParity({ ...real, raycastSrc }), /REASON_LABEL/);
 });
 
 test("注释里的键字样不得伪满足双语配额", () => {

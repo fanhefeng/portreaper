@@ -113,14 +113,22 @@ Store 的 CI 用它自带的 Prettier 检查代码风格，PR 可能被标记格
 > `pnpm tauri dev` 配对；release 构建指向正式目录，与安装版配对。这是刻意设计，
 > 不是 bug。
 
-## 为什么理由显示成机器码
+## 判定理由的可读文案（曾是机器码）
 
-翻译属于「表达」，是前端的事，而桌面版的双语文案住在 `src/i18n.ts` —— 那个模块在顶层
-访问 `localStorage` / `navigator`，Node 环境 import 不进来。与其为 Raycast 复制第二份
-文案（第二份真相源 + 第二条漂移路径），不如诚实地显示引擎的原始判定码：本扩展的用户是
-开发者，`ppid1_orphan` 比一句含糊的翻译更有信息量。
+判定理由曾刻意显示引擎原始码（`ppid1_orphan`）：桌面版的双语文案住在 `src/i18n.ts`
+（顶层访问 `localStorage` / `navigator`，Node 环境 import 不进来），而当时
+`scripts/check-reason-parity.mjs` 不覆盖本目录 —— 手抄一份码名词表就是一条无守卫的
+漂移路径，宁可不友好也不能静默漂移。
 
-Store 只支持美式英语，故扩展本身是英文单语 —— 这一条与「不复制第二份 i18n」同向。
+现在词表存在了（`search-ports.tsx` 的 `REASON_LABEL` 短语 + `REASON_TIP` 一句解释，
+后者措辞以桌面版英文 `reasonTip.*` 为底稿、渲染进详情面板的 Evidence 节），因为守卫
+补上了：check-reason-parity.mjs 解析这两张词表，各自与 Rust `ReasonCode` 枚举做
+**集合相等**校验（CI + pre-push）—— 引擎增删判定码、词表没跟上，直接翻红。
+词表只是「表达」，判定语义仍 100% 来自引擎；行为分支依旧只准读结构化字段；
+未知码兜底显示原始码（引擎比扩展新的窗口期）。**不得出现更多词表**——
+`REASON_LABEL` / `REASON_TIP` 是本目录唯一被认可的码名消费点，守卫也只认这两张表。
+
+Store 只支持美式英语，故扩展本身是英文单语 —— 词表是英文单份，不构成第二份 i18n。
 
 ## 契约同步
 
@@ -246,7 +254,8 @@ Raycast Beta 的支持目录）对一个人造孤儿 dev server 加星，另一�
 - 详情打开时只留一个置信度徽标（官方建议：显示 detail 时不要再挂 accessory）；
   收起时才给 stopped / no port / dup of N / CPU / PID。
 - 端口统一 `:5173` 展示（与桌面版和搜索提示对齐，此前注释写着这样、代码不是）；
-  判定理由改 `Metadata.TagList` 渲染，**文字仍是引擎原始码，只着色**。
+  判定理由改 `Metadata.TagList` 渲染，当时**文字仍是引擎原始码，只着色**
+  （后改为 `REASON_LABEL` 可读文案 —— 前提与守卫见上文「判定理由的可读文案」节）。
 - `List.Item` 补 `id`：不给的话高亮按**位置**记忆，刷新后同一个 Enter 面对的可能
   已是另一个进程 —— 而下一个动作是破坏性的。
 - Enter（首个 action）按行分叉：疑似行仍是 Terminate（那是本命令存在的理由），
@@ -261,9 +270,10 @@ Raycast Beta 的支持目录）对一个人造孤儿 dev server 加星，另一�
 - 删掉 `commands[0].subtitle`（单命令扩展不该用 subtitle 复述扩展名）。
 
 **行的外观只能由结构化字段驱动**（`confidence` / `is_zombie_suspect` / `ports` /
-`duplicate_of` / `state`），**不得**按 `zombie_reasons` 里的具体码名分叉 ——
-`scripts/check-reason-parity.mjs` 不覆盖本目录，在这里手抄码名就是一条无守卫的
-漂移路径。同理没有引入任何理由词表：理由继续显示引擎原始码。
+`duplicate_of` / `state`），**不得**按 `zombie_reasons` 里的具体码名分叉行为。
+码名的唯一被认可消费点是 `REASON_LABEL` 词表（码 → 展示文案，见「判定理由的
+可读文案」节，由 `scripts/check-reason-parity.mjs` 与 Rust 枚举做集合相等校验）——
+词表只管展示，不授权逻辑；除它之外手抄码名仍是无守卫的漂移路径。
 
 > **未做、且刻意不做的两项**（评估结论记在这里，免得反复重开）：
 > ① `@raycast/utils` 的 `useCachedPromise`（首屏缓存 + abortable）收益确实最高，
@@ -430,6 +440,12 @@ Confirmed 的孤儿不会被降档。判定分层由分区标题与 Dropdown 呈
       | `portreaper-2.png` | 列表 + 详情面板，选中的是**被挂起**那行：命令、stopped 的完整说明、Verdict、判定理由 TagList（原始码）、`State: TN · stopped` |
       | `portreaper-3.png` | ⌘K 动作面板：Danger Zone（Terminate ↵ / Force Kill ⇧⌘⌫，红色破坏性样式）+ Inspect（Toggle Details / Open localhost:4321） |
       | `portreaper-4.png` | 终止确认弹窗：`PID 76738 · port :4321 · It is suspended; terminating resumes it so it can shut down.` |
+
+      > ⚠️ **详情面板改版后上表已过时**（判定理由改 `REASON_LABEL` 可读文案 +
+      > markdown 区 Evidence 逐条解释、新增 Safe to terminate? 徽标与
+      > Started by / Started / Duplicate of 行、Verdict/State/Type 换新文字、
+      > 字段重排、首行结论 + `→ this process` 启动链）——`portreaper-2.png`
+      > 必受影响，提交 Store 前需按上述流程重截并更新此表。
 
       **画面里只出现临时造的 demo 进程**（`web-app` / `api-gateway` / `docs-site` /
       `e2e-suite` / `storefront` ×2，造法见上一节）—— 搜索框预置 `dev-server`

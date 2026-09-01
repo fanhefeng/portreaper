@@ -10,7 +10,12 @@
 //      EXEMPT_REASONS（豁免码）之一 —— 强制新码归类；
 //   3. REASON_PRIORITY / EXEMPT_REASONS 不得引用枚举里不存在的码（防前端陈旧）；
 //   4. 每个 REASON_PRIORITY 码：story.* 必须 zh+en 双语齐全（行内故事）；
-//   5. 每个 Confidence（除 none）：verdict.* 必须 zh+en 双语齐全（行内判定前缀）。
+//   5. 每个 Confidence（除 none）：verdict.* 必须 zh+en 双语齐全（行内判定前缀）；
+//   6. Raycast 词表 REASON_LABEL（短语）与 REASON_TIP（解释）——
+//      integrations/raycast/src/search-ports.tsx —— 各自与枚举**集合相等**：
+//      漏码（新码没配文案）与陈旧码（枚举已删、词表还留）都翻红 —— 该扩展
+//      英文单语、不走 src/i18n.ts，这两张表是它唯一被认可的码名消费点，
+//      本条守卫是它们被允许存在的前提。
 //
 // 用法：node scripts/check-reason-parity.mjs   （exit 1 = 不一致）
 // 自测：node --test scripts/*.test.mjs          （check-reason-parity.test.mjs）
@@ -90,9 +95,43 @@ function extractCodeList(source, constName) {
 }
 
 /**
- * 核心校验（纯函数，可测）：传入三份源码文本，返回错误信息数组（空 = 通过）。
+ * 提取 Raycast 词表 `const <name> … = {…}` 的键集合（REASON_LABEL / REASON_TIP）。
+ *
+ * 与 extractEnumVariants 同一态度：块内每一行必须是 空行 / 注释 / `键: 值` /
+ * 值的续行（oxfmt 会把超宽的 `键: "长文案"` 折成两行，续行是裸字符串字面量）
+ * 之一，否则响亮报错 —— spread、计算键都会让「按行认键」静默漏检，守卫拒绝
+ * 在那种形态下假装自己还在工作。键可带引号也可不带（oxfmt 的 as-needed
+ * 引号策略两种都会产出）。
  */
-export function checkParity({ classifySrc, i18nSrc, modelSrc }) {
+function extractRaycastTable(source, constName) {
+  const m = source.match(new RegExp(`const ${constName}[^=]*=\\s*\\{([^}]*)\\}`, "s"));
+  if (!m) {
+    throw new Error(`const ${constName} not found in integrations/raycast/src/search-ports.tsx`);
+  }
+  const keys = [];
+  for (const rawLine of m[1].split("\n")) {
+    const line = rawLine.trim();
+    if (line === "") continue;
+    if (line.startsWith("//") || line.startsWith("/*") || line.startsWith("*")) continue;
+    if (/^"[^"]*",?$/.test(line)) continue; // oxfmt 折行后的纯字符串续行
+    const km = line.match(/^"?([a-z0-9_]+)"?\s*:/);
+    if (km) {
+      keys.push(km[1]);
+      continue;
+    }
+    throw new Error(
+      `${constName}: unrecognized line "${line}" — ` +
+        '词表必须保持「键: "文案"」的平铺字面量，守卫拒绝静默跳过',
+    );
+  }
+  if (keys.length === 0) throw new Error(`no keys parsed for ${constName}`);
+  return keys;
+}
+
+/**
+ * 核心校验（纯函数，可测）：传入四份源码文本，返回错误信息数组（空 = 通过）。
+ */
+export function checkParity({ classifySrc, i18nSrc, modelSrc, raycastSrc }) {
   const errors = [];
   const reasonCodes = extractEnumVariants(classifySrc, "ReasonCode").map(camelToSnake);
   const confidences = extractEnumVariants(classifySrc, "Confidence")
@@ -139,6 +178,24 @@ export function checkParity({ classifySrc, i18nSrc, modelSrc }) {
   for (const tier of confidences) {
     requireKey(`verdict.${tier}`, "行内判定前缀（verdict.${confidence} 动态渲染）");
   }
+
+  // —— 6. Raycast 词表集合相等（REASON_LABEL 短语 + REASON_TIP 解释）——
+  for (const table of ["REASON_LABEL", "REASON_TIP"]) {
+    const keys = extractRaycastTable(raycastSrc, table);
+    for (const code of reasonCodes) {
+      if (!keys.includes(code)) {
+        errors.push(
+          `Raycast ${table} 缺少 "${code}" —— 新增 ReasonCode 必须在 ` +
+            "integrations/raycast/src/search-ports.tsx 配一句普通用户能读的英文文案",
+        );
+      }
+    }
+    for (const key of keys) {
+      if (!reasonCodes.includes(key)) {
+        errors.push(`Raycast ${table} 含枚举中不存在的码 "${key}"（词表陈旧）`);
+      }
+    }
+  }
   return errors;
 }
 
@@ -151,6 +208,7 @@ if (process.argv[1] && pathToFileURL(realpathSync(process.argv[1])).href === imp
     classifySrc: readFileSync(join(root, "crates/portreaper-core/src/scanner/classify.rs"), "utf8"),
     i18nSrc: readFileSync(join(root, "src/i18n.ts"), "utf8"),
     modelSrc: readFileSync(join(root, "src/model.ts"), "utf8"),
+    raycastSrc: readFileSync(join(root, "integrations/raycast/src/search-ports.tsx"), "utf8"),
   });
   if (errors.length > 0) {
     for (const e of errors) console.error(`✗ ${e}`);
@@ -159,5 +217,7 @@ if (process.argv[1] && pathToFileURL(realpathSync(process.argv[1])).href === imp
     );
     process.exit(1);
   }
-  console.log("✓ reason parity OK — reason/reasonTip/story/verdict 渲染链路全部双语齐全且归类闭环");
+  console.log(
+    "✓ reason parity OK — reason/reasonTip/story/verdict 双语齐全、归类闭环，Raycast 词表与枚举集合相等",
+  );
 }
