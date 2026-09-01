@@ -2743,7 +2743,7 @@ dependencies = [
 
 [[package]]
 name = "portreaper"
-version = "0.12.0"
+version = "0.13.0"
 dependencies = [
  "log",
  "portreaper-core",
@@ -2762,7 +2762,7 @@ dependencies = [
 
 [[package]]
 name = "portreaper-cli"
-version = "0.12.0"
+version = "0.13.0"
 dependencies = [
  "portreaper-core",
  "serde",
