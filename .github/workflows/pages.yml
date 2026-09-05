@@ -8,7 +8,9 @@ on:
       - ".github/workflows/pages.yml"
   # 平台故障后 dispatch 通道可能积压数小时（2026-08-06 事故：两次 dispatch 均
   # 停在 queued 且 jobs 为空，而 push 事件 18 秒即开跑）——届时改用 push 触发：
-  # 提交任何触碰上方 paths 的改动即可。
+  # 提交任何触碰上方 paths 的改动即可。但 push 后备只解决"能不能起 run"，
+  # 起来的 run 能不能开跑还要看下方 concurrency 注记——08-07 的 push 后备就是
+  # 这样被卡住的 run 挡了整整一个月。
   workflow_dispatch:
 
 # Permissions required by the GitHub Pages deployment actions.
@@ -17,10 +19,19 @@ permissions:
   id-token: write
   contents: read
 
-# Allow only one concurrent Pages deployment; let an in-progress run finish.
+# 同一时刻只允许一个 Pages 部署。cancel-in-progress 取 true 而非官方模板的
+# false，是 2026-08-06 事故的第二课：那次 push 的 job 在 Actions/Pages 故障里卡在
+# github-pages environment 的 waiting 态（jobs 里有条目但 0 step，从未上 runner），
+# false 语义下它算"进行中"、一直占着并发组；之后每个新 run 只能排队、再被下一个
+# run 取消（08-06 → 08-18 共十次全是 cancelled），网站停在 08-04 的构建整整 32 天，
+# 直到 GitHub 的 30 天 environment 等待上限把它判 failure（2026-09-05T16:32:10Z，
+# 同一秒才放行了排队中的 v0.10.3 部署）。job 级 timeout-minutes 管不到没上
+# runner 的 job。true 的代价只是：连续两次 push 时，前一次约 35s 的部署可能被
+# 中途取消——紧接着的新 run 部署的是更新的内容，站点不会因此落后。
+# 若再遇到卡住的 run：`gh run cancel <id>` 手动放行（见 docs/RELEASING.md 清单）。
 concurrency:
   group: pages
-  cancel-in-progress: false
+  cancel-in-progress: true
 
 jobs:
   deploy:

@@ -213,4 +213,14 @@ The updater key pair is **live**, unlike the Apple/Windows certs above:
       can't be opened" wording is the *unsigned-app* Gatekeeper block, not
       corruption — never tell users to re-download or trash the app.
 - [ ] Release flipped from draft → published; `latest/download/...` links resolve.
+- [ ] If the release touched `website/**`: the **Deploy Pages** run for that commit actually
+      reached `success` (`gh run list --workflow pages.yml --limit 3`) and
+      `curl -sI https://fanhefeng.github.io/portreaper/ | grep -i last-modified` moved.
+      A run stuck in `queued` / `waiting` / `in_progress` (job listed but **0 steps** — the
+      2026-08-06 outage shape) holds the `pages` concurrency group: newer runs queue and
+      cancel each other, and nothing deploys until GitHub's 30-day environment-wait
+      timeout fails the stuck one (2026-08-06 → 2026-09-05: the site sat on the 08-04
+      build for 32 days, still recommending the dmg quarantine helper that v0.10.3 had
+      removed). `cancel-in-progress: true` now lets the next push evict such a run; if it
+      recurs anyway, `gh run cancel <run-id>` and re-trigger with a push.
 - [ ] (When Windows leaves experimental) experimental section removed from the `body.md` heredoc in `release.yml`'s `create-release` job (grep for the `WINDOWS-EXPERIMENTAL` anchor comment) and the website (`dl-btn--exp` / `dl.experimental` in `website/index.html`).
