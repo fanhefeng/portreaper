@@ -8,27 +8,67 @@ packages:
 # 不需要运行其构建脚本 —— 显式记录决策，否则 pnpm 10+ 在 install/exec 前置检查时报错。
 allowBuilds:
   esbuild: false
-# ⚠ 版本联动：升级 vite-plus 时，下方 catalog 两条 + minimumReleaseAgeExclude
-# 全部 @0.2.6 钉版条目必须一起改（共 12 处）——漏改的 exclude 条目会静默失效。
-# 建议直接重跑 `vp migrate` 或全文替换版本号。
+# Vite+ 与 core 保持一致；已移除旧 0.2.x 的发布等待例外。
 catalog:
-  vite: npm:@voidzero-dev/vite-plus-core@0.2.6
-  vite-plus: 0.2.6
-minimumReleaseAgeExclude:
-  - "@voidzero-dev/vite-plus-core@0.2.6"
-  - "@voidzero-dev/vite-plus-darwin-arm64@0.2.6"
-  - "@voidzero-dev/vite-plus-darwin-x64@0.2.6"
-  - "@voidzero-dev/vite-plus-linux-arm64-gnu@0.2.6"
-  - "@voidzero-dev/vite-plus-linux-arm64-musl@0.2.6"
-  - "@voidzero-dev/vite-plus-linux-x64-gnu@0.2.6"
-  - "@voidzero-dev/vite-plus-linux-x64-musl@0.2.6"
-  - "@voidzero-dev/vite-plus-win32-arm64-msvc@0.2.6"
-  - "@voidzero-dev/vite-plus-win32-x64-msvc@0.2.6"
-  - vite-plus@0.2.6
+  vite: npm:@voidzero-dev/vite-plus-core@1.5.0
+  vite-plus: 1.5.0
 overrides:
-  vite: "catalog:"
+  esbuild@<0.28.1: 0.28.1
+  vite@*: "catalog:"
 peerDependencyRules:
   allowAny:
     - vite
   allowedVersions:
     vite: "*"
+minimumReleaseAgeExclude:
+  - "@oxfmt/binding-android-arm-eabi@0.76.0"
+  - "@oxfmt/binding-android-arm64@0.76.0"
+  - "@oxfmt/binding-darwin-arm64@0.76.0"
+  - "@oxfmt/binding-darwin-x64@0.76.0"
+  - "@oxfmt/binding-freebsd-x64@0.76.0"
+  - "@oxfmt/binding-linux-arm-gnueabihf@0.76.0"
+  - "@oxfmt/binding-linux-arm-musleabihf@0.76.0"
+  - "@oxfmt/binding-linux-arm64-gnu@0.76.0"
+  - "@oxfmt/binding-linux-arm64-musl@0.76.0"
+  - "@oxfmt/binding-linux-ppc64-gnu@0.76.0"
+  - "@oxfmt/binding-linux-riscv64-gnu@0.76.0"
+  - "@oxfmt/binding-linux-riscv64-musl@0.76.0"
+  - "@oxfmt/binding-linux-s390x-gnu@0.76.0"
+  - "@oxfmt/binding-linux-x64-gnu@0.76.0"
+  - "@oxfmt/binding-linux-x64-musl@0.76.0"
+  - "@oxfmt/binding-openharmony-arm64@0.76.0"
+  - "@oxfmt/binding-win32-arm64-msvc@0.76.0"
+  - "@oxfmt/binding-win32-ia32-msvc@0.76.0"
+  - "@oxfmt/binding-win32-x64-msvc@0.76.0"
+  - "@oxlint/binding-android-arm-eabi@1.91.0"
+  - "@oxlint/binding-android-arm64@1.91.0"
+  - "@oxlint/binding-darwin-arm64@1.91.0"
+  - "@oxlint/binding-darwin-x64@1.91.0"
+  - "@oxlint/binding-freebsd-x64@1.91.0"
+  - "@oxlint/binding-linux-arm-gnueabihf@1.91.0"
+  - "@oxlint/binding-linux-arm-musleabihf@1.91.0"
+  - "@oxlint/binding-linux-arm64-gnu@1.91.0"
+  - "@oxlint/binding-linux-arm64-musl@1.91.0"
+  - "@oxlint/binding-linux-ppc64-gnu@1.91.0"
+  - "@oxlint/binding-linux-riscv64-gnu@1.91.0"
+  - "@oxlint/binding-linux-riscv64-musl@1.91.0"
+  - "@oxlint/binding-linux-s390x-gnu@1.91.0"
+  - "@oxlint/binding-linux-x64-gnu@1.91.0"
+  - "@oxlint/binding-linux-x64-musl@1.91.0"
+  - "@oxlint/binding-openharmony-arm64@1.91.0"
+  - "@oxlint/binding-win32-arm64-msvc@1.91.0"
+  - "@oxlint/binding-win32-ia32-msvc@1.91.0"
+  - "@oxlint/binding-win32-x64-msvc@1.91.0"
+  - "@oxlint/plugins@1.91.0"
+  - "@voidzero-dev/vite-plus-core@1.5.0"
+  - "@voidzero-dev/vite-plus-darwin-arm64@1.5.0"
+  - "@voidzero-dev/vite-plus-darwin-x64@1.5.0"
+  - "@voidzero-dev/vite-plus-linux-arm64-gnu@1.5.0"
+  - "@voidzero-dev/vite-plus-linux-arm64-musl@1.5.0"
+  - "@voidzero-dev/vite-plus-linux-x64-gnu@1.5.0"
+  - "@voidzero-dev/vite-plus-linux-x64-musl@1.5.0"
+  - "@voidzero-dev/vite-plus-win32-arm64-msvc@1.5.0"
+  - "@voidzero-dev/vite-plus-win32-x64-msvc@1.5.0"
+  - oxfmt@0.76.0
+  - oxlint@1.91.0
+  - vite-plus@1.5.0
