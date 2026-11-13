@@ -237,17 +237,18 @@ reviews:
         - `paths.rs` scopes every persisted dir by build profile via
           cfg(debug_assertions) — no env vars — so dev never pollutes installed
           app data.
-        - The window close button is intercepted (hide + prevent_close). Do not
-          "fix" Cmd+Q by intercepting ExitRequested{code: None}: muda's
-          predefined Quit calls [NSApp terminate:], which tao 0.35 does not
-          route through that event. The custom quit-to-tray item owns the
-          accelerator. Under ActivationPolicy::Accessory the app menu is never
-          displayed but must still be BUILT — AppKit consults mainMenu for key
+        - Cmd+W and the window close button hide to tray (hide + prevent_close).
+          Cmd+Q and tray Quit must fully exit through the same "quit" event and
+          app.exit(0), allowing RunEvent::Exit to persist geometry and clean up.
+          Never map Cmd+Q to hiding or intercept ExitRequested to block quitting.
+          Do not use predefined Quit: [NSApp terminate:] bypasses Tauri's exit
+          event on this stack. Under ActivationPolicy::Accessory the app menu
+          is never displayed but must still be BUILT — AppKit consults mainMenu for key
           equivalents, so webview Cmd+C/V/W/Q depend on the Edit/Window
           submenus staying.
         - Logout/shutdown (AppleEvent quit) must still exit for real.
-        - `focus_main` is the single "show + take front" implementation shared
-          by the tray item, RunEvent::Reopen and the Windows single-instance
+        - `focus_main` is the single "unminimize + show + take front"
+          implementation shared by the tray item, RunEvent::Reopen and the Windows single-instance
           callback. Flag re-derivations of the show/focus dance.
         - Three plugins are registered Rust-side ONLY (no npm package, no JS
           call), which is why capabilities are untouched: window-state must
@@ -294,8 +295,8 @@ reviews:
         - Do NOT accept a PR that bounces the activation policy to Regular to
           "win" activation. Tried on macOS 26.5: it does take the front, but it
           leaves a Dock icon behind after dropping back to Accessory — which is
-          exactly what LSUIElement exists to remove, and it drags the
-          "Dock icon ⇒ ⌘Q should quit" HIG conflict back in. The existing
+          exactly what LSUIElement exists to remove. Cmd+Q must quit regardless
+          of the activation policy. The existing
           Ready → spawned-thread → set_focus path already works there.
         - Reports of "the window opens behind other apps" must be verified with
           a SCREENSHOT (or the window's own is_focused()), never with

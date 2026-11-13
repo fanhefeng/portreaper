@@ -32,6 +32,9 @@
     "@types/react": "^19.0.10",
     "typescript": "^7.0.2"
   },
+  "overrides": {
+    "esbuild@<0.28.1": "0.28.1"
+  },
   "icon": "command-icon.png",
   "commands": [
     {

@@ -96,17 +96,27 @@ jobs:
           The macOS build is **not code-signed or notarized**, so Gatekeeper
           will warn on first launch. To open it:
 
-          - Right-click (or Control-click) the app → **Open** → **Open**, or
-          - **System Settings → Privacy & Security → Open Anyway**, or
           - Remove the quarantine flag in Terminal:
             `xattr -dr com.apple.quarantine /Applications/Portreaper.app`
+          - For a developer-verification warning, use **System Settings →
+            Privacy & Security → Open Anyway**.
+          - On **macOS 14 and earlier only**, right-click (or Control-click)
+            the app → **Open** → **Open**. macOS 15 removed this bypass.
+
+          If macOS says the app "is damaged and can't be opened", this is
+          the unsigned-app Gatekeeper block, not a corrupt download. Use the
+          Terminal command above.
 
           macOS 版本**未签名、未公证**，首次打开会被 Gatekeeper 拦截。可以：
 
-          - 右键（或按住 Control 点击）应用 → **打开** → **打开**，或
-          - 打开 **系统设置 → 隐私与安全性 → 仍要打开**，或
           - 在终端中移除隔离属性：
             `xattr -dr com.apple.quarantine /Applications/Portreaper.app`
+          - 若提示无法验证开发者，打开 **系统设置 → 隐私与安全性 → 仍要打开**。
+          - **仅 macOS 14 及以前**，可右键（或按住 Control 点击）应用 →
+            **打开** → **打开**；macOS 15 已移除此旁路。
+
+          若提示「已损坏，无法打开」，这是未签名应用的 Gatekeeper 拦截，
+          并非下载文件损坏，请使用上面的终端命令。
 
           <!-- WINDOWS-EXPERIMENTAL: de-experimental checklist anchor — when
                Windows passes manual QA (docs/TESTING-WINDOWS.md), delete from

@@ -105,11 +105,11 @@ pub struct TrayMenuItems {
     pub quit: MenuItem<Wry>,
 }
 
-/// macOS 应用菜单里的句柄（语言切换时 re-text）：⌘Q 替代项 + 设置项（⌘,）
+/// macOS 应用菜单里的句柄（语言切换时 re-text）：退出项（⌘Q）+ 设置项（⌘,）
 /// + 目录菜单的应用菜单栏那份 —— 与托盘双入口。
 #[cfg(target_os = "macos")]
 pub struct AppMenuItems {
-    pub quit_to_tray: MenuItem<Wry>,
+    pub quit: MenuItem<Wry>,
     pub settings: MenuItem<Wry>,
     pub dir: DirMenuItems,
 }
@@ -193,15 +193,6 @@ pub(crate) fn settings_text(lang: &str) -> &'static str {
         "设置…"
     } else {
         "Settings…"
-    }
-}
-
-#[cfg(target_os = "macos")]
-pub(crate) fn quit_to_tray_text(lang: &str) -> &'static str {
-    if lang == "zh" {
-        "隐藏到托盘"
-    } else {
-        "Hide to Tray"
     }
 }
 
@@ -327,7 +318,7 @@ fn install_panic_hook() {
     }));
 }
 
-/// 把主窗口显示出来并抢到最前。三处调用点共用：托盘「显示窗口」、macOS 的
+/// 还原最小化的主窗口、显示并抢到最前。三处调用点共用：托盘「显示窗口」、macOS 的
 /// `RunEvent::Reopen`、Windows 单实例守卫收到的二次启动。
 ///
 /// 本函数从主线程内联调用即可。**「必须 spawn 一个线程再 set_focus」那条实测约束
@@ -340,6 +331,7 @@ fn install_panic_hook() {
 /// 错的、顺手把 `Ready` 那段也「简化」掉，则会复发「启动时窗口压在别人下面」。
 fn focus_main(app: &AppHandle) {
     if let Some(w) = app.get_webview_window("main") {
+        let _ = w.unminimize();
         let _ = w.show();
         let _ = w.set_focus();
     }
@@ -380,7 +372,7 @@ pub fn run() {
         // 窗口尺寸/位置记忆。
         //
         // 只记 SIZE | POSITION，**绝不能加 VISIBLE / 用 ALL**：本应用「关窗即隐藏、
-        // 只从托盘退出」，恢复一个 hidden 状态会与 `RunEvent::Ready` 里那段实测调优
+        // 退出走独立菜单命令」，恢复一个 hidden 状态会与 `RunEvent::Ready` 里那段实测调优
         // 过的 show + 重试抢焦点直接打架，表现是启动后窗口再也不出现。
         //
         // 文件名按环境分叉，与 `portreaper_core::paths` 的 dev/prod 隔离同向：插件把
@@ -411,84 +403,67 @@ pub fn run() {
             updater::open_release_page,
         ]);
 
-    // 「仅托盘退出」不变量的真正实现（评审 + 实测推翻了旧的 ExitRequested 拦截）：
-    // 默认应用菜单的 predefined Quit（⌘Q）直接调 [NSApp terminate:]，而 tao 0.35
-    // 没有实现 applicationShouldTerminate:，terminate 既不可阻止也不会发出
-    // ExitRequested —— 实测（quit AppleEvent）进程直接退出，旧拦截分支从未生效。
-    // 解法：整体提供自定义应用菜单（默认菜单仅在 Builder::menu 缺席时安装），
-    // 把 ⌘Q 绑到自定义 quit-to-tray 项，行为与窗口关闭按钮一致（隐藏到托盘）。
+    // macOS 标准语义：⌘Q 完整退出，⌘W / 关闭按钮只隐藏窗口、保留托盘。
+    // 自定义 Quit 与托盘共用 "quit" 事件，统一走 app.exit(0)：既清理托盘，
+    // 也让 window-state 插件收到 RunEvent::Exit、保存窗口几何。predefined Quit
+    // 直接调 [NSApp terminate:]，会绕过这条 Tauri 清理路径。
     // 应用现已是 Accessory 策略（见 setup，无 Dock 图标）：这份菜单在菜单栏里
     // 不可见，但 key equivalent 仍经它路由 —— ⌘C/⌘V/⌘W/⌘Q 都依赖它，不能删。
-    // 注销关机走 AppleEvent quit，仍真正退出 —— 系统发起的退出必须放行，
-    // 否则应用无法被正常关闭（刻意决策）。
+    // 注销关机走 AppleEvent quit，系统发起的退出同样放行。
     #[cfg(target_os = "macos")]
-    let builder = builder
-        .menu(|handle| {
-            use tauri::menu::SubmenuBuilder;
-            let lang = detect_lang();
-            let quit_to_tray = MenuItemBuilder::with_id("quit-to-tray", quit_to_tray_text(lang))
-                .accelerator("Cmd+Q")
-                .build(handle)?;
-            // 「设置…」按 HIG 惯例挂 ⌘,。菜单栏虽不可见（Accessory），但 key
-            // equivalent 仍经这份隐形菜单路由 —— 与 ⌘Q 同一机制。id 与托盘的
-            // 设置项相同，点击由托盘 on_menu_event 全局派发统一处理。
-            let settings = MenuItemBuilder::with_id("open-settings", settings_text(lang))
-                .accelerator("Cmd+,")
-                .build(handle)?;
-            let app_submenu = SubmenuBuilder::new(handle, "Portreaper")
-                .about(None)
-                .separator()
-                .item(&settings)
-                .separator()
-                .hide()
-                .hide_others()
-                .show_all()
-                .separator()
-                .item(&quit_to_tray)
-                .build()?;
-            // 「打开目录」菜单 —— 与托盘子菜单复用相同 id：点击事件由托盘的
-            // on_menu_event 全局派发处理（tauri 把应用菜单与托盘菜单事件发到
-            // 同一监听列表），故此处只建项 + 存句柄供语言切换，无需新增 handler。
-            let dir = build_dir_menu(handle, lang, true)?;
-            // Edit/Window 子菜单必须保留：webview 的 ⌘C/⌘V/⌘X/⌘A 依赖这些
-            // predefined 项的 key equivalent；⌘W 走 close_window → 被
-            // on_window_event 拦成隐藏，与产品语义一致。
-            let edit_submenu = SubmenuBuilder::new(handle, "Edit")
-                .undo()
-                .redo()
-                .separator()
-                .cut()
-                .copy()
-                .paste()
-                .select_all()
-                .build()?;
-            let window_submenu = SubmenuBuilder::new(handle, "Window")
-                .minimize()
-                .close_window()
-                .build()?;
-            let menu = MenuBuilder::new(handle)
-                .items(&[&app_submenu, &dir.open_dir, &edit_submenu, &window_submenu])
-                .build()?;
-            handle.manage(AppMenuItems {
-                quit_to_tray,
-                settings,
-                dir,
-            });
-            Ok(menu)
-        })
-        .on_menu_event(|app, event| {
-            // 应用菜单 ⌘Q：与窗口关闭按钮同语义 —— 隐藏到托盘，不退出。
-            // 注意（评审核实）：tauri 把应用菜单与托盘菜单事件派发到同一个全局
-            // 监听列表 —— 本 handler 和 TrayIconBuilder::on_menu_event 都会收到
-            // 全部菜单事件，互不干扰靠的是 id 不相交，不是通道分离。给应用菜单
-            // 项起 id 绝不能复用 "quit"/"show"：复用 "quit" 会让托盘 handler 对
-            // ⌘Q 调 app.exit(0)，悄悄重新引入本项修复消灭的整体退出 bug。
-            if event.id.as_ref() == "quit-to-tray" {
-                if let Some(w) = app.get_webview_window("main") {
-                    let _ = w.hide();
-                }
-            }
+    let builder = builder.menu(|handle| {
+        use tauri::menu::SubmenuBuilder;
+        let lang = detect_lang();
+        let quit = MenuItemBuilder::with_id("quit", tray_texts(lang).1)
+            .accelerator("Cmd+Q")
+            .build(handle)?;
+        // 「设置…」按 HIG 惯例挂 ⌘,。菜单栏虽不可见（Accessory），但 key
+        // equivalent 仍经这份隐形菜单路由 —— 与 ⌘Q 同一机制。id 与托盘的
+        // 设置项相同，点击由托盘 on_menu_event 全局派发统一处理。
+        let settings = MenuItemBuilder::with_id("open-settings", settings_text(lang))
+            .accelerator("Cmd+,")
+            .build(handle)?;
+        let app_submenu = SubmenuBuilder::new(handle, "Portreaper")
+            .about(None)
+            .separator()
+            .item(&settings)
+            .separator()
+            .hide()
+            .hide_others()
+            .show_all()
+            .separator()
+            .item(&quit)
+            .build()?;
+        // 「打开目录」菜单 —— 与托盘子菜单复用相同 id：点击事件由托盘的
+        // on_menu_event 全局派发处理（tauri 把应用菜单与托盘菜单事件发到
+        // 同一监听列表），故此处只建项 + 存句柄供语言切换，无需新增 handler。
+        let dir = build_dir_menu(handle, lang, true)?;
+        // Edit/Window 子菜单必须保留：webview 的 ⌘C/⌘V/⌘X/⌘A 依赖这些
+        // predefined 项的 key equivalent；⌘W 走 close_window → 被
+        // on_window_event 拦成隐藏，与产品语义一致。
+        let edit_submenu = SubmenuBuilder::new(handle, "Edit")
+            .undo()
+            .redo()
+            .separator()
+            .cut()
+            .copy()
+            .paste()
+            .select_all()
+            .build()?;
+        let window_submenu = SubmenuBuilder::new(handle, "Window")
+            .minimize()
+            .close_window()
+            .build()?;
+        let menu = MenuBuilder::new(handle)
+            .items(&[&app_submenu, &dir.open_dir, &edit_submenu, &window_submenu])
+            .build()?;
+        handle.manage(AppMenuItems {
+            quit,
+            settings,
+            dir,
         });
+        Ok(menu)
+    });
 
     builder
         .setup(|app| {
@@ -513,14 +488,12 @@ pub fn run() {
             paths::assert_matches_tauri(app.handle());
 
             // Accessory 激活策略：无 Dock 图标、不进 ⌘Tab —— 身份与「常驻托盘」的
-            // 产品定位对齐。此前用默认 Regular 策略（有 Dock 图标）却把 ⌘Q 劫持成
-            // 隐藏，普通 App 的外观配菜单栏工具的行为，用户会按 HIG 预期 ⌘Q 退出
-            // 而感到意外；Accessory 下菜单栏归前台 Regular App 所有、本应用菜单不
-            // 可见，「⌘Q 应退出」的预期自然消失。注意：应用菜单仍必须构建
+            // 产品定位对齐。即使没有 Dock 图标，⌘Q 仍完整退出，⌘W 才隐藏到托盘。
+            // Accessory 下菜单栏归前台 Regular App 所有、本应用菜单不可见，
+            // 但应用菜单仍必须构建
             // （Builder::menu）—— AppKit 对未被响应链消费的按键仍会查询本应用
             // mainMenu 的 key equivalent，webview 的 ⌘C/⌘V/⌘W/⌘Q 全靠这份隐形
-            // 菜单路由。副作用：Dock 右键退出的路径随图标一起消失，真正退出只剩
-            // 托盘菜单与注销/关机（AppleEvent quit，依旧放行）。
+            // 菜单路由。退出入口是 ⌘Q、托盘菜单与注销/关机（AppleEvent quit）。
             // 双机制：正式包同时经 src-tauri/Info.plist 的 LSUIElement 在注册期
             // 声明（否则冷启动 Dock 闪现图标 1~2 秒，v0.7.0 实测）；本运行期调用
             // 覆盖 `tauri dev` 的裸二进制（不读 bundle Info.plist），两者都不能删。
@@ -604,6 +577,7 @@ pub fn run() {
                             w.open_devtools();
                         }
                     }
+                    // 应用菜单与托盘菜单事件全局派发；⌘Q 和托盘退出共用此路径。
                     "quit" => {
                         app.exit(0);
                     }
@@ -638,8 +612,7 @@ pub fn run() {
             // Destroyed」时发出（正常关闭已被 prevent_close 拦下，走不到销毁）——
             // 窗口真被销毁属异常状态（如 webview 崩溃），此时 prevent_exit 只会
             // 留下一个无窗口可恢复的僵尸托盘进程；放行退出才是健壮行为。
-            // ⌘Q 的「仅托盘退出」语义由上面的自定义应用菜单实现（terminate: 不经
-            // 此事件，拦了也没用 —— 实测验证）。
+            // ⌘Q 与托盘退出通过 app.exit(0) 走正常退出与清理，不拦截退出请求。
             #[cfg(target_os = "macos")]
             match event {
                 // 启动时把窗口抢到最前 —— Accessory / LSUIElement 应用不会被
