@@ -49,6 +49,7 @@ const zh = {
   // ---- row ----
   "port.tip": "在浏览器打开 http://localhost:{port}",
   "row.expand.tip": "查看详情",
+  "row.collapse.tip": "收起详情",
   "row.noPort": "无端口",
   "row.noPort.tip": "该进程不监听任何端口，因脱离父进程成为孤儿而被检出",
   "row.busySubtree": "子进程 {cpu}% CPU",
@@ -379,6 +380,7 @@ const en: Record<I18nKey, string> = {
 
   "port.tip": "Open http://localhost:{port} in browser",
   "row.expand.tip": "Show details",
+  "row.collapse.tip": "Hide details",
   "row.noPort": "no port",
   "row.noPort.tip": "Listens on no port — surfaced because it was orphaned from its parent",
   "row.busySubtree": "{cpu}% CPU in children",

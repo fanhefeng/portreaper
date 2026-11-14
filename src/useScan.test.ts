@@ -269,3 +269,42 @@ describe("useScan polling", () => {
     expect(scans).toBe(1);
   });
 });
+
+describe("useScan lifecycle", () => {
+  it("ignores an in-flight result after unmount, including the tray side effect", async () => {
+    let resolveScan!: (rows: ReturnType<typeof makeEntry>[]) => void;
+    route({
+      scan_ports: () =>
+        new Promise((resolve) => {
+          resolveScan = resolve;
+        }),
+    });
+    const { unmount } = renderHook(() => useScan());
+    await advance(0);
+    unmount();
+    resolveScan([makeEntry()]);
+    await advance(0);
+    expect(mockInvoke.mock.calls.some(([command]) => command === "update_tray_title")).toBe(false);
+  });
+
+  it("does not start a queued fresh scan after unmount", async () => {
+    let resolveScan!: (rows: ReturnType<typeof makeEntry>[]) => void;
+    let scans = 0;
+    route({
+      scan_ports: () => {
+        scans++;
+        return new Promise((resolve) => {
+          resolveScan = resolve;
+        });
+      },
+    });
+    const { result, unmount } = renderHook(() => useScan());
+    await advance(0);
+    const fresh = result.current.freshScan();
+    unmount();
+    resolveScan([]);
+    await advance(0);
+    expect(await fresh).toBeNull();
+    expect(scans).toBe(1);
+  });
+});

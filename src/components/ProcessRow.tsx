@@ -119,8 +119,8 @@ function RowImpl({ e, expanded, shared }: RowProps) {
           className={`disclosure ${expanded ? "open" : ""}`}
           aria-expanded={expanded}
           aria-controls={`proc-detail-${e.pid}`}
-          aria-label={t("row.expand.tip")}
-          title={t("row.expand.tip")}
+          aria-label={`${t(expanded ? "row.collapse.tip" : "row.expand.tip")} · ${name} · PID ${e.pid}`}
+          title={t(expanded ? "row.collapse.tip" : "row.expand.tip")}
           onClick={(ev) => {
             ev.stopPropagation();
             onToggleExpand(e.pid);

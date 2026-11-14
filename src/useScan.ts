@@ -27,17 +27,26 @@ export function useScan(pollIntervalMs: number = DEFAULT_POLL_INTERVAL_MS) {
   // 用户点一下就清掉；而空态文案不能因此退化成「没有发现任何监听端口」——
   // 那是一句假话，且会连带弄丢唯一的重试入口（评审发现）。
   const [lastScanOk, setLastScanOk] = useState(true);
+  const mounted = useRef(false);
+  useEffect(() => {
+    mounted.current = true;
+    return () => {
+      mounted.current = false;
+    };
+  }, []);
   const inFlight = useRef<Promise<ProcessEntry[] | null> | null>(null);
 
   /** 返回本轮 entries（失败时 null）—— kill 之后的「目标真的消失了吗」要用它，
    *  只写进 state 的话调用方拿不到与本次动作对应的那一份快照。 */
   const runScan = useCallback(async (): Promise<ProcessEntry[] | null> => {
+    if (!mounted.current) return null;
     try {
       const data = await withTimeout(
         invoke<ProcessEntry[]>("scan_ports"),
         SCAN_TIMEOUT_MS,
         "ERR_SCAN_TIMEOUT",
       );
+      if (!mounted.current) return null;
       setEntries(data);
       setScanError(null);
       setHasScanned(true);
@@ -53,6 +62,7 @@ export function useScan(pollIntervalMs: number = DEFAULT_POLL_INTERVAL_MS) {
       }).catch(() => {});
       return data;
     } catch (e) {
+      if (!mounted.current) return null;
       setScanError(String(e));
       // 失败也算「扫过了」：空态文案要说「扫描失败」而不是「一切正常」
       setHasScanned(true);
